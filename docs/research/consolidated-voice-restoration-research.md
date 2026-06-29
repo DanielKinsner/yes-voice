@@ -2,11 +2,12 @@
 
 Last consolidated: June 29, 2026
 
-This document deduplicates and combines the three research findings:
+This document deduplicates and combines the four research findings:
 
 - `voice restoration research.md`
 - `Offline Voice Restoration Tech Stack.md`
 - `3rd deep research voice restoration.md`
+- `openai voice restoration deep research2.md`
 
 The original files contain more source-level detail and citation trails. This consolidated version is intended to be the working product/architecture brief.
 
@@ -22,9 +23,9 @@ The best foundation for an offline "Vocal Polish" product is not one monolithic 
 
 The highest-confidence v1 product should be a standalone offline desktop app, not a plugin-first product. It should center on DeepFilterNet or DPDFNet for preview, AR/SPADE-style deterministic repair for clicks and clipping, localized DSP for plosives/de-essing/de-hum, Demucs or a license-verified RoFormer model for sung vocals in mixes, RMVPE or Basic Pitch for pitch tracking, and a heavier batch enhancer such as Resemble Enhance for final spoken-voice polishing.
 
-The strongest desktop implementation direction is a Rust/Tauri standalone app with an isolated native audio/ML engine. ONNX Runtime via `ort` is the safest default inference path for production model execution because it provides one route to CPU, CUDA, DirectML, TensorRT, CoreML/Metal, and OpenVINO acceleration. tract is attractive where binary control matters more than peak backend coverage, especially for DeepFilterNet-style CPU inference. Qt remains a strong traditional desktop alternative. JUCE is the right future path if DAW plugin export becomes a core requirement, but it adds licensing and real-time constraints that are not necessary for a first standalone product.
+The strongest desktop implementation direction depends on the expected product center of gravity. If the app is primarily a modern standalone product in the user's existing Rust/Tauri ecosystem, use a Rust/Tauri shell with an isolated native audio/ML engine. If the app is intended to become a flagship pro-audio restoration editor with plugin/ARA ambitions, a C++20 core with JUCE or Qt deserves equal consideration. ONNX Runtime via `ort` or the C++ API is the safest default inference path for production model execution because it provides one route to CPU, CUDA, DirectML, TensorRT, CoreML/Metal, and OpenVINO acceleration. tract is attractive where binary control matters more than peak backend coverage, especially for DeepFilterNet-style CPU inference.
 
-Licensing is a gating constraint. Commercially friendly candidates include DeepFilterNet, DPDFNet, RNNoise, Resemble Enhance, SGMSE code, Demucs code, many RoFormer implementations, Basic Pitch, RMVPE, SRS if its MIT release is verified in the target artifact, ONNX Runtime, CPAL/RtAudio, and WORLD. AudioSR should be treated as blocked for commercial bundling because of AudioLDM / CC-BY-NC lineage. VoiceFixer weights, individual Demucs/RoFormer checkpoints, ReverbFX data, and any newer model weights need artifact-level verification rather than repo-level assumptions.
+Licensing is a gating constraint. Commercially friendly candidates include DeepFilterNet, DPDFNet, RNNoise, Resemble Enhance, SGMSE code, Demucs code, many RoFormer implementations, Basic Pitch, RMVPE, SRS if its MIT release is verified in the target artifact, ONNX Runtime, CPAL/RtAudio, C++ infrastructure such as Eigen/libsndfile/xsimd, and WORLD. AudioSR should be treated as blocked for commercial bundling because of AudioLDM / CC-BY-NC lineage. VoiceFixer weights, individual Demucs/RoFormer checkpoints, ReverbFX data, and any newer model weights need artifact-level verification rather than repo-level assumptions.
 
 ## Product Assumptions
 
@@ -40,6 +41,8 @@ The recommendations assume:
 ## Core Architecture
 
 The product should classify the input first, then choose the processing route. Speech denoising, dereverberation, source separation, click repair, declipping, spectral inpainting, pitch correction, and loudness/export are different problems. Treating them as a single "enhance" operation will create worse results and less controllable UX.
+
+The product shape should be file-first, project-based, non-destructive, and spectrogram-native. Think restoration workstation rather than live insert plugin: open a take, inspect the spectrogram, run analysis, apply a chain preset, audition the delta, manually override where automation fails, then render nondestructively. This fits the underlying algorithms because the best restoration work often needs random access to the whole clip instead of a strict real-time buffer.
 
 ```mermaid
 flowchart LR
@@ -63,7 +66,7 @@ flowchart LR
     N --> O[Loudness, limiter, export]
 ```
 
-This route keeps the product honest: causal models can power responsive preview, while non-causal batch models and deterministic repair can handle harder cases during export.
+This route keeps the product honest: causal models can power responsive preview, while non-causal batch models and deterministic repair can handle harder cases during export. It also preserves the important distinction between "remove unwanted energy" and "reconstruct missing content." Regression-style enhancement is often enough for noise/reverb reduction, while generative models become more useful for packet loss, bandwidth extension, clipped/missing content, and severe restoration.
 
 ## Artifact Classes And Best-Fit Methods
 
@@ -80,6 +83,7 @@ Recommended options:
 | RNNoise | Ultra-light fallback | Tiny, robust, lower quality ceiling. |
 | Resemble Enhance | Batch spoken-voice polish | Better suited to export than strict low-latency monitoring. |
 | VoiceFixer | Batch restoration and bandwidth repair | Useful for speech restoration, larger model footprint. |
+| VoiceRestore / flow-matching restoration | Broad degraded-recording restoration | Promising frontier direction; verify maturity and licensing before depending on it. |
 | Diffusion / Schrödinger bridge enhancers | Future batch quality path | High research ceiling, usually heavier and less product-ready. |
 | UniPASE / USEMamba / Miipher-style systems | Strategic future universal restoration | Important to track, but not yet the safest v1 dependency. |
 
@@ -118,7 +122,7 @@ Use a hybrid approach:
 - Neural or generative dereverberation for hard single-channel cases, where WPE leaves too much room tail or damages the direct path.
 - Singing-specific dereverberation should be evaluated separately from speech dereverberation because sustained notes and vibrato can be damaged by speech-trained systems.
 
-Diffusion and Schrodinger-bridge methods such as SGMSE+/StoRM-style approaches are strong candidates for "maximum quality" offline dereverb. They should not be forced into live preview; use them as premium batch render options when processing time is acceptable.
+Diffusion and Schrodinger-bridge methods such as SGMSE+/StoRM-style approaches are strong candidates for "maximum quality" offline dereverb. BUDDy-style systems are also worth prototyping because they jointly estimate room acoustics and restore the dry signal. These should not be forced into live preview; use them as premium batch render options when processing time is acceptable.
 
 ### Singing And Vocals Inside Music
 
@@ -134,6 +138,7 @@ Recommended options:
 |---|---|---|
 | Demucs v4 / Hybrid Transformer Demucs | First production source separator | Most mature open-source option for offline vocal extraction. |
 | BS-RoFormer / Mel-Band RoFormer | Higher research ceiling | Strong reported separation quality, less standardized packaging. |
+| MBTFNet-style vocal enhancement | Singing enhancement, not just source separation | Useful reminder that vocal enhancement and stem isolation are related but not identical. |
 | SingVERSE benchmark | Singing enhancement evaluation | Important because it exposes speech-to-singing domain mismatch. |
 | SRS / Smule Renaissance Small | Singing restoration candidate | Reported as compact and MIT in the third research doc; verify exact model artifact before bundling. |
 | ReverbFX / Singing-ReverbFX | Singing dereverb research path | Useful direction for plugin-style vocal reverb, but dataset license needs confirmation. |
@@ -173,10 +178,13 @@ This belongs in the creative post-processing section of the product, not in the 
 | RNNoise | Tiny fallback denoiser | High | BSD-3-Clause | Keep for low-end hardware or fallback mode. |
 | Resemble Enhance | Batch speech denoise/enhance | Medium-high | MIT | Export-only polish candidate. |
 | VoiceFixer | Speech restoration / bandwidth repair | Medium | Code MIT; weights need review | Useful, but footprint and model license need confirmation. |
+| VoiceRestore / flow-matching transformers | Broad restoration | Medium | Verify code and weights | Promising for multi-distortion restoration; not a v1 anchor yet. |
 | ClearerVoice-Studio | Speech toolbox/model zoo | High | Apache-2.0 | Good research and comparison source. |
 | SGMSE / StoRM-style diffusion | High-quality denoise/dereverb | Medium | MIT for SGMSE code; checkpoints must be checked | Good candidate for slow "maximum quality" render paths. |
+| BUDDy-style diffusion dereverb | Blind single-channel dereverb | Low-medium | Verify artifact | Research prototype target for HQ dereverb comparisons. |
 | Demucs v4 | Vocal stem extraction | High | MIT | Safest v1 separator for singing-in-mix. |
 | BS-RoFormer / Mel-Band RoFormer | Higher-end source separation | Medium | Varies by implementation | Consider after Demucs baseline. |
+| MBTFNet-style singing enhancement | Singing-vocal enhancement | Low-medium | Verify artifact | Consider as a singing enhancement benchmark, not a separator replacement. |
 | SRS / Smule Renaissance Small | Singing restoration | Medium-high | Reported MIT; verify artifact | Potential centerpiece for singing path if license and quality hold. |
 | RMVPE | Singing F0 | High | Apache-2.0 | Strong pitch-tracking candidate. |
 | Basic Pitch | Lightweight pitch/MIDI/bends | High | Apache-2.0 | Tiny, deployable, useful analysis layer. |
@@ -184,6 +192,7 @@ This belongs in the creative post-processing section of the product, not in the 
 | Rubber Band | Time-stretch/pitch-shift | High | GPL-2.0 or commercial | Needs commercial license for closed-source app. |
 | Spectral-subtraction / Wiener / log-MMSE | Surgical broadband hiss reduction | High | In-house DSP | Useful fallback/baseline, but not the main quality ceiling. |
 | SPADE / sparse declipping | Declipping | High | Implementation-dependent, MIT options exist | Deterministic repair module. |
+| APPLADE-style plug-and-play declipping | Hybrid declipping | Low-medium | Verify artifact | Interesting hybrid of sparse optimization and learned priors. |
 | AR click repair / Janssen-style inpainting | Clicks, pops, marked spectral defects | High | Implementation-dependent | Product-critical repair path. |
 | Adaptive harmonic notch | Hum removal | High | In-house DSP | Low-risk pure DSP module. |
 | Dynamic EQ / split-band de-esser | Sibilance reduction | High | In-house DSP | Product-basic vocal polish tool. |
@@ -218,6 +227,8 @@ Recommended standalone stacks:
 | Stack | Strengths | Weaknesses | Fit |
 |---|---|---|---|
 | Rust + Tauri + `cpal` + `symphonia` + `ort`/tract | Small binaries, memory safety, modern UI, strong offline story | More custom work for pro-audio UX and waveform editing | Best fit if plugin export is not required for v1. |
+| C++20 + JUCE + ONNX Runtime + Eigen/libsndfile/SIMD | Strongest path to pro-audio editor plus future plugins | Licensing/UI constraints and less alignment with Rust app suite | Best fit if long-term DAW/plugin/ARA integration is a major goal. |
+| C++ core + Qt UI + later JUCE/iPlug2 wrapper | Richer editor UX with high-performance native engine | Two UI/plugin surfaces to maintain | Best fit for a deep workstation-style editor. |
 | Qt / PySide or C++ Qt + ONNX Runtime | Mature desktop UI and media controls | Heavier packaging; Python route can bloat | Strong if the team wants traditional desktop tooling quickly. |
 | JUCE standalone | Best audio-device/plugin ecosystem | Commercial licensing and older UI stack tradeoffs | Best when DAW plugin export is near-term. |
 | Electron + native engine | Fast web UI iteration | Larger memory/bundle footprint | Acceptable only if web UI velocity dominates. |
@@ -226,7 +237,9 @@ For the Rust path, the likely native crates are `realfft` or `rustfft` for FFT w
 
 ### Plugin Later
 
-If plugin support becomes essential, keep the DSP/ML engine separable and wrap it with JUCE later. A plugin-first design imposes stricter real-time safety, host compatibility, automation, preset, and licensing constraints. Those are valuable for DAW users, but they are unnecessary friction for the first offline restoration product.
+If plugin support becomes essential, keep the DSP/ML engine separable and wrap it with JUCE or iPlug2 later. A plugin-first design imposes stricter real-time safety, host compatibility, automation, preset, and licensing constraints. Those are valuable for DAW users, but they are unnecessary friction for the first offline restoration product.
+
+For serious DAW restoration workflows, ARA is more strategically aligned than a simple live insert. Restoration benefits from random access to the whole clip, offline analysis, and exchange of richer timing/content information with the host. VST3 and CLAP are useful for broad compatibility, but ARA is the better long-term fit if the product becomes a clip-based restoration companion.
 
 ## Suggested UX Workflow
 
@@ -235,7 +248,7 @@ flowchart TD
     A[Open file or drag and drop] --> B[Analyze]
     B --> C[Detect content and artifacts]
     C --> D[Choose automatic preset]
-    D --> E[Preview lightweight chain]
+    D --> E[Choose Natural / Balanced / Restoration HQ]
     E --> F[Adjust repair modules]
     F --> G[A/B compare]
     G --> H[Render high-quality offline]
@@ -250,6 +263,8 @@ Key product behaviors:
 - Provide A/B comparison and loudness-matched auditioning.
 - Preserve originals and render nondestructively.
 - Offer presets for novice users and advanced panels for repair specialists.
+- Include difference monitoring and reblend controls so users can hear what was removed and restore some ambience/noise when the cleanup feels overdone.
+- Split processing into Natural, Balanced, and Restoration HQ modes. Natural should lean on conservative DSP and lighter ML, Balanced should be the default smart chain, and Restoration HQ should allow slower multi-pass/generative rendering.
 - Label generative restoration as reconstructive, especially for archival or forensic contexts.
 
 ## Competitive Landscape
@@ -288,6 +303,8 @@ Ship a standalone batch app with:
 - Convolution or FDN reverb as controlled post-cleanup ambience.
 - Basic loudness normalization and limiter.
 - A/B compare with gain matching.
+- Difference monitor and reblend control.
+- Natural / Balanced / Restoration HQ processing modes.
 - Nondestructive render queue.
 
 This phase should prove the restoration UX and offline packaging before adding heavier creative workflows.
@@ -322,7 +339,9 @@ Live preview should be intentionally simpler than offline render.
 Evaluate:
 
 - UniPASE, Miipher-style, USEMamba, or later universal restorers.
+- VoiceRestore / flow-matching transformer restoration.
 - Diffusion or flow-matching restoration for extreme damage.
+- BUDDy-style blind dereverberation.
 - LavaSR/NU-Wave/flow-matching-style super-resolution for bandwidth-limited recordings.
 - RoFormer-family separators if they beat Demucs in internal benchmarks.
 
@@ -346,11 +365,13 @@ Metrics:
 - PESQ for speech quality, with exact implementation/version logged.
 - STOI for intelligibility.
 - SRMR for reverberation-sensitive reference-free checks.
+- DNSMOS and NISQA-style non-intrusive quality checks for automated regression screening.
 - SDR-family source-separation metrics for stems, with listening tests because metric/perception alignment varies by stem.
 
 Datasets and test sources:
 
 - DNS/EARS-style speech enhancement sets.
+- URGENT-style multi-distortion evaluation for additive noise, reverb, clipping, bandwidth extension, codec artifacts, packet loss, and wind noise.
 - SingVERSE for singing enhancement and speech-to-singing mismatch.
 - ReverbFX / SingingReverbFX for vocal reverb behavior.
 - MUSDB18HQ for music source separation.
@@ -381,7 +402,7 @@ Known friction points:
 - `facebookresearch/denoiser` is non-commercially licensed and should not be a core commercial dependency.
 - VoiceFixer-style repos and mirrored weights need explicit confirmation before distribution.
 - AudioSR should be treated as commercially blocked because of AudioLDM / CC-BY-NC lineage unless a separate clean license is obtained.
-- ReverbFX may have conflicting repo-versus-paper license signals; treat the dataset as potentially non-commercial until confirmed directly.
+- ReverbFX may have conflicting repo-versus-paper license signals; treat the dataset as potentially non-commercial until confirmed directly. The newer OpenAI research doc specifically frames SingingReverbFX/ReverbFX as non-commercial research material, so do not train a shipping commercial model on it without clearing rights.
 - Individual Demucs/RoFormer checkpoints can have different licenses than their training code.
 - Miipher-2 is strategically important but not open-weight in the primary research path.
 
@@ -399,6 +420,8 @@ Before locking the stack, verify every dependency at both code and model-weight 
 - Which model-weight licenses are acceptable for redistribution?
 - Does v1 need plugin formats within six months? If yes, JUCE moves from future option to primary architecture.
 - Can diffusion models be exported cleanly to ONNX, or is a `candle`/`tch-rs` fallback needed for those modules?
+- Is the desired product identity closer to a Rust/Tauri suite app, a pro-audio C++/JUCE editor, or a C++ core with Qt workstation UI?
+- Is long-term DAW integration a simple VST3/CLAP convenience path, or a serious ARA clip-restoration workflow?
 
 ## Final Recommendation
 
@@ -410,7 +433,8 @@ Build Vocal Polish v1 as a standalone, offline, modular desktop app:
 4. Use Demucs for sung vocals inside mixes, then evaluate RoFormer and SRS-style singing restoration once exact artifacts are license-clean.
 5. Use RMVPE or Basic Pitch for pitch analysis, then WORLD/PSOLA or licensed Rubber Band for pitch/time manipulation.
 6. Use ONNX Runtime as the default inference runtime, with a native worker-thread architecture that keeps ML out of the audio callback.
-7. Choose Rust/Tauri for a small modern standalone app, or Qt if faster traditional desktop UI development is more important.
-8. Keep JUCE/plugin support and universal generative restorers on the roadmap rather than making them v1 constraints.
+7. Choose Rust/Tauri for a small modern standalone app, or choose C++20 with JUCE/Qt if the product is aiming for a deeper pro-audio editor and future plugin/ARA integration.
+8. Build the UX around a spectrogram-native restoration workstation with Natural, Balanced, and Restoration HQ modes plus difference/reblend controls.
+9. Keep plugin support and universal generative restorers on the roadmap rather than making them v1 constraints.
 
 This gives the product the strongest path through the current tradeoffs: good offline quality, commercially safer dependencies, responsive preview, deterministic repair for local defects, and a future path toward heavier universal restoration models once their deployment maturity catches up to their research promise.
