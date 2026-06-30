@@ -538,6 +538,18 @@ These four tests turn invariants into contracts. They run on every PR, gate rele
 - **Output SR/bit-depth:** matches input unless user overrode; MossFormer2 internal 48 kHz resample is logged in the report and does not change export SR.
 - **ORT C++ version pin:** assert `ort::api().version()` matches the pinned 1.26.x C++ string at app start.
 
+### 7.7 Engineering hygiene & testing discipline (repo policy)
+
+Adopted from the Yes suite (yes-master / yes-daw audit, 2026-06-29) with the gaps they lacked closed. Full reference: `CLAUDE.md` + `docs/TESTING.md`.
+
+- **Mechanical-only verification.** Dan does not read diffs or hand-verify by ear/eye; every check is a self-asserting test (exit 0/1), a CI gate, or a golden compare. The only human-ear gates are the blind-listening sign-offs (§6 singing gate / #16 and final eval / #21), marked `hitl`.
+- **One canonical gate, byte-identical locally and in CI:** `cargo xtask gate` = `cargo fmt --check` → `cargo clippy --all-targets -- -D warnings` → `cargo test` → `cargo deny check`. CI matrix = Windows + macOS + Linux (Linux is a cheap `cargo test` portability lane even though it is not a v1 ship target).
+- **Hard gates the siblings already enforce, kept verbatim:** `cargo fmt --check`, `cargo clippy -D warnings`, full `cargo test` (unit + integration), warnings-as-errors on our crates only (vendored deps exempt).
+- **Gaps we close that both siblings lacked:** a pre-commit hook (`core.hooksPath .githooks`) running fmt + clippy on staged Rust; `cargo-deny` + `cargo-audit` for code-license / advisory hygiene (distinct from the model-**weights** audit in §7.5); `proptest` for the format/SR/channel contract + parameter value-types; Criterion perf benches guarding the §8.4 <60 s budget.
+- **Golden discipline:** DSP byte-identity buffers + analysis-report goldens regenerate **only** via an explicit `YESVOX_BLESS=1` path (`cargo xtask bless`) an autonomous loop cannot trigger as a side-effect — a loop that makes a red golden green by re-blessing it is a bug, not a fix.
+- **Commit policy:** small green chunks straight to `main`, never squashed, each independently green (`git bisect run cargo test` works), conventional-commit prefixes scoped to the ticket.
+- **Wired in M0 (#1)** before any DSP, so every later slice inherits a green gate to ratchet against — this is what makes autonomous build loops safe.
+
 ## 8. Phased v1 build plan, milestones, risk register & acceptance-criteria matrix
 
 ### 8.1 Build sequence
@@ -556,7 +568,7 @@ flowchart LR
   M6 --> M7[M7 Hardening+Eval]
 ```
 
-**M0 - Core boundary & I/O skeleton.** `yesvox-core` exposing `prepare/process/params/reset/latency`; `symphonia` decode -> f32 planar; `hound` for WAV write + `claxon` for FLAC encode at input SR/bit-depth (both with the §7.6 metadata round-trip contract); channel handling (mono / dual-mono with three-state link enum); streamed overlap-add scaffold (30 s / 2 s); analysis-report struct; null-test CI + offline-syscall CI + byte-hash CI + same-length CI wired; settings-schema v1 with reserved `singing.*` slot. **Deps:** none.
+**M0 - Core boundary & I/O skeleton.** `yesvox-core` exposing `prepare/process/params/reset/latency`; `symphonia` decode -> f32 planar; `hound` for WAV write + `claxon` for FLAC encode at input SR/bit-depth (both with the §7.6 metadata round-trip contract); channel handling (mono / dual-mono with three-state link enum); streamed overlap-add scaffold (30 s / 2 s); analysis-report struct; null-test CI + offline-syscall CI + byte-hash CI + same-length CI wired; settings-schema v1 with reserved `singing.*` slot. Plus the §7.7 hygiene baseline: the `cargo xtask gate` command, `fmt` / `clippy -D warnings` / `cargo-deny` gates, the pre-commit hook, and the Win/macOS/Linux CI matrix — all green before #1 closes, so every later slice inherits a ratcheting gate. **Deps:** none.
 
 **M1 - Deterministic DSP rack.** Native STFT/iSTFT, A-SPADE declip, AR/LSAR de-click + de-crackle (shared `TransientBus` with duration thresholds), de-pop, IIR notch/comb de-hum (F0 from analysis), broadband + multiband de-ess (sidechain HP). Per-module bypass + all-bypass null gate hard-wired in CI. **Deps:** M0.
 
@@ -628,6 +640,7 @@ These are scope guards, not delayed features. They are out forever because they 
 | ORT C++ pin | `ort::api().version()` matches pinned 1.26.x string at app start | exact match |
 | Reject path | Silence-only / clipping-only / corrupt / mix-not-stem inputs | explicit blocking error w/ actionable message |
 | De-reverb stereo-link default | At `prepare`, `stereo_link == Detector` for `dereverb` and `limiter` | enforced |
+| Engineering hygiene gate | `cargo xtask gate` (fmt + clippy -D warnings + test + deny) on Win/macOS/Linux CI | green on every push |
 
 ## System-Wide Impact
 
