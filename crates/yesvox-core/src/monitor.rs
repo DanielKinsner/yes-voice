@@ -45,6 +45,20 @@ pub fn loudness_match_gain(from_lufs: f32, to_lufs: f32) -> f32 {
     10f32.powf((to_lufs - from_lufs) / 20.0)
 }
 
+/// Scale every sample of `buffer` by `gain`, inheriting its format — the buffer op
+/// behind "Volume Match" (audition the dry A at the processed B's loudness).
+pub fn apply_gain(buffer: &AudioBuffer, gain: f32) -> AudioBuffer {
+    let channels: Vec<Vec<f32>> = (0..buffer.channel_count().max(1))
+        .map(|ch| buffer.channel(ch).iter().map(|s| s * gain).collect())
+        .collect();
+    AudioBuffer::new(
+        buffer.sample_rate(),
+        buffer.bits_per_sample(),
+        buffer.encoding(),
+        channels,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

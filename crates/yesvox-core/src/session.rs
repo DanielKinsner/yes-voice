@@ -397,6 +397,16 @@ impl Session {
         ))
     }
 
+    /// The dry "A" scaled to the processed "B"'s loudness — the buffer the "Volume
+    /// Match" toggle auditions so the compare is about character, not level.
+    /// `None` until a render exists.
+    pub fn ab_matched_input(&self) -> Option<AudioBuffer> {
+        Some(crate::monitor::apply_gain(
+            self.input.as_ref()?,
+            self.ab_match_gain()?,
+        ))
+    }
+
     /// Run the bound chain on the open vocal, caching the processed result.
     /// Refuses a mix (de-bleed `Block`) with an actionable error.
     pub fn render(&mut self) -> Result<(), SessionError> {
@@ -669,6 +679,29 @@ mod tests {
             assert!((a - b).abs() <= 1e-6, "reblend 1 == original");
         }
         assert!(s.ab_match_gain().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn volume_match_brings_the_dry_to_the_processed_loudness() {
+        let path = temp("vmatch");
+        degraded_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).unwrap();
+        s.render().unwrap();
+        // The "Volume Match" checkbox auditions the dry A at the processed B's
+        // loudness, so the compare is about character, not level.
+        let matched = s.ab_matched_input().unwrap();
+        let m_lufs = integrated_lufs(&matched).unwrap();
+        let out_lufs = s.output_lufs().unwrap();
+        assert!(
+            (m_lufs - out_lufs).abs() <= 0.6,
+            "volume-matched A must sit at B's loudness: {m_lufs} vs {out_lufs}"
+        );
+        // No render yet → nothing to match against.
+        let mut fresh = Session::new();
+        fresh.open(&path).unwrap();
+        assert!(fresh.ab_matched_input().is_none());
         let _ = std::fs::remove_file(&path);
     }
 
