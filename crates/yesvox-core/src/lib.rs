@@ -22,6 +22,7 @@ pub mod neural;
 pub mod preset;
 pub mod processor;
 pub mod quality;
+pub mod session;
 pub mod settings;
 pub mod singing;
 
@@ -48,6 +49,7 @@ pub use quality::{
     linear_residual, resolve, wet_dry_blend, DiffMonitor, Engine, EngineBinding, QualityMode,
     Resolved,
 };
+pub use session::{Session, SessionError};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,
     SCHEMA_VERSION,
