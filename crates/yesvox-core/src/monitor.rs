@@ -59,13 +59,111 @@ pub fn apply_gain(buffer: &AudioBuffer, gain: f32) -> AudioBuffer {
     )
 }
 
+/// Linear amplitude → dBFS, with a −120 dB floor for (near-)silence.
+fn lin_to_db(x: f32) -> f32 {
+    if x <= 1e-6 {
+        -120.0
+    } else {
+        20.0 * x.log10()
+    }
+}
+
+/// Per-bucket `(min, max)` peaks for drawing a waveform without plotting every
+/// sample. `buckets` is the target horizontal resolution; the result has
+/// `min(buckets, frames)` pairs (empty for an empty buffer or `buckets == 0`).
+/// `ch` clamps into range.
+pub fn waveform_peaks(buffer: &AudioBuffer, ch: usize, buckets: usize) -> Vec<(f32, f32)> {
+    let ch = ch.min(buffer.channel_count().saturating_sub(1));
+    let samples = buffer.channel(ch);
+    let n = samples.len();
+    if n == 0 || buckets == 0 {
+        return Vec::new();
+    }
+    let buckets = buckets.min(n);
+    (0..buckets)
+        .map(|b| {
+            let start = b * n / buckets;
+            let end = (((b + 1) * n / buckets).max(start + 1)).min(n);
+            let mut lo = f32::INFINITY;
+            let mut hi = f32::NEG_INFINITY;
+            for &s in &samples[start..end] {
+                lo = lo.min(s);
+                hi = hi.max(s);
+            }
+            (lo, hi)
+        })
+        .collect()
+}
+
+/// Peak level of channel `ch` in dBFS (the static IN/OUT L-R peak meter). `ch`
+/// clamps into range.
+pub fn channel_peak_db(buffer: &AudioBuffer, ch: usize) -> f32 {
+    let ch = ch.min(buffer.channel_count().saturating_sub(1));
+    let peak = buffer
+        .channel(ch)
+        .iter()
+        .fold(0.0f32, |m, &s| m.max(s.abs()));
+    lin_to_db(peak)
+}
+
+/// Whole-buffer RMS level of channel `ch` in dBFS (the static meter's average
+/// bar). A moving readout additionally needs the playback clock (deferred).
+pub fn channel_rms_db(buffer: &AudioBuffer, ch: usize) -> f32 {
+    let ch = ch.min(buffer.channel_count().saturating_sub(1));
+    let s = buffer.channel(ch);
+    if s.is_empty() {
+        return -120.0;
+    }
+    let mean_sq = s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32;
+    lin_to_db(mean_sq.sqrt())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::audio::SampleEncoding;
+    use std::f32::consts::PI;
 
     fn buf(samples: Vec<f32>) -> AudioBuffer {
         AudioBuffer::new(48_000, 24, SampleEncoding::Int, vec![samples])
+    }
+
+    #[test]
+    fn waveform_peaks_bucket_and_channel_meters_read_levels() {
+        // A full-scale ramp −1..1: the bucketed peaks span the whole range.
+        let n = 48_000;
+        let ramp: Vec<f32> = (0..n)
+            .map(|i| -1.0 + 2.0 * i as f32 / (n - 1) as f32)
+            .collect();
+        let b = buf(ramp);
+        let peaks = waveform_peaks(&b, 0, 100);
+        assert_eq!(peaks.len(), 100, "one (min,max) pair per requested bucket");
+        assert!(peaks.iter().all(|p| p.0 <= p.1), "each bucket min ≤ max");
+        let gmin = peaks.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+        let gmax = peaks.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            (gmin + 1.0).abs() < 1e-3 && (gmax - 1.0).abs() < 1e-3,
+            "global peaks span the full ±1 range: {gmin}..{gmax}"
+        );
+        // More buckets than samples clamps gracefully (no empty/blown buckets).
+        let short = buf(vec![0.1, -0.2, 0.3]);
+        assert!(waveform_peaks(&short, 0, 100).len() <= 3);
+        assert!(waveform_peaks(&short, 0, 0).is_empty());
+
+        // −6 dBFS sine on L, silence on R.
+        let amp = 10f32.powf(-6.0 / 20.0);
+        let sine: Vec<f32> = (0..n)
+            .map(|i| amp * (2.0 * PI * 1000.0 * i as f32 / 48_000.0).sin())
+            .collect();
+        let stereo = AudioBuffer::new(48_000, 24, SampleEncoding::Int, vec![sine, vec![0.0; n]]);
+        assert!(
+            (channel_peak_db(&stereo, 0) - (-6.0)).abs() < 0.2,
+            "L peak ≈ −6 dBFS, got {}",
+            channel_peak_db(&stereo, 0)
+        );
+        assert!(channel_peak_db(&stereo, 1) < -100.0, "R is silent");
+        // RMS of a sine is ~3 dB below its peak.
+        assert!((channel_rms_db(&stereo, 0) - (-9.0)).abs() < 0.3);
     }
 
     #[test]
