@@ -11,6 +11,7 @@ pub mod declip;
 pub mod deess;
 pub mod dehum;
 pub mod depop;
+pub mod dereverb;
 pub mod finish;
 pub mod transient;
 
@@ -20,5 +21,6 @@ pub use declip::DeClip;
 pub use deess::{DeEss, DeEssMode};
 pub use dehum::DeHum;
 pub use depop::DePop;
+pub use dereverb::DeReverb;
 pub use finish::{FinishStage, LoudnessTarget};
 pub use transient::{Transient, TransientDetector, TransientKind};
