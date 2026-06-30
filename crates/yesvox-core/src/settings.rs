@@ -1,11 +1,13 @@
 //! Versioned, serializable settings (plan §1.1 `ParamTree`).
 //!
-//! The settings file is versioned (`schema_version`) and **reserves the singing
-//! subtree on day one** so the format never breaks when v1.x turns singing on
-//! (plan §6 release-gate fallback). v1 ships voiceover-only; the `singing` slot
-//! is present, defaulted, and otherwise inert until the singing gate (#16)
-//! passes. Unknown future fields decode via `#[serde(default)]`, so an older
-//! build can still read a newer file's shared fields.
+//! The settings file is versioned (`schema_version`) and carries the singing
+//! subtree. **Singing is a first-class content mode**, selectable via the
+//! Voiceover/Singing toggle; its quality is validated by the *mechanical* singing
+//! gate (the [`crate::singing`] preservation metrics + the synthetic-fixture
+//! gate, plan §6.2) rather than a blind-listening release gate. The toggle is
+//! the safety net — a voiceover user never has to touch singing — so singing
+//! ships on alongside it. Unknown future fields decode via `#[serde(default)]`,
+//! so an older build can still read a newer file's shared fields.
 
 use crate::audio::SampleEncoding;
 use crate::quality::{EngineBinding, QualityMode};
@@ -24,22 +26,25 @@ pub enum ContentMode {
     /// Spoken-word restoration. The v1 default.
     #[default]
     Voiceover,
-    /// Sung-vocal restoration. Reserved; only selectable once the singing gate
-    /// (#16) passes — see [`SingingSettings`].
+    /// Sung-vocal restoration — a first-class mode validated by the mechanical
+    /// singing gate (plan §6.2), not a listening gate. See [`SingingSettings`].
     Singing,
 }
 
-/// The **reserved** singing subtree (plan §6). Present from day one so the
-/// schema is stable, but inert in v1: `unlocked` stays `false` until the
-/// singing release gate (#16) is passed and the UI is wired (#17).
+/// The singing subtree (plan §6). Singing is unlocked by default; its character
+/// preservation is gated mechanically (the [`crate::singing`] metrics on
+/// synthetic fixtures) rather than by a human listening pass.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SingingSettings {
-    /// Whether singing mode has been unlocked by the #16 quality gate. Always
-    /// `false` in v1 — the slot exists only to keep the schema forward-stable.
-    #[serde(default)]
+    /// Whether singing mode is available in the toggle. `true` by default — the
+    /// mechanical singing gate replaces the old listening release gate. (Kept as
+    /// a field so a future build could still hard-disable it without a schema
+    /// break.)
+    #[serde(default = "default_true")]
     pub unlocked: bool,
-    /// Default tail-preservation strength for sung sustains (plan §4.1). Stored
-    /// now so de-reverb defaults don't force a schema bump later.
+    /// Default tail-preservation strength for sung sustains (plan §4.1), applied
+    /// when singing de-reverb is enabled in Advanced (it is off in the stock
+    /// singing presets, which preserve tails by not de-reverbing at all).
     #[serde(default = "default_tail_preservation")]
     pub tail_preservation: f32,
 }
@@ -51,7 +56,7 @@ fn default_tail_preservation() -> f32 {
 impl Default for SingingSettings {
     fn default() -> Self {
         SingingSettings {
-            unlocked: false,
+            unlocked: true,
             tail_preservation: default_tail_preservation(),
         }
     }
@@ -222,12 +227,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_is_versioned_voiceover_with_reserved_singing_slot() {
+    fn default_is_versioned_voiceover_with_singing_unlocked() {
         let s = Settings::default();
         assert_eq!(s.schema_version, SCHEMA_VERSION);
+        // Voiceover is still the default content mode...
         assert_eq!(s.content_mode, ContentMode::Voiceover);
-        // The singing slot exists and is reserved/inert in v1.
-        assert!(!s.singing.unlocked, "singing must ship locked in v1");
+        // ...but singing is a first-class toggle, gated mechanically not by ears.
+        assert!(
+            s.singing.unlocked,
+            "singing ships unlocked, gated by the mechanical singing gate"
+        );
     }
 
     #[test]
@@ -248,7 +257,10 @@ mod tests {
         let minimal = r#"{ "schema_version": 1 }"#;
         let s = Settings::from_json(minimal).unwrap();
         assert_eq!(s.content_mode, ContentMode::Voiceover);
-        assert!(!s.singing.unlocked);
+        assert!(
+            s.singing.unlocked,
+            "missing singing slot decodes to unlocked"
+        );
         assert!(s.export.dither);
         // The additive quality_mode field falls back to the Balanced default.
         assert_eq!(s.quality_mode, QualityMode::Balanced);
