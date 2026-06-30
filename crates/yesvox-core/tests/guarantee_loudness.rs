@@ -73,10 +73,21 @@ fn fixed_target_presets_converge_and_stay_under_the_ceiling() {
     }
 }
 
-// NOTE: a chain-level "every preset keeps true peak ≤ −1.0 dBTP for any input"
-// gate is intentionally NOT asserted here yet: a pre-existing edge bug (a length-
-// specific upstream transient that the limiter's 12 kHz-lowpassed sidechain
-// under-measures — FinishStage alone never overshoots, the full chain does at
-// ~2.0 s) can push true peak above the ceiling. That is #8/#14 limiter/denoise
-// territory, tracked separately; this file gates the loudness-convergence half
-// of the §7.6 contract, which holds.
+#[test]
+fn every_preset_keeps_true_peak_under_the_ceiling() {
+    // Regression for the de-reverb OLA edge blow-up: at certain lengths (e.g.
+    // exactly 2.0 s) de-reverb amplified the trailing edge by ~20 dB and the
+    // limiter couldn't claw it back under the ceiling. Sweep a few lengths,
+    // including the integer-hop 2.0 s case, across every preset.
+    for preset in Preset::ALL {
+        for secs in [2.0f32, 2.5, 3.0] {
+            let out = process_through(&preset, voice_like(secs));
+            let tp = true_peak_dbtp(&out);
+            assert!(
+                tp <= -1.0 + 0.05,
+                "{} at {secs}s: true peak {tp:.2} dBTP exceeds the -1.0 ceiling",
+                preset.name
+            );
+        }
+    }
+}

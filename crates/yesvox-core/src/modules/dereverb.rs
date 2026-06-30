@@ -175,9 +175,18 @@ impl VocalProcessor for DeReverb {
                 }
                 pos += hop;
             }
+            // OLA normalization: divide out the window only where coverage is
+            // adequate. At the signal edges fewer frames overlap, so `norm`
+            // (Σ window²) collapses toward zero; dividing there amplifies the
+            // window tail by ~1/window and blows the edge up by tens of dB. Where
+            // coverage is below a fraction of the fully-overlapped steady state,
+            // fall back to the dry input (the un-reconstructed edge is ~one frame
+            // — inaudible — and never a spike).
+            let peak_norm = norm.iter().cloned().fold(0.0f32, f32::max);
+            let min_norm = (0.5 * peak_norm).max(1e-6);
             let dst = buffer.channel_mut(ch);
             for i in 0..n {
-                dst[i] = if norm[i] > 1e-6 {
+                dst[i] = if norm[i] >= min_norm {
                     out[i] / norm[i]
                 } else {
                     input[i]
@@ -257,6 +266,33 @@ mod tests {
             ratio_db >= 6.0,
             "singing tails must survive ≥6 dB above VO dereverb: {ratio_db} dB"
         );
+    }
+
+    #[test]
+    fn never_blows_up_at_signal_edges() {
+        // Regression: the OLA edge normalization used to divide by a near-zero
+        // window-overlap sum at the trailing edge, amplifying it by tens of dB —
+        // and only at lengths where the frame grid aligned with the end (e.g.
+        // exactly 96 000 samples = an integer number of hops). Sweep lengths
+        // around that case; the output must never massively exceed the input.
+        for n in [95_999usize, 96_000, 96_001, 96_256, 120_000] {
+            let x: Vec<f32> = (0..n)
+                .map(|i| {
+                    let t = i as f32 / SR as f32;
+                    0.18 * ((2.0 * PI * 150.0 * t).sin()
+                        + 0.5 * (2.0 * PI * 300.0 * t).sin()
+                        + 0.3 * (2.0 * PI * 450.0 * t).sin())
+                })
+                .collect();
+            let in_peak = x.iter().fold(0.0f32, |m, &v| m.max(v.abs())).max(1e-9);
+            let out = run(DeReverb::voiceover(), buf(x));
+            let out_peak = out.channel(0).iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+            assert!(
+                out_peak <= in_peak * 2.0,
+                "n={n}: de-reverb amplified the edge {:.1} dB (in {in_peak} -> out {out_peak})",
+                20.0 * (out_peak / in_peak).log10()
+            );
+        }
     }
 
     #[test]
