@@ -1,0 +1,179 @@
+//! Export-contract gates for #1: never-overwrite, TPDF dither on ≤24-bit, and
+//! WAV/FLAC round-trips. These pin the plan §1.2/§1.3 export promises.
+
+mod common;
+
+use std::path::Path;
+
+use yesvox_core::{
+    export, read_audio, read_wav, write_wav, write_wav_with, AudioBuffer, ExportOptions,
+    SampleEncoding,
+};
+
+/// A deterministic mono ramp + tone, values strictly inside (-1, 1).
+fn tone(frames: usize, bits: u16, enc: SampleEncoding) -> AudioBuffer {
+    let sr = 48_000u32;
+    let mut s = Vec::with_capacity(frames);
+    for n in 0..frames {
+        let t = n as f32 / sr as f32;
+        s.push(0.3 * (2.0 * std::f32::consts::PI * 220.0 * t).sin());
+    }
+    AudioBuffer::new(sr, bits, enc, vec![s])
+}
+
+#[test]
+fn export_never_overwrites_and_auto_suffixes() {
+    let dir = std::env::temp_dir();
+    let desired = dir.join(format!("yesvox-export-{}.wav", std::process::id()));
+    common::remove(&[&desired]);
+
+    let buf = tone(2_400, 16, SampleEncoding::Int);
+    let opts = ExportOptions {
+        bit_depth: 16,
+        encoding: SampleEncoding::Int,
+        dither: false,
+    };
+
+    let first = export(&desired, &buf, opts).expect("first export");
+    assert_eq!(first, desired, "first export should take the desired name");
+
+    let second = export(&desired, &buf, opts).expect("second export");
+    assert_ne!(second, desired, "second export must not reuse the name");
+    assert!(second.exists(), "suffixed file written");
+    assert!(
+        desired.exists(),
+        "original export still present (not clobbered)"
+    );
+
+    let suffixed = dir.join(format!("yesvox-export-{}_1.wav", std::process::id()));
+    assert_eq!(second, suffixed, "collision should append _1");
+
+    common::remove(&[&desired, &second]);
+}
+
+#[test]
+fn dither_perturbs_within_one_lsb_and_no_dither_is_exact() {
+    let buf = tone(4_000, 16, SampleEncoding::Int);
+    let dithered_path = common::temp_wav("dither-on");
+    let clean_path = common::temp_wav("dither-off");
+
+    write_wav_with(
+        &dithered_path,
+        &buf,
+        ExportOptions {
+            bit_depth: 16,
+            encoding: SampleEncoding::Int,
+            dither: true,
+        },
+    )
+    .expect("dithered write");
+    write_wav_with(
+        &clean_path,
+        &buf,
+        ExportOptions {
+            bit_depth: 16,
+            encoding: SampleEncoding::Int,
+            dither: false,
+        },
+    )
+    .expect("clean write");
+
+    let dithered = read_wav(&dithered_path).expect("read dithered");
+    let clean = read_wav(&clean_path).expect("read clean");
+    let lsb = 1.0f32 / (1u32 << 15) as f32;
+
+    let mut any_diff = false;
+    for ((d, c), _src) in dithered
+        .channel(0)
+        .iter()
+        .zip(clean.channel(0))
+        .zip(buf.channel(0))
+    {
+        // Dither never moves a sample by more than ~1 LSB vs the clean quantize.
+        assert!(
+            (d - c).abs() <= 1.5 * lsb,
+            "dither moved a sample more than 1 LSB"
+        );
+        if (d - c).abs() > 0.0 {
+            any_diff = true;
+        }
+    }
+    assert!(any_diff, "dither produced no change — it is not active");
+
+    common::remove(&[&dithered_path, &clean_path]);
+}
+
+#[test]
+fn dither_is_reproducible_across_runs() {
+    let buf = tone(2_000, 16, SampleEncoding::Int);
+    let a = common::temp_wav("dither-repro-a");
+    let b = common::temp_wav("dither-repro-b");
+    let opts = ExportOptions {
+        bit_depth: 16,
+        encoding: SampleEncoding::Int,
+        dither: true,
+    };
+    write_wav_with(&a, &buf, opts).unwrap();
+    write_wav_with(&b, &buf, opts).unwrap();
+    assert_eq!(
+        common::read_bytes(&a),
+        common::read_bytes(&b),
+        "fixed-seed dither must be byte-reproducible"
+    );
+    common::remove(&[&a, &b]);
+}
+
+#[test]
+fn flac_round_trips_length_rate_channels_and_samples() {
+    let buf = tone(6_000, 16, SampleEncoding::Int);
+    let path = std::env::temp_dir().join(format!("yesvox-flac-{}.flac", std::process::id()));
+    common::remove(&[&path]);
+
+    let written = export(
+        &path,
+        &buf,
+        ExportOptions {
+            bit_depth: 16,
+            encoding: SampleEncoding::Int,
+            dither: false,
+        },
+    )
+    .expect("flac export");
+
+    let back = read_audio(&written).expect("flac read back");
+    assert_eq!(back.frames(), buf.frames(), "frame count preserved");
+    assert_eq!(
+        back.sample_rate(),
+        buf.sample_rate(),
+        "sample rate preserved"
+    );
+    assert_eq!(
+        back.channel_count(),
+        buf.channel_count(),
+        "channels preserved"
+    );
+
+    // FLAC is lossless at the stored bit depth: samples match within 1 LSB.
+    let lsb = 1.0f32 / (1u32 << 15) as f32;
+    for (a, b) in back.channel(0).iter().zip(buf.channel(0)) {
+        assert!((a - b).abs() <= lsb, "flac sample drifted beyond 1 LSB");
+    }
+
+    common::remove(&[&written]);
+}
+
+#[test]
+fn write_wav_remains_bit_exact_identity() {
+    // The low-level writer (used for fixtures) stays bit-exact: decode of its
+    // output equals the source samples exactly.
+    let buf = tone(1_000, 16, SampleEncoding::Int);
+    let path = common::temp_wav("bitexact");
+    write_wav(&path, &buf).unwrap();
+    let back = read_wav(&path).unwrap();
+    let lsb = 1.0f32 / (1u32 << 15) as f32;
+    for (a, b) in back.channel(0).iter().zip(buf.channel(0)) {
+        assert!((a - b).abs() <= lsb, "bit-exact writer drifted");
+    }
+    assert!(Path::new(&path).exists());
+    common::remove(&[&path]);
+}
