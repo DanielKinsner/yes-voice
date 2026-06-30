@@ -18,6 +18,7 @@ pub mod io;
 pub mod loudness;
 pub mod modules;
 pub mod neural;
+pub mod preset;
 pub mod processor;
 pub mod quality;
 pub mod settings;
@@ -38,6 +39,7 @@ pub use modules::{
     BleedVerdict, BreathControl, DeBleed, DeClick, DeClip, DeEss, DeEssMode, DeHum, DePop,
     DeReverb, FinishStage, LoudnessTarget,
 };
+pub use preset::Preset;
 pub use processor::{Passthrough, VocalProcessor};
 pub use quality::{
     linear_residual, resolve, wet_dry_blend, DiffMonitor, Engine, EngineBinding, QualityMode,
