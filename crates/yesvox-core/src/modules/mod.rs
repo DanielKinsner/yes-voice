@@ -6,6 +6,7 @@
 //! chain. Modules are added one slice at a time and chained by the host.
 
 pub mod breath;
+pub mod debleed;
 pub mod declick;
 pub mod declip;
 pub mod deess;
@@ -16,6 +17,7 @@ pub mod finish;
 pub mod transient;
 
 pub use breath::BreathControl;
+pub use debleed::{BleedVerdict, DeBleed};
 pub use declick::DeClick;
 pub use declip::DeClip;
 pub use deess::{DeEss, DeEssMode};

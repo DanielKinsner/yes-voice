@@ -22,6 +22,7 @@ pub trait Denoiser: Send + Sync {
 }
 
 /// Deterministic STFT spectral-gating denoiser (the v1 CPU engine).
+#[derive(Clone)]
 pub struct SpectralDenoiser {
     frame: usize,
     hop: usize,
