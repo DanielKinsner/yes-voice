@@ -174,21 +174,23 @@ impl VocalProcessor for Denoise {
 }
 
 /// Blend a conditional second denoise pass into `pass1` only where it still
-/// carries low-level broadband noise (plan §2.4). A smoothed energy envelope of
-/// `pass1` drives a trapezoidal gate: residual noise between roughly −52 and
-/// −40 dBFS gets the full second pass, the gate ramps to zero by −20 dBFS (loud
-/// voiced frames are protected) and below a ~−58 dBFS floor (already quiet).
-/// The envelope is continuous, so the blend is click-free.
+/// carries low-level broadband noise (plan §2.4). The gate keys on a smoothed
+/// short-term **RMS** level (a fast-attack/slow-release one-pole over `pass1²`,
+/// then `10·log10`), so its dBFS thresholds mean what §3's RMS noise-floor
+/// estimator means: residual noise between roughly −52 and −40 dBFS gets the
+/// full second pass, the gate ramps to zero by −20 dBFS (loud voiced frames are
+/// protected) and below a ~−58 dBFS floor (already quiet). The envelope is
+/// continuous, so the blend is click-free.
 fn gate_second_pass(pass1: &[f32], pass2: &[f32], sample_rate: f32) -> Vec<f32> {
     let atk = (-1.0 / (0.005 * sample_rate)).exp(); // 5 ms
     let rel = (-1.0 / (0.050 * sample_rate)).exp(); // 50 ms
-    let mut env = 0.0f32;
+    let mut power = 0.0f32;
     let mut out = Vec::with_capacity(pass1.len());
     for (i, &p1) in pass1.iter().enumerate() {
-        let a = p1.abs();
-        let coeff = if a > env { atk } else { rel };
-        env = coeff * env + (1.0 - coeff) * a;
-        let dbfs = 20.0 * env.max(1.0e-7).log10();
+        let inst = p1 * p1;
+        let coeff = if inst > power { atk } else { rel };
+        power = coeff * power + (1.0 - coeff) * inst;
+        let dbfs = 10.0 * power.max(1.0e-12).log10();
         let g = gate(dbfs);
         let p2 = pass2.get(i).copied().unwrap_or(p1);
         out.push(p1 + g * (p2 - p1));
@@ -196,8 +198,8 @@ fn gate_second_pass(pass1: &[f32], pass2: &[f32], sample_rate: f32) -> Vec<f32> 
     out
 }
 
-/// Trapezoidal gate over the short-term level (dBFS): 0 below −58, ramps to 1 by
-/// −52, holds 1 to −40, ramps back to 0 by −20.
+/// Trapezoidal gate over the short-term RMS level (dBFS): 0 below −58, ramps to
+/// 1 by −52, holds 1 to −40, ramps back to 0 by −20.
 fn gate(dbfs: f32) -> f32 {
     const LO_A: f32 = -58.0;
     const LO_B: f32 = -52.0;
