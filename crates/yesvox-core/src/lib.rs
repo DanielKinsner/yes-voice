@@ -25,7 +25,7 @@ pub use audio::{AudioBuffer, ChannelLayout, SampleEncoding};
 pub use io::{
     export, read_audio, read_flac, read_wav, write_flac_with, write_wav, write_wav_with, IoError,
 };
-pub use modules::DeHum;
+pub use modules::{DeClip, DeHum};
 pub use processor::{Passthrough, VocalProcessor};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,

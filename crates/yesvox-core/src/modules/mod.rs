@@ -5,6 +5,8 @@
 //! the sample-accurate identity** so the NULL guarantee survives the whole
 //! chain. Modules are added one slice at a time and chained by the host.
 
+pub mod declip;
 pub mod dehum;
 
+pub use declip::DeClip;
 pub use dehum::DeHum;
