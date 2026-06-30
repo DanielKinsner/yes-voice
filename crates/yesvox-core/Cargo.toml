@@ -25,3 +25,9 @@ ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, fea
     "api-24",
     "tracing",
 ] }
+
+[dev-dependencies]
+# Property lane (plan §7.7 / TESTING.md): the format/SR/channel contract and
+# value-type/param-range invariants. Default-features off to avoid the `fork`/
+# `timeout` (rusty-fork) subprocess machinery — pure in-process properties.
+proptest = { version = "1", default-features = false, features = ["std"] }
