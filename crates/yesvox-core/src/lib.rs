@@ -27,7 +27,7 @@ pub use denoise::{ChunkPolicy, Denoise, Denoiser, RamPreflight, SpectralDenoiser
 pub use io::{
     export, read_audio, read_flac, read_wav, write_flac_with, write_wav, write_wav_with, IoError,
 };
-pub use modules::{DeClick, DeClip, DeEss, DeEssMode, DeHum, DePop};
+pub use modules::{DeClick, DeClip, DeEss, DeEssMode, DeHum, DePop, FinishStage, LoudnessTarget};
 pub use processor::{Passthrough, VocalProcessor};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,
