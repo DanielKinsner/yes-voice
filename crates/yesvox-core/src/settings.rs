@@ -8,6 +8,7 @@
 //! build can still read a newer file's shared fields.
 
 use crate::audio::SampleEncoding;
+use crate::quality::{EngineBinding, QualityMode};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -114,6 +115,10 @@ pub struct Settings {
     /// Active content mode (voiceover in v1).
     #[serde(default)]
     pub content_mode: ContentMode,
+    /// Processing intensity — owns the denoise engine binding (plan §2.4, #11).
+    /// Additive field; older files default it to [`QualityMode::Balanced`].
+    #[serde(default)]
+    pub quality_mode: QualityMode,
     /// Export preferences.
     #[serde(default)]
     pub export: ExportSettings,
@@ -127,9 +132,18 @@ impl Default for Settings {
         Settings {
             schema_version: SCHEMA_VERSION,
             content_mode: ContentMode::default(),
+            quality_mode: QualityMode::default(),
             export: ExportSettings::default(),
             singing: SingingSettings::default(),
         }
+    }
+}
+
+impl Settings {
+    /// The engine binding for the active intensity. Presets set `quality_mode`
+    /// but never touch this — the binding is a pure function of the mode (#11).
+    pub fn engine_binding(&self) -> EngineBinding {
+        self.quality_mode.binding()
     }
 }
 
@@ -236,6 +250,20 @@ mod tests {
         assert_eq!(s.content_mode, ContentMode::Voiceover);
         assert!(!s.singing.unlocked);
         assert!(s.export.dither);
+        // The additive quality_mode field falls back to the Balanced default.
+        assert_eq!(s.quality_mode, QualityMode::Balanced);
+    }
+
+    #[test]
+    fn quality_mode_round_trips_and_drives_the_binding() {
+        let s = Settings {
+            quality_mode: QualityMode::RestorationHq,
+            ..Settings::default()
+        };
+        let back = Settings::from_json(&s.to_json().unwrap()).unwrap();
+        assert_eq!(back.quality_mode, QualityMode::RestorationHq);
+        // The engine is derived from the mode — no field to override it.
+        assert_eq!(back.engine_binding(), QualityMode::RestorationHq.binding());
     }
 
     #[test]

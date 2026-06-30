@@ -18,6 +18,7 @@ pub mod loudness;
 pub mod modules;
 pub mod neural;
 pub mod processor;
+pub mod quality;
 pub mod settings;
 
 pub use analysis::{
@@ -33,6 +34,10 @@ pub use modules::{
     DeReverb, FinishStage, LoudnessTarget,
 };
 pub use processor::{Passthrough, VocalProcessor};
+pub use quality::{
+    linear_residual, resolve, wet_dry_blend, DiffMonitor, Engine, EngineBinding, QualityMode,
+    Resolved,
+};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,
     SCHEMA_VERSION,
