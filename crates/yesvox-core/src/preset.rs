@@ -38,7 +38,9 @@ pub struct Preset {
     pub loudness_target: LoudnessTarget,
     /// Whether de-reverb runs (singing presets keep it off to protect tails).
     pub dereverb_enabled: bool,
-    /// The de-ess implementation (Split for voiceover, Wide for singing).
+    /// The de-ess implementation. Split (sibilant-band only) for both voiceover
+    /// and singing so the body/sustain is never ducked; Wide stays available in
+    /// Advanced.
     pub deess_mode: DeEssMode,
     /// Breath attenuation in dB; `None` turns breath control off (singing).
     pub breath_db: Option<f32>,
@@ -89,29 +91,30 @@ impl Preset {
         air_db: 0.0,
     };
 
-    /// Lead Vocal (singing) — tail-preserving (de-reverb off), multiband de-ess,
-    /// breath off, a touch of air, streaming loudness (§5.7). Gated by #16.
+    /// Lead Vocal (singing) — tail-preserving (de-reverb off), split-band de-ess
+    /// (only the sibilant band, so sustains aren't ducked), breath off, a touch
+    /// of air, streaming loudness (§5.7, research §5/§6).
     pub const LEAD_VOCAL: Preset = Preset {
         name: "Lead Vocal",
         content_mode: ContentMode::Singing,
         intensity_default: QualityMode::Balanced,
         loudness_target: LoudnessTarget::Streaming,
         dereverb_enabled: false,
-        deess_mode: DeEssMode::Wide,
+        deess_mode: DeEssMode::Split,
         breath_db: None,
         presence_db: 0.0,
         air_db: 1.0,
     };
 
-    /// Natural Vocal (singing) — most conservative: light (Natural) denoise, no
-    /// finish boosts, match-input loudness (§5.7). Gated by #16.
+    /// Natural Vocal (singing) — most conservative: light (Natural) denoise,
+    /// gentle split-band de-ess, no finish boosts, match-input loudness (§5.7).
     pub const NATURAL_VOCAL: Preset = Preset {
         name: "Natural Vocal",
         content_mode: ContentMode::Singing,
         intensity_default: QualityMode::Natural,
         loudness_target: LoudnessTarget::MatchInput,
         dereverb_enabled: false,
-        deess_mode: DeEssMode::Wide,
+        deess_mode: DeEssMode::Split,
         breath_db: None,
         presence_db: 0.0,
         air_db: 0.0,
@@ -158,6 +161,13 @@ impl Preset {
         let mut finish = FinishStage::new(self.loudness_target);
         finish.set_eq(self.presence_db, self.air_db);
 
+        // Sung sibilants want a gentler hand: duck less, floor the gain higher,
+        // so falsetto/breathy HF isn't over-attenuated (research §6).
+        let mut deess = DeEss::new(self.deess_mode);
+        if self.content_mode == ContentMode::Singing {
+            deess.set_sensitivity(0.6, 0.25);
+        }
+
         Chain {
             // Restoration always runs (plan §5.7): declip/de-click/de-pop/de-hum
             // are on in every preset; de-bleed stays off for a native take.
@@ -168,7 +178,7 @@ impl Preset {
             dehum: DeHum::default(),
             denoise: Denoise::with_engine(workers, denoiser),
             dereverb,
-            deess: DeEss::new(self.deess_mode),
+            deess,
             breath,
             finish,
             last_shared_hf_db: 0.0,
@@ -202,8 +212,8 @@ mod tests {
             assert_eq!(p.breath_db, None, "singing leaves breaths intact");
             assert_eq!(
                 p.deess_mode,
-                DeEssMode::Wide,
-                "singing uses multiband de-ess"
+                DeEssMode::Split,
+                "singing uses split-band de-ess so sustains aren't ducked (research §5)"
             );
         }
     }
@@ -248,7 +258,7 @@ mod tests {
         let chain = Preset::LEAD_VOCAL.build_chain(light(), 2);
         assert!(!chain.dereverb.enabled(), "Lead Vocal keeps de-reverb off");
         assert!(!chain.breath.enabled(), "Lead Vocal leaves breaths intact");
-        assert_eq!(chain.deess.mode(), DeEssMode::Wide);
+        assert_eq!(chain.deess.mode(), DeEssMode::Split);
     }
 
     #[test]

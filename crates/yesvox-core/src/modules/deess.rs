@@ -77,6 +77,16 @@ impl DeEss {
         self.mode
     }
 
+    /// Tune how hard de-essing works. `ess_ratio` is the allowed sibilance-band
+    /// level as a fraction of broadband (higher = ducks less; reserve attenuation
+    /// for genuinely harsh fricatives); `min_gain` floors the ducking gain
+    /// (higher = less maximum attenuation). Singing uses a gentler pair so a
+    /// soaring falsetto or breathy whisper isn't over-ducked (research §6).
+    pub fn set_sensitivity(&mut self, ess_ratio: f32, min_gain: f32) {
+        self.ess_ratio = ess_ratio.clamp(0.05, 1.0);
+        self.min_gain = min_gain.clamp(0.0, 1.0);
+    }
+
     /// High-frequency reduction applied on the last `process`, in dB. Breath
     /// control (#13) reads this to avoid double-cutting the shared HF band.
     pub fn hf_reduction_db(&self) -> f32 {
@@ -216,6 +226,19 @@ mod tests {
         assert!(
             (red_loud - red_soft).abs() < 3.0,
             "reduction should be level-independent: {red_loud} vs {red_soft}"
+        );
+    }
+
+    #[test]
+    fn gentler_sensitivity_ducks_less() {
+        let x = voice_with_ess(1.0, 24_000);
+        let (_d, default_red) = run(DeEss::new(DeEssMode::Split), &buf(x.clone()));
+        let mut gentle = DeEss::new(DeEssMode::Split);
+        gentle.set_sensitivity(0.6, 0.25); // singing: duck less, floor higher
+        let (_g, gentle_red) = run(gentle, &buf(x));
+        assert!(
+            gentle_red < default_red,
+            "gentler de-ess should reduce HF less: gentle {gentle_red} vs default {default_red} dB"
         );
     }
 

@@ -127,7 +127,7 @@ pub struct Settings {
     /// Export preferences.
     #[serde(default)]
     pub export: ExportSettings,
-    /// Reserved singing subtree (plan §6); inert in v1.
+    /// Singing subtree (plan §6); unlocked, gated by the mechanical singing gate.
     #[serde(default)]
     pub singing: SingingSettings,
 }
