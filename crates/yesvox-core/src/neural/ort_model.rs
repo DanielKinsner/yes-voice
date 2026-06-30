@@ -19,10 +19,16 @@
 //! discovered at first use via `ORT_DYLIB_PATH`.
 
 use super::engine::MaskModel;
+use ort::execution_providers::{ExecutionProviderDispatch, CPU, CUDA};
 use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
 use std::sync::Mutex;
+
+#[cfg(target_os = "macos")]
+use ort::execution_providers::CoreML;
+#[cfg(target_os = "windows")]
+use ort::execution_providers::DirectML;
 
 const FEAT_DIM: usize = 180;
 const MASK_BINS: usize = 961;
@@ -45,7 +51,9 @@ impl OrtMaskModel {
     /// so callers feed exactly 256-frame windows; the forthcoming chunked
     /// decoder slices longer signals into overlapping 256-frame windows.
     pub fn from_file(path: impl AsRef<Path>) -> ort::Result<Self> {
-        let session = Session::builder()?.commit_from_file(path)?;
+        let session = Session::builder()?
+            .with_execution_providers(preferred_providers())?
+            .commit_from_file(path)?;
         let input_name = session.inputs()[0].name().to_string();
         let output_name = session.outputs()[0].name().to_string();
         Ok(OrtMaskModel {
@@ -54,6 +62,24 @@ impl OrtMaskModel {
             output_name,
         })
     }
+}
+
+/// Execution providers in preference order, ending in the always-available CPU
+/// provider. ONNX Runtime registers each in turn and silently skips any not
+/// present in the loaded runtime (logged via `tracing`), so hardware
+/// acceleration is negotiated at runtime with a guaranteed, transparent CPU
+/// fallback (plan §2.2 / #10). The platform GPU EP is preferred first; CUDA is
+/// offered where present; CPU always closes the list.
+#[allow(clippy::vec_init_then_push)] // cfg-gated platform EPs preclude a vec! literal
+fn preferred_providers() -> Vec<ExecutionProviderDispatch> {
+    let mut eps: Vec<ExecutionProviderDispatch> = Vec::new();
+    #[cfg(target_os = "windows")]
+    eps.push(DirectML::default().build());
+    #[cfg(target_os = "macos")]
+    eps.push(CoreML::default().build());
+    eps.push(CUDA::default().build());
+    eps.push(CPU::default().build());
+    eps
 }
 
 impl MaskModel for OrtMaskModel {

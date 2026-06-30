@@ -63,8 +63,10 @@ pub struct AnalysisReport {
     pub content: ContentGuess,
     /// Residual non-vocal energy fraction `[0, 1]` (used later by de-bleed #15).
     pub residual_nonvocal: f32,
-    /// Whether the batch engine's internal 48 kHz resample was used (set by #10;
-    /// `false` from the analyzer alone).
+    /// Whether selecting the batch (HQ) engine will engage its internal 48 kHz
+    /// resample for this input — true whenever the source is not already 48 kHz
+    /// (plan §2.2; #10). The UI surfaces this so the internal rate conversion is
+    /// transparent; export still matches the source rate.
     pub resampled_for_batch: bool,
 }
 
@@ -164,7 +166,8 @@ pub fn analyze(buffer: &AudioBuffer) -> Result<AnalysisReport, AnalysisError> {
         reverb_time_s,
         content,
         residual_nonvocal,
-        resampled_for_batch: false,
+        // The 48 kHz-only batch engine resamples any non-48 kHz source.
+        resampled_for_batch: buffer.sample_rate() != 48_000,
     })
 }
 
@@ -494,6 +497,16 @@ mod tests {
         assert!(r.true_peak_dbtp < 0.5);
         assert!(r.content.confidence >= 0.0 && r.content.confidence <= 1.0);
         assert!(r.residual_nonvocal >= 0.0 && r.residual_nonvocal <= 1.0);
+    }
+
+    #[test]
+    fn batch_resample_flag_tracks_sample_rate() {
+        // 48 kHz source: the batch engine needs no internal resample.
+        let r48 = analyze(&buf(sine(0.5, 220.0, 48_000, 48_000), 48_000)).expect("report");
+        assert!(!r48.resampled_for_batch, "48 kHz needs no resample");
+        // Any other rate flags the internal 48 kHz conversion.
+        let r44 = analyze(&buf(sine(0.5, 220.0, 44_100, 44_100), 44_100)).expect("report");
+        assert!(r44.resampled_for_batch, "44.1 kHz flags batch resample");
     }
 
     #[test]
