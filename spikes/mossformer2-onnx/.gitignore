@@ -1,0 +1,6 @@
+# Model weights + exported graphs are large and license-bundled separately
+# (plan §7.5) — never committed. Regenerate via export_and_verify.py.
+*.onnx
+*.wav
+checkpoints/
+__pycache__/

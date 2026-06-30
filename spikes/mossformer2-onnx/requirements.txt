@@ -1,0 +1,15 @@
+# Pinned-ish toolchain for the #9 export spike (Python 3.13).
+# Note the two cross-constraints discovered on 3.13:
+#   - onnx needs ml_dtypes>=0.5.1 (for float4_e2m1fn)
+#   - numba (via librosa, via clearvoice) needs numpy<=2.2
+# so numpy is pinned to the 2.2 line.
+clearvoice
+torch
+torchaudio
+numpy>=2.2,<2.3
+ml_dtypes>=0.5.1
+onnx
+onnxruntime
+onnxscript
+onnxconverter-common
+pesq
