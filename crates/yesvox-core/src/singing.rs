@@ -123,6 +123,64 @@ pub fn f0_cents_deviation(reference: &[f32], processed: &[f32], sr: f32) -> Cent
     }
 }
 
+/// A vibrato estimate: oscillation rate (Hz) and depth (cents, peak amplitude).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Vibrato {
+    /// Vibrato rate, Hz (typical sung vibrato is ~4–7 Hz).
+    pub rate_hz: f32,
+    /// Vibrato depth, cents (peak excursion of the F0 contour).
+    pub depth_cents: f32,
+}
+
+/// Frame rate of [`pitch_contour`] (frames per second).
+const FRAME_RATE: f32 = 1.0 / HOP_S;
+
+/// Estimate vibrato from a signal's F0 contour: detrend the voiced contour to
+/// cents about its own median, take the peak amplitude as depth, and find the
+/// dominant oscillation rate by autocorrelation over the 3–9 Hz band. Returns
+/// `None` if there isn't enough voiced support.
+pub fn vibrato(signal: &[f32], sr: f32) -> Option<Vibrato> {
+    let voiced: Vec<f32> = pitch_contour(signal, sr).into_iter().flatten().collect();
+    if voiced.len() < 24 {
+        return None;
+    }
+    let mut sorted = voiced.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = sorted[sorted.len() / 2];
+    // Contour in cents about the median, then remove any residual DC.
+    let mut c: Vec<f32> = voiced.iter().map(|&f| cents(median, f)).collect();
+    let mean = c.iter().sum::<f32>() / c.len() as f32;
+    for v in &mut c {
+        *v -= mean;
+    }
+    let rms = (c.iter().map(|v| v * v).sum::<f32>() / c.len() as f32).sqrt();
+    let depth_cents = rms * std::f32::consts::SQRT_2; // peak of a sinusoid
+
+    let lag_lo = (FRAME_RATE / 9.0) as usize;
+    let lag_hi = (FRAME_RATE / 3.0) as usize;
+    let energy: f32 = c.iter().map(|v| v * v).sum();
+    let mut best_lag = 0usize;
+    let mut best = 0.0f32;
+    if energy > 0.0 && lag_hi < c.len() {
+        for lag in lag_lo..=lag_hi {
+            let r: f32 = c.iter().skip(lag).zip(&c).map(|(a, b)| a * b).sum::<f32>() / energy;
+            if r > best {
+                best = r;
+                best_lag = lag;
+            }
+        }
+    }
+    let rate_hz = if best_lag > 0 {
+        FRAME_RATE / best_lag as f32
+    } else {
+        0.0
+    };
+    Some(Vibrato {
+        rate_hz,
+        depth_cents,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +198,48 @@ mod tests {
                     + 0.18 * (2.0 * PI * 3.0 * f0 * t).sin()
             })
             .collect()
+    }
+
+    /// A sung vowel with sinusoidal vibrato: F0 swings ±`depth_cents` at
+    /// `rate_hz`. Phase is accumulated so the harmonics track the vibrato.
+    fn vibrato_note(f0_center: f32, rate_hz: f32, depth_cents: f32, n: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(n);
+        let mut phase = 0.0f32;
+        for i in 0..n {
+            let t = i as f32 / SR;
+            let f0 =
+                f0_center * 2.0_f32.powf((depth_cents / 1200.0) * (2.0 * PI * rate_hz * t).sin());
+            phase += 2.0 * PI * f0 / SR;
+            out.push(0.5 * phase.sin() + 0.3 * (2.0 * phase).sin() + 0.18 * (3.0 * phase).sin());
+        }
+        out
+    }
+
+    #[test]
+    fn vibrato_recovers_known_rate_and_depth() {
+        let x = vibrato_note(220.0, 5.5, 60.0, 96_000); // 2 s
+        let v = vibrato(&x, SR).expect("vibrato present");
+        assert!(
+            (v.rate_hz - 5.5).abs() < 0.7,
+            "rate {} should be ~5.5 Hz",
+            v.rate_hz
+        );
+        assert!(
+            (v.depth_cents - 60.0).abs() < 15.0,
+            "depth {} should be ~60 cents",
+            v.depth_cents
+        );
+    }
+
+    #[test]
+    fn steady_tone_has_negligible_vibrato_depth() {
+        let x = vowel(220.0, 96_000);
+        let v = vibrato(&x, SR).expect("voiced");
+        assert!(
+            v.depth_cents < 10.0,
+            "a steady tone should read shallow, got {} cents",
+            v.depth_cents
+        );
     }
 
     #[test]
