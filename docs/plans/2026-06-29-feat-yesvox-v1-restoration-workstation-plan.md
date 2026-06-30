@@ -408,6 +408,16 @@ No project file. No sidecars. Single versioned settings file:
 
 ## 6. Singing-as-a-gate & the evaluation protocol
 
+> **Update 2026-06-30 — the gate is now MECHANICAL, not blind-listening.** Per
+> Dan's call, the human listening release gate is removed: singing ships as a
+> first-class toggle and its quality is gated in CI by the `singing` metric
+> library on synthetic fixtures (the §6.2 quantitative rows below, implemented in
+> `src/singing.rs` + `tests/singing_gate.rs`). The §6.1 curated reference set and
+> the §6.2 "blind A/B preference (≥3 ears)" row are **no longer ship-blockers** —
+> they remain optional, non-blocking. The toggle is the safety net. The rest of
+> this section is retained as the original protocol + the source of the
+> quantitative thresholds the mechanical gate enforces.
+
 Singing quality is treated as a **release gate**, not a feature flag we hope passes QA. The gate sits between module-rack completion (end of M3 in §8.1, after declip/declick/dehum/denoise/dereverb/deess/breath/loudness are integrated behind the core lib's `process()` boundary) and **before any Standard-UI wiring around the Singing toggle**. Standard-UI work on the Singing path is blocked on a green gate.
 
 ### 6.1 Reference set (`refset/singing/`)
