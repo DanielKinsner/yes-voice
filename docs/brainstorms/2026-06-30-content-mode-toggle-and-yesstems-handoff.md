@@ -21,10 +21,10 @@ Review of the v1 plan surfaced three things to pin down: how content mode (voice
   - **De-risks the singing bet:** keeps **singing a separable mode we can pull from the engine** if it can't clear the quality bar — ship voiceover first, add singing once proven, without re-architecting.
 - Friction is acknowledged and accepted (one click) as a deliberate trade for correctness + the above.
 
-### 2. Separation stays separate (YesStems), with a seamless handoff
-- **YesStems** (sibling product, **demucs-based, already built**) owns separation. YesVox does **not** weld a de-mixer in.
+### 2. Separation stays separate (YesStems); seam designed-for, not built-in
+- **YesStems** (sibling product, **demucs-based, already built**) owns separation. YesVox does **not** weld a de-mixer in, and the two stay **fully separate engines**.
 - **Why separate:** leaner YesVox MVP; voiceover-only users (a big share) never carry a de-mixer; genuinely different tech; plugin/bundle flexibility.
-- **But kill the step-zero friction with an invisible handoff:** a singer drops a full song, one button routes it through YesStems → YesVox already-separated — **"song in → clean vocal out"** — two engines, one experience. (Or a suite bundle wires the path.) This resolves the "bring your own isolated vocal" gap for singers without bloating YesVox.
+- **Handoff is plumbing, not engine-merging — so defer it.** Both apps already speak WAV-in / WAV-out, so keeping them separate makes linking *easier*, not harder. **v1 = a clean manual export → open** (export the vocal from YesStems, open it in YesVox — fine for a technical, stem-separating user). A one-button "Send to YesVox" handoff is a cheap **later** add (an afternoon of file-passing), not a v1 build. **Designed-for, not built-in from day one.** *(Refines the earlier "make it seamless now" instinct — Dan's call, and the right one: don't fuse engines, don't over-build the seam.)*
 
 ### 3. Singing quality is validated EARLY, as a gate
 - Character-preservation on **sung** vocals (vibrato/breath/sustain intact through denoise/de-reverb) is **both the moat and the hardest technical bet.** Prove it *before* building the rack around it. Speech-trained SE models can smear held notes — validate (SingVERSE/EDB) up front. The toggle (Decision 1) is the safety valve if it can't clear the bar.
