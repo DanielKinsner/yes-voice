@@ -23,3 +23,9 @@ __pycache__/
 *.log
 .cache/
 .pytest_cache/
+
+# Rust
+*.rs.bk
+*.pdb
+# atomic-write temp files
+*.yesvox-tmp

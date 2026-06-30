@@ -1,0 +1,31 @@
+# cargo-deny policy. Run via `cargo xtask gate` (and enforced in CI).
+# Code-license + advisory hygiene for our *dependencies*; the model-WEIGHTS
+# license audit is a separate concern (plan §7.5). Our own crates are private
+# (publish = false) and ignored here.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "MPL-2.0",
+]
+private = { ignore = true }
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

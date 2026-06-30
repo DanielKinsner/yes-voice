@@ -1,0 +1,5 @@
+# `cargo xtask <task>` -> runs the project automation crate. The gate is
+# `cargo xtask gate` (fmt --check + clippy -D warnings + test + deny), invoked
+# byte-identically locally and in CI. See docs/TESTING.md.
+[alias]
+xtask = "run --quiet --package xtask --"

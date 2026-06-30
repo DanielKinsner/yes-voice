@@ -1,0 +1,12 @@
+# Normalize line endings: text is LF in the repo, binary fixtures untouched.
+* text=auto eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Audio fixtures and golden buffers are binary.
+*.wav binary
+*.flac binary
+*.f32le binary

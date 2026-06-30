@@ -1,0 +1,12 @@
+[package]
+name = "yesvox-app"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "yesvox"
+path = "src/main.rs"
+
+[dependencies]
+yesvox-core = { path = "../yesvox-core" }
