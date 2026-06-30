@@ -18,6 +18,7 @@ pub mod dsp;
 pub mod io;
 pub mod loudness;
 pub mod modules;
+pub mod monitor;
 pub mod neural;
 pub mod preset;
 pub mod processor;

@@ -209,6 +209,39 @@ impl Session {
         self.output.as_ref()
     }
 
+    /// The dry input — the "A" / "Original" side of the A/B compare.
+    pub fn input(&self) -> Option<&AudioBuffer> {
+        self.input.as_ref()
+    }
+
+    /// The difference-monitor signal — "what was removed" (`original − processed`,
+    /// plan §5.5). `None` until a render exists.
+    pub fn difference(&self) -> Option<AudioBuffer> {
+        Some(crate::monitor::difference(
+            self.input.as_ref()?,
+            self.output.as_ref()?,
+        ))
+    }
+
+    /// Reblend `amount` of the removed signal back into the processed output — the
+    /// global post-rack wet/dry (plan §5.5). `amount` 0 = processed, 1 = original.
+    pub fn reblend(&self, amount: f32) -> Option<AudioBuffer> {
+        Some(crate::monitor::reblend(
+            self.output.as_ref()?,
+            self.input.as_ref()?,
+            amount,
+        ))
+    }
+
+    /// The gain to apply to the dry "A" so it loudness-matches the processed "B"
+    /// for a fair A/B compare (plan §5.5).
+    pub fn ab_match_gain(&self) -> Option<f32> {
+        Some(crate::monitor::loudness_match_gain(
+            self.input_lufs()?,
+            self.output_lufs()?,
+        ))
+    }
+
     /// Run the bound chain on the open vocal, caching the processed result.
     /// Refuses a mix (de-bleed `Block`) with an actionable error.
     pub fn render(&mut self) -> Result<(), SessionError> {
@@ -399,6 +432,37 @@ mod tests {
         let off = render(true);
         let changed = on.iter().zip(&off).any(|(a, b)| (a - b).abs() > 1e-4);
         assert!(changed, "toggling a card must change the render");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn monitor_surface_appears_after_render() {
+        let path = temp("monitor");
+        let input = degraded_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        // Nothing to monitor before a render.
+        assert!(s.difference().is_none());
+        assert!(s.reblend(0.5).is_none());
+
+        s.render().expect("render");
+        let diff = s.difference().expect("difference");
+        // The chain changed something, so "what was removed" isn't all silence.
+        assert!(
+            diff.channel(0).iter().any(|&v| v.abs() > 1e-4),
+            "difference monitor should show removed signal"
+        );
+        // Reblend endpoints: 0 == processed, 1 == original.
+        let out = s.output().unwrap();
+        let r0 = s.reblend(0.0).unwrap();
+        for (a, b) in r0.channel(0).iter().zip(out.channel(0)) {
+            assert!((a - b).abs() <= 1e-6, "reblend 0 == processed");
+        }
+        let r1 = s.reblend(1.0).unwrap();
+        for (a, b) in r1.channel(0).iter().zip(input.channel(0)) {
+            assert!((a - b).abs() <= 1e-6, "reblend 1 == original");
+        }
+        assert!(s.ab_match_gain().is_some());
         let _ = std::fs::remove_file(&path);
     }
 
