@@ -62,7 +62,7 @@ Content is **equally voiceover and singing** (with singing held first-class give
 
 Two surfaces over one pro-grade engine (the yes-master pattern):
 
-- **Standard view** — smart and adaptive. On load, YesVox **detects → applies → lets you override**: it analyzes content type (voice/sing), the defects present (noise, reverb, clicks, hum, clipping, band-limit, sibilance) and a tonal/EQ profile, then auto-picks a **content-aware preset** and pre-tunes the chain + intensity, applies it, and **shows what it found**. The user **picks a preset** from a gallery and adjusts **one intensity slider** (Natural ↔ Restoration HQ); content mode is encoded by the preset + detection (overridable in Advanced). When confidence is low, it defaults to the safest/most-transparent setting. *(This is also the natural future mobile form.)*
+- **Standard view** — smart and adaptive. On load, YesVox **detects → applies → lets you override**: it analyzes content type (voice/sing), the defects present (noise, reverb, clicks, hum, clipping, band-limit, sibilance) and a tonal/EQ profile, then auto-picks a **content-aware preset** and pre-tunes the chain + intensity, applies it, and **shows what it found**. The user **picks a preset** from a gallery and adjusts **one intensity slider** (Natural ↔ Restoration HQ). **Content mode is an explicit Voiceover/Singing toggle — the user's choice is authoritative — assisted by smart detection** that reads the upload to pre-select the toggle and pre-tune the chain + intensity (always overridable). When detection confidence is low, it defers to the toggle rather than guessing. *(This is also the natural future mobile form.)*
 - **Advanced mode** — every module exposed with full parameters, the spectrogram, manual overrides (incl. the detected mode), and (later) brush-heal editing.
 
 Cross-cutting: A/B with loudness matching; **difference monitor + reblend** (hear and partially restore what was removed); non-destructive render queue; stem/file import + **batch**.
@@ -100,7 +100,7 @@ Given (not negotiable): **offline/private with no quality penalty** vs leading c
 
 YesVox is one app in the **music-first "Yes" suite**, sharing a design language (**Standard + Advanced**, smart/adaptive processing — e.g., yes-master's EQ-curve detection):
 - **yes-master** — mastering (Standard view also ships as a **mobile** app; Advanced for depth).
-- **(stem separator)** — the user's separate stemming app.
+- **YesStems** — the suite's **stem separator** (demucs-based; already built). It can bounce an isolated vocal straight into YesVox. Kept as **separate tech** (leaner YesVox MVP, voiceover-only users never carry a de-mixer, plugin/bundle flexibility) — but the handoff is made *seamless*, so a singer can drop in a full song and get "song in → clean vocal out" without juggling two apps.
 - **YesVox** — vocal restoration & polish (this product).
 
 **Handoffs (suite-friendly minimum):** the separator can "bounce a stem to YesVox"; YesVox can hand a finished vocal to yes-master. Consistent Standard/Advanced UX. **YesVox remains fully standalone and individually sellable** (hence the impressive-finish requirement).
@@ -108,10 +108,11 @@ YesVox is one app in the **music-first "Yes" suite**, sharing a design language 
 ## 11. Key decisions (the record)
 
 - **Identity = restoration + polish, not production.** Default corrective-clean; *optional impressive finish* so the standalone deliverable can wow (people buy YesVox individually).
-- **Input = an already-isolated vocal; no separator** — keep a de-bleed module instead. Removes the worst model-weights licensing risk.
+- **Input = an already-isolated vocal; no separator *inside* YesVox** — keep a de-bleed module instead (removes the worst model-weights licensing risk). Separation lives in **YesStems** (sibling product, demucs-based, **already built**); a **seamless handoff** gives singers "song in → clean vocal out" without welding a de-mixer into YesVox.
 - **Pro-grade, broadly accessible** via **Standard + Advanced** (mirrors yes-master).
-- **Standard UX = one preset gallery + one intensity slider**, fed by **detect→apply→override** auto-analysis. Content mode encoded by preset/detection, not a third competing control.
+- **Standard UX = one preset gallery + one intensity slider**, fed by **detect→apply→override** auto-analysis. **Content mode = an explicit Voiceover/Singing toggle (user-authoritative), assisted by smart detection** (pre-selects the toggle + pre-tunes the chain). Chosen over pure auto-detection deliberately: a misclassification (voiceover chain on a sung vocal, or the reverse) is far worse than one deliberate click; the toggle also lets us honestly market **"does both"**; and — crucially — it keeps **singing a separable mode we can pull from the engine** if it doesn't clear the quality bar (ship voiceover first, add singing once it's proven).
 - **Both voiceover and singing; singing first-class** (music-first suite). Mode-aware processing (e.g., conservative de-reverb on singing).
+- **Singing quality is validated *early*, as a gate.** Character-preservation on sung vocals is both the moat and the hardest bet, so it's proven before the rack is built around it; if it can't clear the bar, the Voiceover/Singing toggle keeps singing shippable-later without re-architecting.
 - **Input range = modern vocals across the quality spectrum** (studio → noisy Zoom/field), **not** archival/forensic.
 - **Editing scope = defect-style processing + auto breath control + mouth-click cleanup; NO timeline editing.** Same take/length out.
 - **Offline = bundled core models + one-time activation; processing always local.** Optional advanced model packs download on demand.
