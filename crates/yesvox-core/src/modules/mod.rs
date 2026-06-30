@@ -5,8 +5,12 @@
 //! the sample-accurate identity** so the NULL guarantee survives the whole
 //! chain. Modules are added one slice at a time and chained by the host.
 
+pub mod declick;
 pub mod declip;
 pub mod dehum;
+pub mod transient;
 
+pub use declick::DeClick;
 pub use declip::DeClip;
 pub use dehum::DeHum;
+pub use transient::{Transient, TransientDetector, TransientKind};
