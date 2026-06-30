@@ -117,17 +117,24 @@ pub fn true_peak_dbtp(buffer: &AudioBuffer) -> f32 {
 const OS: usize = 4;
 const TAPS_PER_PHASE: usize = 8;
 
-/// Peak absolute value of a channel after 4× polyphase sinc upsampling.
+/// Peak absolute value of a channel after 4× polyphase sinc upsampling. The
+/// inter-sample peak can only exceed the sample peak in the neighborhood of an
+/// already-large sample, so interpolation is restricted to centers above half
+/// the sample peak — exact for the maximum, far cheaper than upsampling all.
 fn oversample_peak(x: &[f32]) -> f32 {
-    let mut peak = x.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
-    if x.len() < TAPS_PER_PHASE {
+    let sample_peak = x.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+    let mut peak = sample_peak;
+    if x.len() < TAPS_PER_PHASE || sample_peak == 0.0 {
         return peak;
     }
-    // Polyphase windowed-sinc kernels, one phase per fractional offset.
+    let gate = 0.5 * sample_peak;
     let half = TAPS_PER_PHASE as isize / 2;
-    for p in 1..OS {
-        let frac = p as f32 / OS as f32;
-        for center in half..(x.len() as isize - half) {
+    for center in half..(x.len() as isize - half) {
+        if x[center as usize].abs() < gate {
+            continue;
+        }
+        for p in 1..OS {
+            let frac = p as f32 / OS as f32;
             let mut acc = 0.0f32;
             for t in -half..half {
                 let idx = (center + t) as usize;
