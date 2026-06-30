@@ -10,3 +10,7 @@
 *.wav binary
 *.flac binary
 *.f32le binary
+
+# Images are binary.
+*.png binary
+*.jpg binary

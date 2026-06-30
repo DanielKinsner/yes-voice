@@ -9,14 +9,10 @@
 
 The annotated mock lives next to this file:
 
-```
-docs/ui/yesvox-v1-reference.png
-```
+![YesVox v1 UI reference](yesvox-v1-reference.png)
 
-**⚠️ Action needed (one-time):** the binary could not be written automatically
-(it was pasted into chat, not available on disk to the agent). Drop the PNG Dan
-shared into `docs/ui/yesvox-v1-reference.png` and commit it, so it syncs to all
-machines. Until then, the written spec below is the source of truth.
+`docs/ui/yesvox-v1-reference.png` — committed and synced. The written spec below
+transcribes it so the design intent stays diffable/searchable in-repo.
 
 ---
 
