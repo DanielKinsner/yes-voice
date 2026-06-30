@@ -10,7 +10,9 @@
 //! See `docs/plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`.
 
 pub mod audio;
+pub mod dsp;
 pub mod io;
+pub mod loudness;
 pub mod processor;
 pub mod settings;
 
