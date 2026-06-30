@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use yesvox_core::{export, read_audio, Passthrough, Settings, VocalProcessor};
+use yesvox_core::{analyze, export, read_audio, Passthrough, Settings, VocalProcessor};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -35,6 +35,21 @@ fn run(input: &Path, output: &Path) -> Result<std::path::PathBuf, Box<dyn std::e
     let settings = Settings::default();
 
     let mut buffer = read_audio(input)?;
+
+    // Whole-file analysis pass before any processing (plan §5.1); unusable
+    // inputs are rejected here with an actionable message.
+    let report = analyze(&buffer)?;
+    eprintln!(
+        "analysis: {:?}, {:.1} LUFS, {:.1} dBTP, noise {:.0} dB, clips {}, hum {} Hz, content {:?} ({:.0}% conf)",
+        report.channel_mode,
+        report.integrated_lufs,
+        report.true_peak_dbtp,
+        report.noise_floor_db,
+        report.clip_sample_count,
+        report.hum.frequency,
+        report.content.mode,
+        report.content.confidence * 100.0,
+    );
 
     let mut processor = Passthrough;
     processor.prepare(
