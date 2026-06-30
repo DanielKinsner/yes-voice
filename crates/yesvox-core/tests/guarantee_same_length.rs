@@ -1,10 +1,12 @@
 //! SAME-LENGTH guarantee (plan §7.6): output sample count == input sample count
 //! per channel on the non-resampling path. Verified across a full
-//! read -> process -> write -> read round-trip.
+//! read -> process -> write -> read round-trip — and now through an **active**
+//! chain (every module running), since "same take, same length out" must hold
+//! while the rack is actually processing, not only when bypassed.
 
 mod common;
 
-use yesvox_core::{read_wav, write_wav, Passthrough, VocalProcessor};
+use yesvox_core::{read_wav, write_wav, Chain, VocalProcessor};
 
 #[test]
 fn output_matches_input_length_rate_and_channels() {
@@ -13,13 +15,14 @@ fn output_matches_input_length_rate_and_channels() {
     let input = common::write_fixture(&in_path);
 
     let mut buffer = read_wav(&in_path).expect("read input");
-    let mut processor = Passthrough;
-    processor.prepare(
+    let mut chain = Chain::voiceover_default(2);
+    chain.prepare(
         buffer.sample_rate(),
         buffer.frames().max(1),
         buffer.layout(),
     );
-    processor.process(&mut buffer);
+    chain.reset();
+    chain.process(&mut buffer);
     write_wav(&out_path, &buffer).expect("write output");
 
     let output = read_wav(&out_path).expect("read output");

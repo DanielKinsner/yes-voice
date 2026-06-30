@@ -9,7 +9,7 @@
 
 mod common;
 
-use yesvox_core::{read_wav, write_wav, Passthrough, VocalProcessor};
+use yesvox_core::{read_wav, write_wav, Chain, VocalProcessor};
 
 #[test]
 fn full_pipeline_runs_without_network() {
@@ -18,13 +18,14 @@ fn full_pipeline_runs_without_network() {
     common::write_fixture(&in_path);
 
     let mut buffer = read_wav(&in_path).expect("read");
-    let mut processor = Passthrough;
-    processor.prepare(
+    let mut chain = Chain::voiceover_default(2);
+    chain.prepare(
         buffer.sample_rate(),
         buffer.frames().max(1),
         buffer.layout(),
     );
-    processor.process(&mut buffer);
+    chain.reset();
+    chain.process(&mut buffer);
     write_wav(&out_path, &buffer).expect("write");
 
     assert!(out_path.exists(), "offline pipeline produced no output");

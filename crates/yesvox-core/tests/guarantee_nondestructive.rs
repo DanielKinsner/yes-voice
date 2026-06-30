@@ -5,7 +5,7 @@
 
 mod common;
 
-use yesvox_core::{read_wav, write_wav, Passthrough, VocalProcessor};
+use yesvox_core::{read_wav, write_wav, Chain, VocalProcessor};
 
 #[test]
 fn input_bytes_unchanged_after_session() {
@@ -16,13 +16,14 @@ fn input_bytes_unchanged_after_session() {
     let before = common::read_bytes(&in_path);
 
     let mut buffer = read_wav(&in_path).expect("read input");
-    let mut processor = Passthrough;
-    processor.prepare(
+    let mut chain = Chain::voiceover_default(2);
+    chain.prepare(
         buffer.sample_rate(),
         buffer.frames().max(1),
         buffer.layout(),
     );
-    processor.process(&mut buffer);
+    chain.reset();
+    chain.process(&mut buffer);
     write_wav(&out_path, &buffer).expect("write output");
 
     let after = common::read_bytes(&in_path);
