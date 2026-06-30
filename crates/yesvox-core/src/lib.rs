@@ -11,6 +11,7 @@
 
 pub mod analysis;
 pub mod audio;
+pub mod chain;
 pub mod denoise;
 pub mod dsp;
 pub mod io;
@@ -25,6 +26,7 @@ pub use analysis::{
     analyze, analyze_file, AnalysisError, AnalysisReport, ContentGuess, HumEstimate,
 };
 pub use audio::{AudioBuffer, ChannelLayout, SampleEncoding};
+pub use chain::Chain;
 pub use denoise::{
     build_denoiser, BuiltEngine, ChunkPolicy, Denoise, Denoiser, RamPreflight, SpectralDenoiser,
     WorkerPool,
