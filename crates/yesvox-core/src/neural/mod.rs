@@ -9,12 +9,14 @@
 //! gate; only the ONNX Runtime inference itself sits behind the off-by-default
 //! `neural` cargo feature, so the default build stays pure-Rust and green.
 //!
-//! Status: STFT/iSTFT back-end + Kaldi log-mel fbank front-end landed (both
-//! torch-golden). The `ort` inference + 48 kHz resample island follow as the
-//! remaining #10 increments.
+//! Status: STFT/iSTFT back-end + Kaldi log-mel fbank front-end + the host
+//! enhancement chain landed (all torch/clearvoice-golden). The `ort` inference
+//! and 48 kHz resample island follow as the remaining #10 increments.
 
+pub mod engine;
 pub mod fbank;
 pub mod stft;
 
+pub use engine::{MaskModel, MossformerEngine};
 pub use fbank::MossformerFbank;
 pub use stft::MossformerStft;
