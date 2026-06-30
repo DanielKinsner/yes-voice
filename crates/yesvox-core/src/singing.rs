@@ -181,6 +181,170 @@ pub fn vibrato(signal: &[f32], sr: f32) -> Option<Vibrato> {
     })
 }
 
+/// Normalized autocorrelation peak (clarity, `[0,1]`) of one frame at the pitch
+/// lag — the periodicity ratio HNR is derived from. Uses the lag-normalized
+/// cross-correlation (each lag normalized by the energy of its own overlap), so
+/// a clean periodic frame reads ≈1 instead of decaying with lag.
+fn frame_clarity(seg: &[f32], lag_lo: usize, lag_hi: usize) -> Option<f32> {
+    let energy: f32 = seg.iter().map(|x| x * x).sum();
+    if energy <= 1.0e-9 || lag_hi <= lag_lo || lag_hi >= seg.len() {
+        return None;
+    }
+    let n = seg.len();
+    let mut best = 0.0f32;
+    for lag in lag_lo..=lag_hi {
+        let mut num = 0.0f32;
+        let mut e0 = 0.0f32;
+        let mut e1 = 0.0f32;
+        for i in 0..(n - lag) {
+            num += seg[i] * seg[i + lag];
+            e0 += seg[i] * seg[i];
+            e1 += seg[i + lag] * seg[i + lag];
+        }
+        let denom = (e0 * e1).sqrt();
+        if denom > 1.0e-12 {
+            let r = num / denom;
+            if r > best {
+                best = r;
+            }
+        }
+    }
+    Some(best.clamp(0.0, 1.0))
+}
+
+/// Median harmonic-to-noise ratio (dB) over voiced frames, via the Boersma
+/// autocorrelation method: `HNR = 10·log10(r / (1 − r))` where `r` is the
+/// normalized autocorrelation peak at the pitch lag. Higher = more periodic
+/// (cleaner harmonics). `None` if nothing is voiced.
+pub fn hnr_db(signal: &[f32], sr: f32) -> Option<f32> {
+    let hop = ((HOP_S * sr) as usize).max(1);
+    let win = ((WIN_S * sr) as usize).max(hop * 2);
+    let lag_lo = (sr / F_MAX) as usize;
+    let lag_hi = (sr / F_MIN) as usize;
+    let mut hnrs = Vec::new();
+    let mut start = 0;
+    while start + win <= signal.len() {
+        if let Some(c) = frame_clarity(&signal[start..start + win], lag_lo, lag_hi) {
+            if c >= VOICED_CLARITY {
+                let c = c.min(0.999_999);
+                hnrs.push(10.0 * (c / (1.0 - c)).log10());
+            }
+        }
+        start += hop;
+    }
+    if hnrs.is_empty() {
+        return None;
+    }
+    hnrs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    Some(hnrs[hnrs.len() / 2])
+}
+
+/// Cosine similarity (`[0,1]`) of the average log-magnitude spectra of two
+/// signals — a timbre/formant-preservation proxy (plan §6.4: spectral-envelope
+/// cosine ≥ 0.95). `1.0` = identical spectral shape; drops flag musical-noise
+/// holes or harmonic shearing. Uses 2048-pt Hann-windowed frames.
+pub fn spectral_envelope_cosine(reference: &[f32], processed: &[f32], _sr: f32) -> f32 {
+    let a = avg_log_spectrum(reference);
+    let b = avg_log_spectrum(processed);
+    if a.is_empty() || a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na <= 1.0e-12 || nb <= 1.0e-12 {
+        return 0.0;
+    }
+    (dot / (na * nb)).clamp(0.0, 1.0)
+}
+
+/// Average log-magnitude spectrum (DC-removed, mean-subtracted) over Hann frames.
+fn avg_log_spectrum(signal: &[f32]) -> Vec<f32> {
+    use rustfft::{num_complex::Complex, FftPlanner};
+    const N: usize = 2048;
+    if signal.len() < N {
+        return Vec::new();
+    }
+    let hop = N / 2;
+    let hann: Vec<f32> = (0..N)
+        .map(|i| {
+            let w = (std::f32::consts::PI * i as f32 / (N - 1) as f32).sin();
+            w * w
+        })
+        .collect();
+    let mut planner = FftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(N);
+    let mut acc = vec![0.0f32; N / 2 + 1];
+    let mut frames = 0u32;
+    let mut start = 0;
+    while start + N <= signal.len() {
+        let mut buf: Vec<Complex<f32>> = (0..N)
+            .map(|i| Complex::new(signal[start + i] * hann[i], 0.0))
+            .collect();
+        fft.process(&mut buf);
+        for (a, c) in acc.iter_mut().zip(buf.iter().take(N / 2 + 1)) {
+            *a += (c.norm() + 1.0e-9).ln();
+        }
+        frames += 1;
+        start += hop;
+    }
+    if frames == 0 {
+        return Vec::new();
+    }
+    for a in &mut acc {
+        *a /= frames as f32;
+    }
+    // Remove the mean so cosine compares spectral *shape*, not overall level.
+    let mean = acc.iter().sum::<f32>() / acc.len() as f32;
+    for a in &mut acc {
+        *a -= mean;
+    }
+    acc
+}
+
+/// Tail-survival ratio in dB: energy the processed signal kept in the reference's
+/// decay region (samples whose smoothed envelope sits −60…−20 dB below the
+/// reference peak) versus the reference's energy there (plan §6.2). `~0 dB` =
+/// the sustain/tail survived; strongly negative = the tail was truncated.
+pub fn tail_survival_db(reference: &[f32], processed: &[f32], sr: f32) -> f32 {
+    let n = reference.len().min(processed.len());
+    if n == 0 {
+        return 0.0;
+    }
+    // Smoothed energy envelope of the reference (50 ms one-pole on |x|).
+    let coeff = (-1.0 / (0.050 * sr)).exp();
+    let mut env = 0.0f32;
+    let mut envelope = vec![0.0f32; n];
+    for i in 0..n {
+        env = coeff * env + (1.0 - coeff) * reference[i].abs();
+        envelope[i] = env;
+    }
+    // The tail is the decay *after* the envelope peak — exclude the attack ramp,
+    // which also passes through the low-level band but isn't a tail.
+    let mut peak = 1.0e-9f32;
+    let mut peak_idx = 0usize;
+    for (i, &e) in envelope.iter().enumerate() {
+        if e > peak {
+            peak = e;
+            peak_idx = i;
+        }
+    }
+    let lo = peak * 10f32.powf(-60.0 / 20.0);
+    let hi = peak * 10f32.powf(-20.0 / 20.0);
+    let mut e_ref = 0.0f64;
+    let mut e_proc = 0.0f64;
+    for i in (peak_idx + 1)..n {
+        if envelope[i] >= lo && envelope[i] <= hi {
+            e_ref += (reference[i] * reference[i]) as f64;
+            e_proc += (processed[i] * processed[i]) as f64;
+        }
+    }
+    if e_ref <= 1.0e-12 {
+        return 0.0;
+    }
+    10.0 * (e_proc / e_ref).max(1.0e-12).log10() as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +443,78 @@ mod tests {
             (d.median - 20.0).abs() < 3.0,
             "should measure ~20 cents, got {}",
             d.median
+        );
+    }
+
+    /// Deterministic broadband noise in [-amp, amp).
+    fn noise(amp: f32, n: usize) -> Vec<f32> {
+        let mut s: u32 = 0x9e37_79b9;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                amp * (((s >> 8) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hnr_is_high_for_a_clean_vowel_and_drops_with_noise() {
+        let clean = vowel(220.0, 48_000);
+        let mut noisy = clean.clone();
+        for (s, ns) in noisy.iter_mut().zip(noise(0.15, 48_000)) {
+            *s += ns;
+        }
+        let h_clean = hnr_db(&clean, SR).expect("voiced");
+        let h_noisy = hnr_db(&noisy, SR).expect("voiced");
+        assert!(h_clean > 15.0, "clean vowel HNR {h_clean} should be high");
+        assert!(
+            h_noisy < h_clean - 3.0,
+            "noise should drop HNR: {h_clean} -> {h_noisy}"
+        );
+    }
+
+    #[test]
+    fn spectral_cosine_is_one_for_identical_and_drops_for_different_timbre() {
+        let a = vowel(196.0, 48_000);
+        let same = spectral_envelope_cosine(&a, &a, SR);
+        assert!(same > 0.999, "identical timbre should be ~1.0, got {same}");
+        // A very different spectral shape (a single high partial) → low cosine.
+        let b: Vec<f32> = (0..48_000)
+            .map(|i| 0.5 * (2.0 * PI * 6000.0 * i as f32 / SR).sin())
+            .collect();
+        let diff = spectral_envelope_cosine(&a, &b, SR);
+        assert!(diff < 0.5, "different timbre should be low, got {diff}");
+    }
+
+    /// A sustained vowel that decays to a tail over its last third.
+    fn note_with_tail(f0: f32, n: usize) -> Vec<f32> {
+        let mut x = vowel(f0, n);
+        let decay_start = n * 2 / 3;
+        for (i, s) in x.iter_mut().enumerate().skip(decay_start) {
+            let t = (i - decay_start) as f32 / SR;
+            *s *= (-t / 0.05).exp(); // ~50 ms time constant: decays through -60 dB
+        }
+        x
+    }
+
+    #[test]
+    fn tail_survives_when_unchanged_and_reads_negative_when_truncated() {
+        let reference = note_with_tail(220.0, 48_000);
+        // Identity: the decay region energy matches → ~0 dB.
+        let keep = tail_survival_db(&reference, &reference, SR);
+        assert!(
+            keep.abs() < 0.5,
+            "unchanged tail should be ~0 dB, got {keep}"
+        );
+        // Truncate: zero the last third → the tail energy collapses.
+        let mut truncated = reference.clone();
+        for s in truncated.iter_mut().skip(48_000 * 2 / 3) {
+            *s = 0.0;
+        }
+        let cut = tail_survival_db(&reference, &truncated, SR);
+        assert!(
+            cut < -6.0,
+            "a truncated tail should read well negative, got {cut}"
         );
     }
 }
