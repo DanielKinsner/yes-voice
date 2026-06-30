@@ -181,6 +181,7 @@ impl Preset {
             deess,
             breath,
             finish,
+            mix: [1.0; crate::chain::STAGE_COUNT],
             last_shared_hf_db: 0.0,
         }
     }

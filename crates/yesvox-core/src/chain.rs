@@ -26,6 +26,50 @@ use crate::modules::{
 use crate::processor::VocalProcessor;
 use crate::settings::ContentMode;
 
+/// One stage of the rack, in canonical order — the unit a UI "card" maps to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    /// Imported-stem de-bleed (off for native takes).
+    DeBleed,
+    /// Declip.
+    DeClip,
+    /// De-click + mouth-click.
+    DeClick,
+    /// De-pop.
+    DePop,
+    /// De-hum.
+    DeHum,
+    /// Denoise.
+    Denoise,
+    /// De-reverb.
+    DeReverb,
+    /// De-ess.
+    DeEss,
+    /// Breath control.
+    Breath,
+    /// Finish: presence/air EQ + leveler + loudness/limiter.
+    Finish,
+}
+
+/// Number of rack stages.
+pub const STAGE_COUNT: usize = 10;
+
+impl Stage {
+    /// Every stage in canonical order.
+    pub const ALL: [Stage; STAGE_COUNT] = [
+        Stage::DeBleed,
+        Stage::DeClip,
+        Stage::DeClick,
+        Stage::DePop,
+        Stage::DeHum,
+        Stage::Denoise,
+        Stage::DeReverb,
+        Stage::DeEss,
+        Stage::Breath,
+        Stage::Finish,
+    ];
+}
+
 /// The host-side repair/finish rack: every module in canonical order, run as one
 /// [`VocalProcessor`].
 pub struct Chain {
@@ -39,9 +83,22 @@ pub struct Chain {
     pub(crate) deess: DeEss,
     pub(crate) breath: BreathControl,
     pub(crate) finish: FinishStage,
+    /// Per-stage wet/dry mix in `[0, 1]` (1 = full effect, 0 = dialed out) — the
+    /// uniform "amount" knob behind each UI rack card and the §5.5 deterministic
+    /// reblend. Default 1.0 for every stage.
+    pub(crate) mix: [f32; STAGE_COUNT],
     /// The HF reduction (dB) de-ess published on the last [`Chain::process`] and
     /// handed to breath — a report-worthy observable of the sidechain handoff.
     pub(crate) last_shared_hf_db: f32,
+}
+
+/// Blend the processed `buffer` back toward the `dry` snapshot by `1 - mix`.
+fn lerp_into(buffer: &mut AudioBuffer, dry: &[Vec<f32>], mix: f32) {
+    for (ch, d) in dry.iter().enumerate() {
+        for (s, &dv) in buffer.channel_mut(ch).iter_mut().zip(d) {
+            *s = (1.0 - mix) * dv + mix * *s;
+        }
+    }
 }
 
 impl Chain {
@@ -76,6 +133,7 @@ impl Chain {
             deess: DeEss::new(DeEssMode::Split),
             breath: BreathControl::for_content(ContentMode::Voiceover),
             finish: FinishStage::new(LoudnessTarget::Podcast),
+            mix: [1.0; STAGE_COUNT],
             last_shared_hf_db: 0.0,
         }
     }
@@ -83,6 +141,48 @@ impl Chain {
     /// The HF reduction (dB) de-ess handed to breath on the last process call.
     pub fn last_shared_hf_db(&self) -> f32 {
         self.last_shared_hf_db
+    }
+
+    /// Set a stage's wet/dry mix (the UI card "amount" knob), clamped to `[0, 1]`.
+    pub fn set_mix(&mut self, stage: Stage, mix: f32) {
+        self.mix[stage as usize] = mix.clamp(0.0, 1.0);
+    }
+
+    /// A stage's current wet/dry mix.
+    pub fn mix(&self, stage: Stage) -> f32 {
+        self.mix[stage as usize]
+    }
+
+    /// Enable or bypass a stage (the UI card toggle).
+    pub fn set_stage_enabled(&mut self, stage: Stage, on: bool) {
+        match stage {
+            Stage::DeBleed => self.debleed.set_enabled(on),
+            Stage::DeClip => self.declip.set_enabled(on),
+            Stage::DeClick => self.declick.set_enabled(on),
+            Stage::DePop => self.depop.set_enabled(on),
+            Stage::DeHum => self.dehum.set_enabled(on),
+            Stage::Denoise => self.denoise.set_enabled(on),
+            Stage::DeReverb => self.dereverb.set_enabled(on),
+            Stage::DeEss => self.deess.set_enabled(on),
+            Stage::Breath => self.breath.set_enabled(on),
+            Stage::Finish => self.finish.set_enabled(on),
+        }
+    }
+
+    /// Whether a stage is enabled.
+    pub fn stage_enabled(&self, stage: Stage) -> bool {
+        match stage {
+            Stage::DeBleed => self.debleed.enabled(),
+            Stage::DeClip => self.declip.enabled(),
+            Stage::DeClick => self.declick.enabled(),
+            Stage::DePop => self.depop.enabled(),
+            Stage::DeHum => self.dehum.enabled(),
+            Stage::Denoise => self.denoise.enabled(),
+            Stage::DeReverb => self.dereverb.enabled(),
+            Stage::DeEss => self.deess.enabled(),
+            Stage::Breath => self.breath.enabled(),
+            Stage::Finish => self.finish.enabled(),
+        }
     }
 
     /// The de-bleed refusal verdict for this buffer (plan §4.5). The host reads
@@ -115,23 +215,41 @@ impl VocalProcessor for Chain {
     }
 
     fn process(&mut self, buffer: &mut AudioBuffer) {
-        // Canonical order (plan §649). De-bleed front-cleans an imported stem
-        // (and refuses a mix via its own gate); the rest is the restoration rack.
-        self.debleed.process(buffer);
-        self.declip.process(buffer);
-        self.declick.process(buffer);
-        self.depop.process(buffer);
-        self.dehum.process(buffer);
-        self.denoise.process(buffer);
-        self.dereverb.process(buffer);
-        self.deess.process(buffer);
+        // Run a stage and blend it back toward dry by its per-stage mix (1 = full
+        // effect, 0 = dialed out → identity). Canonical order (plan §649).
+        macro_rules! run {
+            ($field:ident, $stage:expr) => {{
+                let m = self.mix[$stage as usize];
+                if m >= 1.0 {
+                    self.$field.process(buffer);
+                } else if m > 0.0 {
+                    let dry: Vec<Vec<f32>> = buffer.channels().to_vec();
+                    self.$field.process(buffer);
+                    lerp_into(buffer, &dry, m);
+                }
+                // m <= 0.0 → fully dry, skip the stage entirely.
+            }};
+        }
+
+        // De-bleed front-cleans an imported stem (and refuses a mix via its own
+        // gate); the rest is the restoration rack.
+        run!(debleed, Stage::DeBleed);
+        run!(declip, Stage::DeClip);
+        run!(declick, Stage::DeClick);
+        run!(depop, Stage::DePop);
+        run!(dehum, Stage::DeHum);
+        run!(denoise, Stage::Denoise);
+        run!(dereverb, Stage::DeReverb);
+        run!(deess, Stage::DeEss);
         // The one genuine in-chain handoff (§3.2): hand breath the HF reduction
         // de-ess just applied so the two never double-attenuate the 4–12 kHz band.
-        self.last_shared_hf_db = self.deess.hf_reduction_db();
+        // Scale by the de-ess mix — the published reduction is for the full wet.
+        let deess_mix = self.mix[Stage::DeEss as usize].clamp(0.0, 1.0);
+        self.last_shared_hf_db = self.deess.hf_reduction_db() * deess_mix;
         self.breath
             .set_shared_hf_reduction_db(self.last_shared_hf_db);
-        self.breath.process(buffer);
-        self.finish.process(buffer);
+        run!(breath, Stage::Breath);
+        run!(finish, Stage::Finish);
     }
 
     fn reset(&mut self) {
@@ -189,6 +307,48 @@ mod tests {
 
     fn mono(samples: Vec<f32>) -> AudioBuffer {
         AudioBuffer::new(SR, 16, SampleEncoding::Int, vec![samples])
+    }
+
+    #[test]
+    fn mix_zero_dials_a_stage_fully_out() {
+        let x = degraded_signal(30_000);
+        let mut buf = mono(x.clone());
+        let mut chain = Chain::all_bypassed(2);
+        chain.set_stage_enabled(Stage::Denoise, true);
+        chain.set_mix(Stage::Denoise, 0.0);
+        chain.prepare(SR, 4096, buf.layout());
+        chain.reset();
+        chain.process(&mut buf);
+        for (a, b) in buf.channel(0).iter().zip(&x) {
+            assert!((a - b).abs() <= 1e-6, "mix 0 must dial the stage fully out");
+        }
+    }
+
+    #[test]
+    fn mid_mix_is_the_per_sample_blend_of_dry_and_wet() {
+        let x = degraded_signal(30_000);
+        let run = |mix: f32| {
+            let mut buf = mono(x.clone());
+            let mut c = Chain::all_bypassed(2);
+            c.set_stage_enabled(Stage::Denoise, true);
+            c.set_mix(Stage::Denoise, mix);
+            c.prepare(SR, 4096, buf.layout());
+            c.reset();
+            c.process(&mut buf);
+            buf.channel(0).to_vec()
+        };
+        let dry = run(0.0);
+        let wet = run(1.0);
+        let mid = run(0.5);
+        let mut max_err = 0.0f32;
+        for i in 0..x.len() {
+            let expect = 0.5 * dry[i] + 0.5 * wet[i];
+            max_err = max_err.max((mid[i] - expect).abs());
+        }
+        assert!(
+            max_err < 1e-5,
+            "mid mix must be the per-sample (1-m)·dry + m·wet blend, err {max_err}"
+        );
     }
 
     #[test]
