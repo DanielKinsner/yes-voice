@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::analysis::{analyze, AnalysisError, AnalysisReport, ContentGuess};
 use crate::audio::AudioBuffer;
 use crate::build::BuiltChain;
+use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
 use crate::modules::BleedVerdict;
@@ -51,6 +52,23 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
+/// A per-rack-card override layered over the preset's defaults: an optional
+/// enable (None = use the preset's default) and a wet/dry mix.
+#[derive(Clone, Copy)]
+struct Card {
+    enabled: Option<bool>,
+    mix: f32,
+}
+
+impl Default for Card {
+    fn default() -> Self {
+        Card {
+            enabled: None,
+            mix: 1.0,
+        }
+    }
+}
+
 /// A stateful vocal-editing session.
 pub struct Session {
     settings: Settings,
@@ -58,6 +76,7 @@ pub struct Session {
     input: Option<AudioBuffer>,
     report: Option<AnalysisReport>,
     output: Option<AudioBuffer>,
+    cards: [Card; STAGE_COUNT],
     workers: usize,
     neural_model: Option<PathBuf>,
 }
@@ -83,9 +102,38 @@ impl Session {
             input: None,
             report: None,
             output: None,
+            cards: [Card::default(); STAGE_COUNT],
             workers,
             neural_model: std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from),
         }
+    }
+
+    /// Set a rack card's wet/dry mix (its "amount" knob), `[0, 1]`.
+    pub fn set_stage_mix(&mut self, stage: Stage, mix: f32) {
+        self.cards[stage as usize].mix = mix.clamp(0.0, 1.0);
+        self.output = None;
+    }
+
+    /// A rack card's current wet/dry mix.
+    pub fn stage_mix(&self, stage: Stage) -> f32 {
+        self.cards[stage as usize].mix
+    }
+
+    /// Enable or bypass a rack card (overriding the preset default).
+    pub fn set_stage_enabled(&mut self, stage: Stage, on: bool) {
+        self.cards[stage as usize].enabled = Some(on);
+        self.output = None;
+    }
+
+    /// A rack card's enable override, if the user set one (`None` = preset default).
+    pub fn stage_enabled_override(&self, stage: Stage) -> Option<bool> {
+        self.cards[stage as usize].enabled
+    }
+
+    /// Reset every card to "use the preset default" — a preset change resets the
+    /// rack (plan §5.3).
+    fn reset_cards(&mut self) {
+        self.cards = [Card::default(); STAGE_COUNT];
     }
 
     /// Open and analyze a vocal. The content toggle stays user-authoritative —
@@ -111,6 +159,7 @@ impl Session {
     pub fn set_content_mode(&mut self, mode: ContentMode) {
         self.settings.content_mode = mode;
         self.preset = Preset::default_for(mode);
+        self.reset_cards();
         self.output = None;
     }
 
@@ -126,6 +175,7 @@ impl Session {
         self.preset = preset;
         self.settings.content_mode = preset.content_mode;
         self.settings.quality_mode = preset.intensity_default;
+        self.reset_cards();
         self.output = None;
     }
 
@@ -174,6 +224,15 @@ impl Session {
             self.workers,
             0.0,
         );
+
+        // Apply the per-card overrides (the UI rack) over the preset's defaults.
+        for stage in Stage::ALL {
+            let card = self.cards[stage as usize];
+            built.chain.set_mix(stage, card.mix);
+            if let Some(on) = card.enabled {
+                built.chain.set_stage_enabled(stage, on);
+            }
+        }
 
         // De-bleed refusal (plan §4.5): refuse a mix before processing.
         let verdict = built.chain.assess_bleed(input);
@@ -304,5 +363,55 @@ mod tests {
             s.export(Path::new("nope.wav")),
             Err(SessionError::NotRendered)
         ));
+    }
+
+    #[test]
+    fn dialing_every_card_to_dry_renders_the_input_unchanged() {
+        let path = temp("cards-dry");
+        let input = degraded_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        for stage in Stage::ALL {
+            s.set_stage_mix(stage, 0.0);
+        }
+        s.render().expect("render");
+        let out = s.output().unwrap();
+        for (a, b) in out.channel(0).iter().zip(input.channel(0)) {
+            assert!((a - b).abs() <= 1e-6, "all cards dry → input unchanged");
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn disabling_a_card_changes_the_render() {
+        let path = temp("cards-disable");
+        degraded_fixture(&path);
+        let render = |disable: bool| {
+            let mut s = Session::new();
+            s.open(&path).expect("open");
+            if disable {
+                s.set_stage_enabled(Stage::Denoise, false);
+            }
+            s.render().expect("render");
+            s.output().unwrap().channel(0).to_vec()
+        };
+        let on = render(false);
+        let off = render(true);
+        let changed = on.iter().zip(&off).any(|(a, b)| (a - b).abs() > 1e-4);
+        assert!(changed, "toggling a card must change the render");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn preset_change_resets_card_tweaks() {
+        let mut s = Session::new();
+        s.set_stage_mix(Stage::DeReverb, 0.2);
+        assert_eq!(s.stage_mix(Stage::DeReverb), 0.2);
+        s.select_preset(Preset::NARRATION);
+        assert_eq!(
+            s.stage_mix(Stage::DeReverb),
+            1.0,
+            "selecting a preset resets the rack (§5.3)"
+        );
     }
 }
