@@ -29,3 +29,8 @@ __pycache__/
 *.pdb
 # atomic-write temp files
 *.yesvox-tmp
+
+# ML model weights / exported graphs — large, license-bundled separately
+# (plan §7.5), fetched not committed. ClearVoice drops checkpoints in cwd.
+checkpoints/
+*.onnx

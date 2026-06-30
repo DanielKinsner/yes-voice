@@ -2,5 +2,6 @@
 # (plan §7.5) — never committed. Regenerate via export_and_verify.py.
 *.onnx
 *.wav
+*.log
 checkpoints/
 __pycache__/

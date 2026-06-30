@@ -15,10 +15,14 @@
 
 pub mod engine;
 pub mod fbank;
+#[cfg(feature = "neural")]
+pub mod ort_model;
 pub mod resample;
 pub mod stft;
 
 pub use engine::{MaskModel, MossformerEngine};
 pub use fbank::MossformerFbank;
+#[cfg(feature = "neural")]
+pub use ort_model::OrtMaskModel;
 pub use resample::{from_48k, to_48k, Resampler};
 pub use stft::MossformerStft;

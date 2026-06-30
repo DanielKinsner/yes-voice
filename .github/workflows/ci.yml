@@ -33,3 +33,19 @@ jobs:
           tool: cargo-deny
       - name: Gate (fmt + clippy -D warnings + test + deny)
         run: cargo xtask gate
+
+  # The high-quality neural engine (`neural` feature) pulls `ort` and is not in
+  # the pure-Rust gate above. Compile + clippy it here so the feature-gated code
+  # can never rot. `ort` is `load-dynamic`, so this neither downloads nor links a
+  # native library; the runtime + weights are only needed to *run* the ignored
+  # integration test, which is intentionally not part of CI.
+  neural-build:
+    name: neural feature (compile-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain (from rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy the neural feature (-D warnings)
+        run: cargo clippy -p yesvox-core --features neural --all-targets -- -D warnings
