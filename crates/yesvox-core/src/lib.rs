@@ -16,6 +16,7 @@ pub mod dsp;
 pub mod io;
 pub mod loudness;
 pub mod modules;
+pub mod neural;
 pub mod processor;
 pub mod settings;
 
