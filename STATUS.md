@@ -26,9 +26,11 @@ enhancement chain, 48 kHz resample island, the `ort` ONNX-Runtime adapter
 frame-locked graph; proven against the real model + runtime. **#11's mechanical
 work is done and the rack runs end-to-end**; an adversarial review then confirmed
 the assembly is correct and surfaced three pre-existing (non-#11) `afk` gaps
-inherited from earlier milestones — see "Known gaps" below. Remaining headline
-work is the GUI (#17/#19) and the human-gated items (#16 singing listening, #18
-UI sign-off, #20 signing, #21 eval).
+inherited from earlier milestones — see "Known gaps" below. **Singing is now a
+first-class toggle gated mechanically** (the `singing` metric gate replaced the
+#16 blind-listening gate, 2026-06-30). Remaining headline work is the GUI
+(#17/#19) and the genuinely human-gated items (#18 UI sign-off, #20 signing, #21
+*optional* eval) — no listening gate blocks the build any more.
 
 ## What's built (the `yesvox-core` rack)
 
@@ -60,6 +62,8 @@ Every module is a `VocalProcessor`; bypassed = sample-accurate identity (per-mod
 | Settings+report→chain orchestration (resolve + build_denoiser + tune) | `build` | #11 | ✅ done |
 | Conditional 2-pass Restoration HQ (gated `max_passes`, character-protected) | `denoise` | #11 | ✅ done |
 | App runs the bound rack end-to-end (engine/Fast-mode log, de-bleed refusal) | `yesvox-app` | #11 | ✅ done |
+| Singing preservation metrics (F0 cents, vibrato, HNR, timbre cosine, tail) | `singing` | #16 | ✅ done |
+| Mechanical singing gate on synthetic fixtures (replaces blind listening) | `tests::singing_gate` | #16 | ✅ done |
 
 ## Architecture (orientation)
 
@@ -130,13 +134,23 @@ absent) is now wired; the pass-2 gate now keys on short-term RMS to match §2.4.
 - **GUI not started** — the next frontier. #17 (Standard view), #19 (batch
   render queue), and #11's visible badge all sit on the egui shell. Target
   layout: [`docs/ui/yesvox-v1-ui-reference.md`](docs/ui/yesvox-v1-ui-reference.md).
+- **#16 — done, and now MECHANICAL (2026-06-30).** The blind-listening singing
+  release gate is **removed**. Singing ships as a first-class toggle
+  (`SingingSettings.unlocked` defaults true; the toggle is the safety net), and
+  sung-character preservation is validated in CI by the `singing` metric library
+  (F0 cents, vibrato rate/depth, HNR, spectral-envelope cosine, tail survival)
+  run on synthetic fixtures (`tests/singing_gate.rs`). Both singing presets pass
+  comfortably. Research-driven refinement: singing de-ess switched Wide→Split +
+  gentler sensitivity. No human ears, no curated clips. Research flags for Dan
+  (IMCRA noise estimator, vocal-fry guard, etc.) recorded in
+  [`docs/singing-research-decisions.md`](docs/singing-research-decisions.md).
+  **This unblocks #17/#19** (they no longer wait on a human singing gate).
 - **Needs Dan — cannot be automated:**
-  - **#16** singing quality gate — blind listening (≥3 ears) + license-clean
-    ≥12-stem reference set. Gates the singing UI; #17/#19 wait on it.
   - **#18** Advanced view + spectrogram (UI sign-off).
   - **#20** packaging/signing — Apple notarization + Windows Authenticode under
     Dan's developer identities.
-  - **#21** final eval — listening on the two reference laptops.
+  - **#21** final eval — an *optional, non-blocking* listen on the two reference
+    laptops (the mechanical gates + the toggle gate the ship).
 - **GUI not started:** #17 (Standard view), #18 (Advanced view) — target layout
   in `docs/ui/`.
 
