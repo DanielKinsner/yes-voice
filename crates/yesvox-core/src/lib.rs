@@ -23,6 +23,7 @@ pub mod neural;
 pub mod preset;
 pub mod processor;
 pub mod quality;
+pub mod render_queue;
 pub mod session;
 pub mod settings;
 pub mod singing;
@@ -32,7 +33,7 @@ pub use analysis::{
 };
 pub use audio::{AudioBuffer, ChannelLayout, SampleEncoding};
 pub use build::BuiltChain;
-pub use chain::Chain;
+pub use chain::{Chain, Stage};
 pub use denoise::{
     build_denoiser, BuiltEngine, ChunkPolicy, Denoise, Denoiser, RamPreflight, SpectralDenoiser,
     WorkerPool,
@@ -50,6 +51,7 @@ pub use quality::{
     linear_residual, resolve, wet_dry_blend, DiffMonitor, Engine, EngineBinding, QualityMode,
     Resolved,
 };
+pub use render_queue::{BatchSummary, JobStatus, QueueItem, RenderQueue};
 pub use session::{Session, SessionError};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,

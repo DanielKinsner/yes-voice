@@ -108,6 +108,23 @@ impl Session {
         }
     }
 
+    /// A session seeded with specific settings + preset (used by the batch queue
+    /// to apply one configuration across many files).
+    pub fn with_config(settings: Settings, preset: Preset) -> Self {
+        let mut s = Session::new();
+        s.settings = settings;
+        s.preset = preset;
+        s
+    }
+
+    /// Open → render → export in one shot, using the session's current
+    /// configuration (the headless/batch path). Returns the written path.
+    pub fn process_file(&mut self, input: &Path, output: &Path) -> Result<PathBuf, SessionError> {
+        self.open(input)?;
+        self.render()?;
+        self.export(output)
+    }
+
     /// Set a rack card's wet/dry mix (its "amount" knob), `[0, 1]`.
     pub fn set_stage_mix(&mut self, stage: Stage, mix: f32) {
         self.cards[stage as usize].mix = mix.clamp(0.0, 1.0);
@@ -145,7 +162,6 @@ impl Session {
         self.input = Some(buffer);
         self.report = Some(report);
         self.output = None;
-        self.preset = Preset::default_for(self.settings.content_mode);
         Ok(self.report.as_ref().unwrap())
     }
 
