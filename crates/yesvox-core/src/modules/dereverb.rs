@@ -90,6 +90,12 @@ impl DeReverb {
         self.rt60 = rt60_s.max(0.0);
     }
 
+    /// The measured RT60 (seconds) currently driving the auto-soften; `0.0` means
+    /// unknown.
+    pub fn rt60(&self) -> f32 {
+        self.rt60
+    }
+
     /// The effective subtraction after tail-preservation and the auto-soften.
     fn effective_gamma(&self) -> f32 {
         // Tail preservation backs the subtraction off (sustains survive).

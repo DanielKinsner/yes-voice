@@ -90,6 +90,14 @@ impl Chain {
     pub fn assess_bleed(&self, buffer: &AudioBuffer) -> BleedVerdict {
         self.debleed.assess(buffer)
     }
+
+    /// Feed the whole-file analysis into the modules that consume it, so the
+    /// chain adapts to the actual material rather than to fixed defaults. Today
+    /// that is the de-reverb auto-soften (an already-dry room pulls the
+    /// de-reverb toward zero from the measured RT60, plan §4.1).
+    pub fn tune_from_report(&mut self, report: &crate::analysis::AnalysisReport) {
+        self.dereverb.set_rt60(report.reverb_time_s);
+    }
 }
 
 impl VocalProcessor for Chain {
@@ -181,6 +189,39 @@ mod tests {
 
     fn mono(samples: Vec<f32>) -> AudioBuffer {
         AudioBuffer::new(SR, 16, SampleEncoding::Int, vec![samples])
+    }
+
+    #[test]
+    fn tune_from_report_feeds_rt60_into_dereverb() {
+        use crate::analysis::{AnalysisReport, ContentGuess, HumEstimate};
+        let report = AnalysisReport {
+            channel_mode: ChannelLayout::Mono,
+            integrated_lufs: -20.0,
+            true_peak_dbtp: -3.0,
+            noise_floor_db: -60.0,
+            clip_sample_count: 0,
+            clip_fraction: 0.0,
+            click_rate_hz: 0.0,
+            hum: HumEstimate {
+                frequency: 0.0,
+                harmonic_count: 0,
+                strength_db: 0.0,
+            },
+            reverb_time_s: 0.42,
+            content: ContentGuess {
+                mode: ContentMode::Voiceover,
+                confidence: 0.9,
+            },
+            residual_nonvocal: 0.0,
+            resampled_for_batch: false,
+        };
+        let mut chain = Chain::voiceover_default(1);
+        chain.tune_from_report(&report);
+        assert_eq!(
+            chain.dereverb.rt60(),
+            0.42,
+            "the analyzer's RT60 must reach de-reverb's auto-soften"
+        );
     }
 
     #[test]
