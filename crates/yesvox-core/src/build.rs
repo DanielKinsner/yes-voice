@@ -52,6 +52,8 @@ impl BuiltChain {
         // feature/model is absent (reported via `engine`).
         let built = build_denoiser(resolved.binding, neural_model);
         let mut chain = preset.build_chain(built.denoiser, workers);
+        // The binding's pass budget rides with the engine (Restoration HQ = 2).
+        chain.denoise.set_passes(resolved.binding.max_passes);
         // Adapt the chain to the actual material (de-reverb auto-soften, …).
         chain.tune_from_report(report);
         BuiltChain {
@@ -137,6 +139,24 @@ mod tests {
         assert_eq!(built.preset.name, "Lead Vocal");
         assert_eq!(built.resolved.mode, QualityMode::Natural);
         assert_eq!(built.engine, Engine::Light);
+    }
+
+    #[test]
+    fn restoration_hq_binding_sets_two_passes_balanced_one() {
+        let hq = Settings {
+            quality_mode: QualityMode::RestorationHq,
+            ..Settings::default()
+        };
+        let built = BuiltChain::build(&hq, &report(), None, 2, 0.0);
+        assert_eq!(
+            built.chain.denoise.passes(),
+            2,
+            "Restoration HQ runs the conditional second pass"
+        );
+
+        let balanced = Settings::default();
+        let built = BuiltChain::build(&balanced, &report(), None, 2, 0.0);
+        assert_eq!(built.chain.denoise.passes(), 1, "Balanced is single pass");
     }
 
     #[test]

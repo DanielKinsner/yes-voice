@@ -86,6 +86,7 @@ pub struct Denoise {
     pool: WorkerPool,
     policy: ChunkPolicy,
     sample_rate: f32,
+    passes: u8,
 }
 
 impl Denoise {
@@ -97,6 +98,7 @@ impl Denoise {
             pool: WorkerPool::new(workers),
             policy: ChunkPolicy::default(),
             sample_rate: 48_000.0,
+            passes: 1,
         }
     }
 
@@ -108,6 +110,7 @@ impl Denoise {
             pool: WorkerPool::new(workers),
             policy: ChunkPolicy::default(),
             sample_rate: 48_000.0,
+            passes: 1,
         }
     }
 
@@ -119,6 +122,17 @@ impl Denoise {
     /// Whether the module is active.
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Set the denoise pass budget (plan §2.4). Bounded to `[1, 2]`: Restoration
+    /// HQ runs a conditional second pass; it is never three.
+    pub fn set_passes(&mut self, passes: u8) {
+        self.passes = passes.clamp(1, 2);
+    }
+
+    /// The effective pass budget (`1` or `2`).
+    pub fn passes(&self) -> u8 {
+        self.passes
     }
 
     /// Estimate memory and check it against a budget before processing.
@@ -140,13 +154,64 @@ impl VocalProcessor for Denoise {
         let sr = self.sample_rate;
         for ch in 0..buffer.channel_count() {
             let input = buffer.channel(ch).to_vec();
-            let denoised =
+            let pass1 =
                 stream::process_streamed(&input, sr, &self.policy, &self.pool, &self.denoiser);
-            buffer.channel_mut(ch).copy_from_slice(&denoised);
+            let out = if self.passes >= 2 {
+                // Restoration HQ: a second pass, gated to the frames where pass 1
+                // still leaves low-level broadband noise — loud voiced frames are
+                // protected so the deepest mode never re-processes the voice.
+                let pass2 =
+                    stream::process_streamed(&pass1, sr, &self.policy, &self.pool, &self.denoiser);
+                gate_second_pass(&pass1, &pass2, sr)
+            } else {
+                pass1
+            };
+            buffer.channel_mut(ch).copy_from_slice(&out);
         }
     }
 
     fn reset(&mut self) {}
+}
+
+/// Blend a conditional second denoise pass into `pass1` only where it still
+/// carries low-level broadband noise (plan §2.4). A smoothed energy envelope of
+/// `pass1` drives a trapezoidal gate: residual noise between roughly −52 and
+/// −40 dBFS gets the full second pass, the gate ramps to zero by −20 dBFS (loud
+/// voiced frames are protected) and below a ~−58 dBFS floor (already quiet).
+/// The envelope is continuous, so the blend is click-free.
+fn gate_second_pass(pass1: &[f32], pass2: &[f32], sample_rate: f32) -> Vec<f32> {
+    let atk = (-1.0 / (0.005 * sample_rate)).exp(); // 5 ms
+    let rel = (-1.0 / (0.050 * sample_rate)).exp(); // 50 ms
+    let mut env = 0.0f32;
+    let mut out = Vec::with_capacity(pass1.len());
+    for (i, &p1) in pass1.iter().enumerate() {
+        let a = p1.abs();
+        let coeff = if a > env { atk } else { rel };
+        env = coeff * env + (1.0 - coeff) * a;
+        let dbfs = 20.0 * env.max(1.0e-7).log10();
+        let g = gate(dbfs);
+        let p2 = pass2.get(i).copied().unwrap_or(p1);
+        out.push(p1 + g * (p2 - p1));
+    }
+    out
+}
+
+/// Trapezoidal gate over the short-term level (dBFS): 0 below −58, ramps to 1 by
+/// −52, holds 1 to −40, ramps back to 0 by −20.
+fn gate(dbfs: f32) -> f32 {
+    const LO_A: f32 = -58.0;
+    const LO_B: f32 = -52.0;
+    const HI_A: f32 = -40.0;
+    const HI_B: f32 = -20.0;
+    if dbfs <= LO_A || dbfs >= HI_B {
+        0.0
+    } else if dbfs < LO_B {
+        (dbfs - LO_A) / (LO_B - LO_A)
+    } else if dbfs <= HI_A {
+        1.0
+    } else {
+        (HI_B - dbfs) / (HI_B - HI_A)
+    }
 }
 
 #[cfg(test)]
@@ -202,5 +267,91 @@ mod tests {
         d.prepare(SR, 4096, b.layout());
         d.process(&mut b);
         assert_eq!(b.frames(), n, "denoise must preserve length");
+    }
+
+    /// Deterministic low-level broadband noise (~-45 dBFS), no tonal content.
+    fn noisy(n: usize, amp: f32) -> Vec<f32> {
+        let mut s: u32 = 0x1234_5678;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let u = (s >> 8) as f32 / (1u32 << 24) as f32;
+                amp * (u * 2.0 - 1.0)
+            })
+            .collect()
+    }
+
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32).sqrt()
+    }
+
+    fn run(mut d: Denoise, x: &[f32]) -> Vec<f32> {
+        let mut b = AudioBuffer::new(SR, 16, SampleEncoding::Int, vec![x.to_vec()]);
+        d.prepare(SR, 4096, b.layout());
+        d.process(&mut b);
+        b.channel(0).to_vec()
+    }
+
+    #[test]
+    fn passes_is_bounded_to_two_and_at_least_one() {
+        let mut d = Denoise::new(1);
+        assert_eq!(d.passes(), 1, "single pass is the default");
+        d.set_passes(5);
+        assert_eq!(d.passes(), 2, "never more than two passes");
+        d.set_passes(0);
+        assert_eq!(d.passes(), 1, "never fewer than one");
+    }
+
+    #[test]
+    fn second_pass_denoises_residual_noise_further() {
+        let x = noisy(48_000, 0.01); // ~-45 dBFS broadband
+        let one = run(Denoise::new(2), &x);
+        let mut two_d = Denoise::new(2);
+        two_d.set_passes(2);
+        let two = run(two_d, &x);
+        let (r0, r1, r2) = (rms(&x), rms(&one), rms(&two));
+        assert!(r1 < r0, "one pass should reduce noise ({r1} !< {r0})");
+        assert!(
+            r2 < r1,
+            "the gated second pass should reduce residual noise further ({r2} !< {r1})"
+        );
+    }
+
+    #[test]
+    fn second_pass_protects_a_loud_tone() {
+        // A loud tone sits well above the -55 dBFS gate floor, so the second
+        // pass is gated out — character is preserved (two-pass ≈ one-pass here).
+        let x: Vec<f32> = (0..48_000)
+            .map(|i| 0.5 * (2.0 * PI * 220.0 * i as f32 / SR as f32).sin())
+            .collect();
+        let one = run(Denoise::new(2), &x);
+        let mut two_d = Denoise::new(2);
+        two_d.set_passes(2);
+        let two = run(two_d, &x);
+        // Ignore the first 100 ms while the energy envelope ramps up.
+        let drift = one[4_800..]
+            .iter()
+            .zip(&two[4_800..])
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            drift < 1e-3,
+            "the second pass must barely touch a loud tone (drift {drift})"
+        );
+    }
+
+    #[test]
+    fn two_pass_bypass_is_still_identity() {
+        let x = noisy(20_000, 0.02);
+        let mut d = Denoise::new(2);
+        d.set_passes(2);
+        d.set_enabled(false);
+        let y = run(d, &x);
+        for (a, b) in y.iter().zip(&x) {
+            assert!(
+                (a - b).abs() <= f32::EPSILON,
+                "bypass identity with passes=2"
+            );
+        }
     }
 }
