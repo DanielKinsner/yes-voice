@@ -45,6 +45,7 @@ An autonomous build loop must **never** make a red golden green by re-blessing i
 - **Fast lane** — `cargo xtask gate`. Always green; what the loop runs every slice.
 - **Property lane** — `proptest` over value types (format/SR/channel contract, param ranges). Added with #1's data contract.
 - **Perf lane** — Criterion benches for the <60 s drop-to-export budget (plan §8.4); tracked once the denoise engines land (#8/#10).
+- **Neural lane** (`--features neural`) — the `ort` ONNX engine is off by default, so the fast lane never builds it. A compile-only CI job (`cargo clippy -p yesvox-core --features neural -D warnings`, `load-dynamic` ⇒ no native download) stops the feature-gated code from rotting. Its real end-to-end parity check is an **`#[ignore]`d** integration test (`ort_mask_matches_golden`) — it needs the fetched ONNX weights (`YESVOX_MODEL_PATH`) and the onnxruntime shared lib (`ORT_DYLIB_PATH`), so it runs on a developer machine, not CI. The always-on host DSP (fbank/STFT/engine/resample/chunk) **is** golden-tested in the fast lane; goldens are blessed by the `spikes/mossformer2-onnx/*_golden.py` scripts.
 - **Listening lane** (`hitl`) — blind A/B sign-off for the singing gate (#16) and final eval (#21). Automated tests cannot approve taste; capture the listening note before any preset-calibration change.
 
 ## Commit discipline
