@@ -19,7 +19,65 @@ pub use stream::{ChunkPolicy, RamPreflight};
 
 use crate::audio::{AudioBuffer, ChannelLayout};
 use crate::processor::VocalProcessor;
+use crate::quality::{Engine, EngineBinding};
+use std::path::Path;
 use std::sync::Arc;
+
+/// A denoiser built for a [`crate::quality::QualityMode`] binding, tagged with
+/// the engine that was *actually* constructed.
+pub struct BuiltEngine {
+    /// The constructed denoiser, ready for [`Denoise::with_engine`].
+    pub denoiser: Arc<dyn Denoiser>,
+    /// What was actually built. May fall back to [`Engine::Light`] when the
+    /// neural engine is unavailable (feature off, or no model) — a
+    /// neural-unavailable fallback distinct from the slow-hardware downshift in
+    /// [`crate::quality::resolve`]. The UI/CLI logs this when it differs from the
+    /// binding's intended engine.
+    pub actual: Engine,
+}
+
+/// Build the denoiser an [`EngineBinding`] calls for.
+///
+/// The light engine ([`SpectralDenoiser`]) is always available. The neural
+/// engine ([`crate::neural::MossformerEngine`]) needs the `neural` feature **and**
+/// a `neural_model` path; when either is missing it transparently falls back to
+/// the light engine (reported via [`BuiltEngine::actual`]).
+pub fn build_denoiser(binding: EngineBinding, neural_model: Option<&Path>) -> BuiltEngine {
+    match binding.engine {
+        Engine::Light => BuiltEngine {
+            denoiser: Arc::new(SpectralDenoiser::default()),
+            actual: Engine::Light,
+        },
+        Engine::Neural => build_neural(neural_model),
+    }
+}
+
+#[cfg(feature = "neural")]
+fn build_neural(model: Option<&Path>) -> BuiltEngine {
+    use crate::neural::{MossformerEngine, OrtMaskModel, WindowedMask};
+    if let Some(path) = model {
+        if let Ok(mask) = OrtMaskModel::from_file(path) {
+            let engine = MossformerEngine::new(Box::new(WindowedMask::mossformer(Box::new(mask))));
+            return BuiltEngine {
+                denoiser: Arc::new(engine),
+                actual: Engine::Neural,
+            };
+        }
+    }
+    light_fallback()
+}
+
+#[cfg(not(feature = "neural"))]
+fn build_neural(_model: Option<&Path>) -> BuiltEngine {
+    light_fallback()
+}
+
+fn light_fallback() -> BuiltEngine {
+    BuiltEngine {
+        denoiser: Arc::new(SpectralDenoiser::default()),
+        actual: Engine::Light,
+    }
+}
 
 /// The offline denoise processor.
 pub struct Denoise {
@@ -113,6 +171,24 @@ mod tests {
         for (a, c) in b.channel(0).iter().zip(&ch) {
             assert!((a - c).abs() <= f32::EPSILON, "bypass must be identity");
         }
+    }
+
+    #[test]
+    fn factory_builds_light_and_falls_back_without_a_model() {
+        use crate::quality::{Engine, QualityMode};
+        // Natural always binds the light engine.
+        let nat = build_denoiser(QualityMode::Natural.binding(), None);
+        assert_eq!(nat.actual, Engine::Light);
+        // Balanced wants the neural engine, but with no model (and no feature in
+        // the default build) it transparently falls back to light.
+        let bal = build_denoiser(QualityMode::Balanced.binding(), None);
+        assert_eq!(bal.actual, Engine::Light);
+        // The built denoiser actually runs and preserves length.
+        let x: Vec<f32> = (0..8192)
+            .map(|i| 0.2 * (2.0 * PI * 200.0 * i as f32 / SR as f32).sin())
+            .collect();
+        let y = bal.denoiser.denoise(&x, SR as f32);
+        assert_eq!(y.len(), x.len());
     }
 
     #[test]

@@ -25,7 +25,10 @@ pub use analysis::{
     analyze, analyze_file, AnalysisError, AnalysisReport, ContentGuess, HumEstimate,
 };
 pub use audio::{AudioBuffer, ChannelLayout, SampleEncoding};
-pub use denoise::{ChunkPolicy, Denoise, Denoiser, RamPreflight, SpectralDenoiser, WorkerPool};
+pub use denoise::{
+    build_denoiser, BuiltEngine, ChunkPolicy, Denoise, Denoiser, RamPreflight, SpectralDenoiser,
+    WorkerPool,
+};
 pub use io::{
     export, read_audio, read_flac, read_wav, write_flac_with, write_wav, write_wav_with, IoError,
 };
