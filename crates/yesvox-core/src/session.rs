@@ -18,7 +18,7 @@ use crate::card::CardId;
 use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
-use crate::modules::BleedVerdict;
+use crate::modules::{BleedVerdict, LoudnessTarget};
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
 use crate::quality::QualityMode;
@@ -86,6 +86,9 @@ pub struct Session {
     /// is the preset's nominal polish; lower backs the polish group off. See
     /// [`Session::set_polish_intensity`].
     polish: f32,
+    /// A Session-level loudness-target override (the OUTPUT panel / Loudness card).
+    /// `None` honors the active preset's target.
+    loudness_override: Option<LoudnessTarget>,
     workers: usize,
     neural_model: Option<PathBuf>,
 }
@@ -114,6 +117,7 @@ impl Session {
             cards: [Card::default(); STAGE_COUNT],
             flow: 1.0,
             polish: 0.5,
+            loudness_override: None,
             workers,
             neural_model: std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from),
         }
@@ -236,10 +240,28 @@ impl Session {
         self.cards[stage as usize].mix * self.flow * polish
     }
 
-    /// Reset every card to "use the preset default" — a preset change resets the
-    /// rack (plan §5.3).
+    /// Set the integrated-loudness target (the OUTPUT panel + the Loudness card,
+    /// which bind to this one override), overriding the active preset's target.
+    /// Use [`LoudnessTarget::Custom`] for the editable LUFS box. Invalidates the
+    /// last render.
+    pub fn set_loudness_target(&mut self, target: LoudnessTarget) {
+        self.loudness_override = Some(target);
+        self.output = None;
+    }
+
+    /// The effective loudness target — the Session override if set, otherwise the
+    /// active preset's target.
+    pub fn loudness_target(&self) -> LoudnessTarget {
+        self.loudness_override
+            .unwrap_or(self.preset.loudness_target)
+    }
+
+    /// Reset every per-card and finish override to "use the preset default" — a
+    /// preset change resets the rack (plan §5.3). The master macros (Flow Amount,
+    /// Polish Intensity) persist across preset changes.
     fn reset_cards(&mut self) {
         self.cards = [Card::default(); STAGE_COUNT];
+        self.loudness_override = None;
     }
 
     /// Open and analyze a vocal. The content toggle stays user-authoritative —
@@ -400,6 +422,10 @@ impl Session {
                 built.chain.set_stage_enabled(stage, on);
             }
         }
+        // The Session-level loudness override (OUTPUT panel / Loudness card) wins
+        // over the preset's finish target; with no override this re-asserts the
+        // preset's own target, so it is a no-op.
+        built.chain.finish.set_target(self.loudness_target());
 
         // De-bleed refusal (plan §4.5): refuse a mix before processing.
         let verdict = built.chain.assess_bleed(input);
@@ -643,6 +669,49 @@ mod tests {
             assert!((a - b).abs() <= 1e-6, "reblend 1 == original");
         }
         assert!(s.ab_match_gain().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loudness_target_is_settable_on_the_session() {
+        use crate::modules::LoudnessTarget;
+        let path = temp("loudness-target");
+        quiet_tone_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).unwrap();
+        let in_lufs = s.input_lufs().unwrap();
+
+        // Override the preset's target from the Session (OUTPUT panel / Loudness card).
+        s.set_loudness_target(LoudnessTarget::Streaming);
+        assert_eq!(s.loudness_target(), LoudnessTarget::Streaming);
+        s.render().unwrap();
+        assert!(
+            (s.output_lufs().unwrap() - (-14.0)).abs() <= 0.5,
+            "Streaming → −14 LUFS, got {:?}",
+            s.output_lufs()
+        );
+
+        s.set_loudness_target(LoudnessTarget::Podcast);
+        s.render().unwrap();
+        assert!(
+            (s.output_lufs().unwrap() - (-16.0)).abs() <= 0.5,
+            "Podcast → −16 LUFS"
+        );
+
+        s.set_loudness_target(LoudnessTarget::MatchInput);
+        s.render().unwrap();
+        assert!(
+            (s.output_lufs().unwrap() - in_lufs).abs() <= 1.0,
+            "MatchInput keeps the input loudness"
+        );
+
+        // The editable LUFS box: an arbitrary custom target.
+        s.set_loudness_target(LoudnessTarget::Custom(-20.0));
+        s.render().unwrap();
+        assert!(
+            (s.output_lufs().unwrap() - (-20.0)).abs() <= 0.5,
+            "Custom(-20) → −20 LUFS"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

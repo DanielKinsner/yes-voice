@@ -23,14 +23,19 @@ pub enum LoudnessTarget {
     MatchInput,
     /// Normalize the peak to the true-peak ceiling (no loudness target).
     PeakNormalize,
+    /// An arbitrary integrated-loudness target in LUFS (the editable OUTPUT-panel
+    /// box). Carried as `f32`, so [`LoudnessTarget`] is `PartialEq` but not `Eq`.
+    Custom(f32),
 }
 
 impl LoudnessTarget {
-    /// The LUFS value for the fixed targets, if any.
-    fn lufs(self) -> Option<f32> {
+    /// The integrated-loudness target in LUFS, if this target has a fixed value
+    /// ([`LoudnessTarget::MatchInput`]/[`LoudnessTarget::PeakNormalize`] do not).
+    pub fn lufs(self) -> Option<f32> {
         match self {
             LoudnessTarget::Podcast => Some(-16.0),
             LoudnessTarget::Streaming => Some(-14.0),
+            LoudnessTarget::Custom(lufs) => Some(lufs),
             LoudnessTarget::MatchInput | LoudnessTarget::PeakNormalize => None,
         }
     }
@@ -82,6 +87,11 @@ impl FinishStage {
     pub fn set_eq(&mut self, presence_db: f32, air_db: f32) {
         self.presence_db = presence_db;
         self.air_db = air_db;
+    }
+
+    /// Override the loudness target (the Session-level OUTPUT/Loudness control).
+    pub fn set_target(&mut self, target: LoudnessTarget) {
+        self.target = target;
     }
 
     /// Enable or bypass.
