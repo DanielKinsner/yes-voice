@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use crate::chain::Chain;
+use crate::chain::{Chain, Stage};
 use crate::denoise::{Denoise, Denoiser};
 use crate::modules::{
     BreathControl, DeBleed, DeClick, DeClip, DeEss, DeEssMode, DeHum, DePop, DeReverb, FinishStage,
@@ -135,6 +135,24 @@ impl Preset {
         match content_mode {
             ContentMode::Voiceover => Preset::PODCAST,
             ContentMode::Singing => Preset::LEAD_VOCAL,
+        }
+    }
+
+    /// Whether `stage` is enabled by default under this preset, *before* any
+    /// per-card override — the position the Standard-view toggle shows. Mirrors
+    /// the gating in [`Preset::build_chain`] without building a chain.
+    pub fn stage_default_enabled(&self, stage: Stage) -> bool {
+        match stage {
+            // De-bleed is for imported stems; a native take leaves it off.
+            Stage::DeBleed => false,
+            // Restoration always runs (plan §5.7).
+            Stage::DeClip | Stage::DeClick | Stage::DePop | Stage::DeHum | Stage::Denoise => true,
+            // Singing presets keep de-reverb off to protect tails.
+            Stage::DeReverb => self.dereverb_enabled,
+            Stage::DeEss => true,
+            // Breath is off when the preset carries no attenuation (singing).
+            Stage::Breath => self.breath_db.is_some(),
+            Stage::Finish => true,
         }
     }
 

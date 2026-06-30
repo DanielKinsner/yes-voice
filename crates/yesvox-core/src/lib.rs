@@ -12,6 +12,7 @@
 pub mod analysis;
 pub mod audio;
 pub mod build;
+pub mod card;
 pub mod chain;
 pub mod denoise;
 pub mod dsp;
@@ -33,6 +34,7 @@ pub use analysis::{
 };
 pub use audio::{AudioBuffer, ChannelLayout, SampleEncoding};
 pub use build::BuiltChain;
+pub use card::CardId;
 pub use chain::{Chain, Stage};
 pub use denoise::{
     build_denoiser, BuiltEngine, ChunkPolicy, Denoise, Denoiser, RamPreflight, SpectralDenoiser,

@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::analysis::{analyze, AnalysisError, AnalysisReport, ContentGuess};
 use crate::audio::AudioBuffer;
 use crate::build::BuiltChain;
+use crate::card::CardId;
 use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
@@ -145,6 +146,30 @@ impl Session {
     /// A rack card's enable override, if the user set one (`None` = preset default).
     pub fn stage_enabled_override(&self, stage: Stage) -> Option<bool> {
         self.cards[stage as usize].enabled
+    }
+
+    /// The *effective* enabled state of a stage — the user's override if set,
+    /// otherwise the active preset's default. This is the on/off position the
+    /// Standard-view card toggle shows, resolvable without a render.
+    pub fn resolve_stage_enabled(&self, stage: Stage) -> bool {
+        self.cards[stage as usize]
+            .enabled
+            .unwrap_or_else(|| self.preset.stage_default_enabled(stage))
+    }
+
+    /// Enable or bypass a UI **card** (UI ref card model). A card fans out to one
+    /// or more engine stages — e.g. "De-click / De-pop" toggles both `DeClick` and
+    /// `DePop` — so the agent and the egui toggle drive the same single action.
+    pub fn set_card_enabled(&mut self, card: CardId, on: bool) {
+        for &stage in card.stages() {
+            self.set_stage_enabled(stage, on);
+        }
+    }
+
+    /// Whether a UI card is effectively on — true iff every stage it governs
+    /// resolves to enabled.
+    pub fn card_enabled(&self, card: CardId) -> bool {
+        card.stages().iter().all(|&s| self.resolve_stage_enabled(s))
     }
 
     /// Reset every card to "use the preset default" — a preset change resets the
@@ -527,6 +552,42 @@ mod tests {
         }
         assert!(s.ab_match_gain().is_some());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn card_model_resolves_preset_defaults_and_fans_out_to_stages() {
+        use crate::card::CardId;
+        // resolve_stage_enabled folds the preset default under the None override,
+        // so the UI toggle shows the *true* on/off position without a render.
+        let mut s = Session::new(); // voiceover / Podcast
+        assert_eq!(s.stage_enabled_override(Stage::Breath), None);
+        assert!(
+            s.resolve_stage_enabled(Stage::Breath),
+            "Podcast runs breath control by default"
+        );
+        assert!(
+            !s.resolve_stage_enabled(Stage::DeBleed),
+            "de-bleed is off for a native take"
+        );
+
+        // The singing default (Lead Vocal) turns breath + de-reverb off by default.
+        s.set_content_mode(ContentMode::Singing);
+        assert!(
+            !s.resolve_stage_enabled(Stage::Breath),
+            "Lead Vocal leaves breaths intact"
+        );
+        assert!(
+            !s.resolve_stage_enabled(Stage::DeReverb),
+            "Lead Vocal keeps de-reverb off to protect tails"
+        );
+
+        // One UI card fans out to two engine stages (De-click/De-pop → DeClick+DePop).
+        s.set_card_enabled(CardId::DeClickDePop, false);
+        assert_eq!(s.stage_enabled_override(Stage::DeClick), Some(false));
+        assert_eq!(s.stage_enabled_override(Stage::DePop), Some(false));
+        assert!(!s.card_enabled(CardId::DeClickDePop));
+        // A 1:1 card resolves through the same path.
+        assert!(s.card_enabled(CardId::Denoise));
     }
 
     #[test]
