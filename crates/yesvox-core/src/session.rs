@@ -53,6 +53,35 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
+/// The export container the OUTPUT panel chooses. The sample rate is *not* here —
+/// it is locked to the input (a hard guardrail + the same-length CI gate), so the
+/// OUTPUT panel shows it as a read-only chip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// RIFF/WAVE.
+    Wav,
+    /// FLAC (lossless compressed).
+    Flac,
+}
+
+impl OutputFormat {
+    /// The lowercase file extension (no dot).
+    pub fn extension(self) -> &'static str {
+        match self {
+            OutputFormat::Wav => "wav",
+            OutputFormat::Flac => "flac",
+        }
+    }
+
+    /// The OUTPUT-panel display label.
+    pub fn label(self) -> &'static str {
+        match self {
+            OutputFormat::Wav => "WAV",
+            OutputFormat::Flac => "FLAC",
+        }
+    }
+}
+
 /// A per-rack-card override layered over the preset's defaults: an optional
 /// enable (None = use the preset's default) and a wet/dry mix.
 #[derive(Clone, Copy)]
@@ -89,6 +118,12 @@ pub struct Session {
     /// A Session-level loudness-target override (the OUTPUT panel / Loudness card).
     /// `None` honors the active preset's target.
     loudness_override: Option<LoudnessTarget>,
+    /// Export container (OUTPUT panel). Sample rate is locked to the input.
+    output_format: OutputFormat,
+    /// Output file name without extension (FILE panel); defaulted on `open`.
+    output_name: Option<String>,
+    /// Output directory (FILE panel); defaults to the input's parent on `open`.
+    output_dir: Option<PathBuf>,
     workers: usize,
     neural_model: Option<PathBuf>,
 }
@@ -118,6 +153,9 @@ impl Session {
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
+            output_format: OutputFormat::Wav,
+            output_name: None,
+            output_dir: None,
             workers,
             neural_model: std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from),
         }
@@ -256,6 +294,57 @@ impl Session {
             .unwrap_or(self.preset.loudness_target)
     }
 
+    /// Override the export bit depth; `None` honors the source file's depth
+    /// (OUTPUT panel). Export-time only — does not invalidate the render.
+    pub fn set_bit_depth(&mut self, bits: Option<u16>) {
+        self.settings.export.bit_depth_override = bits;
+    }
+
+    /// Toggle TPDF dither on ≤24-bit integer export (OUTPUT panel).
+    pub fn set_dither(&mut self, on: bool) {
+        self.settings.export.dither = on;
+    }
+
+    /// Set the export container (OUTPUT panel). The sample rate stays locked to
+    /// the input.
+    pub fn set_output_format(&mut self, format: OutputFormat) {
+        self.output_format = format;
+    }
+
+    /// The chosen export container.
+    pub fn output_format(&self) -> OutputFormat {
+        self.output_format
+    }
+
+    /// Set the output file name (without extension, FILE panel).
+    pub fn set_output_name(&mut self, name: &str) {
+        self.output_name = Some(name.to_string());
+    }
+
+    /// The output file name without extension, if set (defaulted on `open`).
+    pub fn output_name(&self) -> Option<&str> {
+        self.output_name.as_deref()
+    }
+
+    /// Set the output directory (FILE panel).
+    pub fn set_output_location(&mut self, dir: impl Into<PathBuf>) {
+        self.output_dir = Some(dir.into());
+    }
+
+    /// The output directory, if set (defaults to the input's parent on `open`).
+    pub fn output_location(&self) -> Option<&Path> {
+        self.output_dir.as_deref()
+    }
+
+    /// The composed export path — `location / name . format-extension` — the
+    /// "EXPORT VOCAL" button writes to. `None` until a name and location exist
+    /// (i.e. after `open`).
+    pub fn export_target(&self) -> Option<PathBuf> {
+        let dir = self.output_dir.as_ref()?;
+        let name = self.output_name.as_ref()?;
+        Some(dir.join(format!("{name}.{}", self.output_format.extension())))
+    }
+
     /// Reset every per-card and finish override to "use the preset default" — a
     /// preset change resets the rack (plan §5.3). The master macros (Flow Amount,
     /// Polish Intensity) persist across preset changes.
@@ -273,6 +362,15 @@ impl Session {
         self.input = Some(buffer);
         self.report = Some(report);
         self.output = None;
+        // Default the export target from the opened file (FILE panel), as the mock
+        // shows ("Lead Vocal" → "Lead Vocal_YesVox" beside the source's folder).
+        if self.output_dir.is_none() {
+            self.output_dir = path.parent().map(Path::to_path_buf);
+        }
+        if self.output_name.is_none() {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("vocal");
+            self.output_name = Some(format!("{stem}_YesVox"));
+        }
         Ok(self.report.as_ref().unwrap())
     }
 
@@ -461,7 +559,8 @@ impl Session {
     }
 
     /// Export the last render to `path` (never-overwrites, returns the written
-    /// path). Errors if nothing has been rendered.
+    /// path). The container is inferred from `path`'s extension. Errors if nothing
+    /// has been rendered.
     pub fn export(&self, path: &Path) -> Result<PathBuf, SessionError> {
         let buffer = self.output.as_ref().ok_or(SessionError::NotRendered)?;
         let opts = self
@@ -469,6 +568,13 @@ impl Session {
             .export
             .to_options(buffer.bits_per_sample(), buffer.encoding());
         export(path, buffer, opts).map_err(SessionError::Io)
+    }
+
+    /// Export the last render to the composed [`Session::export_target`] (the
+    /// "EXPORT VOCAL" button). Errors if nothing is loaded or rendered.
+    pub fn export_to_target(&self) -> Result<PathBuf, SessionError> {
+        let target = self.export_target().ok_or(SessionError::NotLoaded)?;
+        self.export(&target)
     }
 }
 
@@ -680,6 +786,51 @@ mod tests {
         }
         assert!(s.ab_match_gain().is_some());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn output_target_composes_name_location_format_and_bit_depth() {
+        let in_path = temp("g12-in");
+        quiet_tone_fixture(&in_path); // 24-bit WAV in temp_dir
+        let mut s = Session::new();
+        s.open(&in_path).unwrap();
+
+        // Defaults are derived from the opened file (FILE panel).
+        assert_eq!(s.output_location().unwrap(), in_path.parent().unwrap());
+        assert!(
+            s.output_name().unwrap().ends_with("_YesVox"),
+            "default name suffixes the source stem, got {:?}",
+            s.output_name()
+        );
+        assert_eq!(s.output_format(), OutputFormat::Wav);
+
+        // Drive the OUTPUT + FILE panels.
+        s.set_bit_depth(Some(16));
+        s.set_dither(false);
+        s.set_output_format(OutputFormat::Flac);
+        let name = format!("yesvox-g12-target-{}", std::process::id());
+        s.set_output_name(&name);
+        s.set_output_location(std::env::temp_dir());
+        s.render().unwrap();
+
+        // export_target composes location / name . format-extension.
+        let target = s.export_target().unwrap();
+        assert!(
+            target.ends_with(format!("{name}.flac")),
+            "composed: {target:?}"
+        );
+        let _ = std::fs::remove_file(&target);
+        let written = s.export_to_target().unwrap();
+        assert_eq!(written, target);
+        let back = crate::read_audio(&written).unwrap();
+        assert_eq!(
+            back.bits_per_sample(),
+            16,
+            "exported at the chosen bit depth, as FLAC"
+        );
+
+        let _ = std::fs::remove_file(&in_path);
+        let _ = std::fs::remove_file(&written);
     }
 
     #[test]
