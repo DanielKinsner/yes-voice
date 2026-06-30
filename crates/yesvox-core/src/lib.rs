@@ -23,6 +23,7 @@ pub mod preset;
 pub mod processor;
 pub mod quality;
 pub mod settings;
+pub mod singing;
 
 pub use analysis::{
     analyze, analyze_file, AnalysisError, AnalysisReport, ContentGuess, HumEstimate,
