@@ -82,6 +82,10 @@ pub struct Session {
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
     flow: f32,
+    /// The "Polish Intensity" macro (Gentle ↔ Strong), `[0, 1]`. The default 0.5
+    /// is the preset's nominal polish; lower backs the polish group off. See
+    /// [`Session::set_polish_intensity`].
+    polish: f32,
     workers: usize,
     neural_model: Option<PathBuf>,
 }
@@ -109,6 +113,7 @@ impl Session {
             output: None,
             cards: [Card::default(); STAGE_COUNT],
             flow: 1.0,
+            polish: 0.5,
             workers,
             neural_model: std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from),
         }
@@ -190,11 +195,45 @@ impl Session {
         self.flow
     }
 
+    /// The polish-rack stages the "Polish Intensity" macro scales. v1 covers the
+    /// 1:1 polish cards (de-ess, breath); presence/air + leveling join once their
+    /// finish sub-controls are independently addressable, and loudness stays out
+    /// so the target can't be perturbed.
+    const POLISH_STAGES: [Stage; 2] = [Stage::DeEss, Stage::Breath];
+
+    /// Set the **Polish Intensity** radial (Gentle ↔ Strong), `[0, 1]`. The default
+    /// 0.5 maps to the preset's nominal polish (scale 1.0), so default renders are
+    /// unchanged; the lower half backs the polish group off toward Gentle. The
+    /// upper half is reserved for future over-drive (which needs the polish
+    /// sub-params, not a wet/dry that already tops out at full). Invalidates the
+    /// last render.
+    pub fn set_polish_intensity(&mut self, t: f32) {
+        self.polish = t.clamp(0.0, 1.0);
+        self.output = None;
+    }
+
+    /// The current Polish Intensity macro position.
+    pub fn polish_intensity(&self) -> f32 {
+        self.polish
+    }
+
+    /// The polish-group scale the macro currently applies (0.5 → 1.0 nominal,
+    /// Gentle reduces, Strong tops out at full).
+    fn polish_scale(&self) -> f32 {
+        (2.0 * self.polish).clamp(0.0, 1.0)
+    }
+
     /// The effective wet/dry mix a stage renders at: the card's own mix scaled by
-    /// the global Flow Amount master. The single place rack-wide macros compose,
-    /// so the null guarantees stay clean as more macros land.
+    /// the rack-wide macros (Flow Amount globally, Polish Intensity over the polish
+    /// group). The single place macros compose, so the null guarantees stay clean
+    /// as more macros land.
     fn effective_mix(&self, stage: Stage) -> f32 {
-        self.cards[stage as usize].mix * self.flow
+        let polish = if Self::POLISH_STAGES.contains(&stage) {
+            self.polish_scale()
+        } else {
+            1.0
+        };
+        self.cards[stage as usize].mix * self.flow * polish
     }
 
     /// Reset every card to "use the preset default" — a preset change resets the
@@ -229,10 +268,38 @@ impl Session {
         self.output = None;
     }
 
-    /// Set the processing intensity (the Restoration Focus macro / quality slider).
+    /// Set the processing intensity (the quality slider) directly.
     pub fn set_quality_mode(&mut self, mode: QualityMode) {
         self.settings.quality_mode = mode;
         self.output = None;
+    }
+
+    /// Set the **Restoration Focus** radial (More Transparent ↔ More Aggressive),
+    /// `[0, 1]`. The radial is visually continuous but [`QualityMode`] is the
+    /// authoritative 3-value engine axis, so this quantizes onto it in equal
+    /// thirds (Natural / Balanced / Restoration HQ) rather than inventing a fourth
+    /// engine state. [`Session::set_quality_mode`] stays the exact escape hatch.
+    pub fn set_restoration_focus(&mut self, t: f32) {
+        let t = t.clamp(0.0, 1.0);
+        let mode = if t < 1.0 / 3.0 {
+            QualityMode::Natural
+        } else if t < 2.0 / 3.0 {
+            QualityMode::Balanced
+        } else {
+            QualityMode::RestorationHq
+        };
+        self.set_quality_mode(mode);
+    }
+
+    /// The Restoration Focus radial position — the canonical center of the current
+    /// intensity's band, so the radial re-renders stably (and round-trips through
+    /// [`Session::set_restoration_focus`]).
+    pub fn restoration_focus(&self) -> f32 {
+        match self.settings.quality_mode {
+            QualityMode::Natural => 1.0 / 6.0,
+            QualityMode::Balanced => 0.5,
+            QualityMode::RestorationHq => 5.0 / 6.0,
+        }
     }
 
     /// Select a preset from the gallery. Adopts the preset's content mode and
@@ -577,6 +644,97 @@ mod tests {
         }
         assert!(s.ab_match_gain().is_some());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn polish_intensity_scales_only_the_polish_group() {
+        let path = temp("polish");
+        degraded_fixture(&path);
+
+        let mut nominal_s = Session::new();
+        nominal_s.open(&path).unwrap();
+        nominal_s.render().unwrap();
+        let nominal = nominal_s.output().unwrap().channel(0).to_vec();
+
+        let mut gentle_s = Session::new();
+        gentle_s.open(&path).unwrap();
+        gentle_s.set_polish_intensity(0.0);
+        gentle_s.render().unwrap();
+        let gentle = gentle_s.output().unwrap().channel(0).to_vec();
+
+        // Polish 0 backs the polish group off → the render changes.
+        assert!(
+            nominal
+                .iter()
+                .zip(&gentle)
+                .any(|(a, b)| (a - b).abs() > 1e-4),
+            "polish 0 must back the polish group off"
+        );
+
+        // It is *exactly* equivalent to dialing the de-ess + breath cards to dry,
+        // proving Polish Intensity scales only that group (restore + the loudness
+        // target are untouched).
+        let mut cards_s = Session::new();
+        cards_s.open(&path).unwrap();
+        cards_s.set_stage_mix(Stage::DeEss, 0.0);
+        cards_s.set_stage_mix(Stage::Breath, 0.0);
+        cards_s.render().unwrap();
+        let cards_dry = cards_s.output().unwrap().channel(0).to_vec();
+        for (a, b) in gentle.iter().zip(&cards_dry) {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "polish 0 ≡ de-ess + breath dialed dry"
+            );
+        }
+
+        // The default (0.5) is the preset's nominal polish: the default render is
+        // unchanged.
+        assert_eq!(Session::new().polish_intensity(), 0.5);
+        let mut base = Session::new();
+        base.open(&path).unwrap();
+        base.render().unwrap();
+        for (a, b) in nominal.iter().zip(base.output().unwrap().channel(0)) {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "default polish leaves the render nominal"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn restoration_focus_quantizes_to_quality_mode() {
+        let mut s = Session::new();
+        s.set_restoration_focus(0.0);
+        assert_eq!(s.settings().quality_mode, QualityMode::Natural);
+        s.set_restoration_focus(0.5);
+        assert_eq!(s.settings().quality_mode, QualityMode::Balanced);
+        s.set_restoration_focus(1.0);
+        assert_eq!(s.settings().quality_mode, QualityMode::RestorationHq);
+        // Band boundaries: 1/3 enters Balanced, 2/3 enters Restoration HQ.
+        s.set_restoration_focus(0.33);
+        assert_eq!(s.settings().quality_mode, QualityMode::Natural);
+        s.set_restoration_focus(0.34);
+        assert_eq!(s.settings().quality_mode, QualityMode::Balanced);
+        s.set_restoration_focus(0.66);
+        assert_eq!(s.settings().quality_mode, QualityMode::Balanced);
+        s.set_restoration_focus(0.67);
+        assert_eq!(s.settings().quality_mode, QualityMode::RestorationHq);
+        // The radial readout round-trips back into the same band.
+        for mode in [
+            QualityMode::Natural,
+            QualityMode::Balanced,
+            QualityMode::RestorationHq,
+        ] {
+            s.set_quality_mode(mode);
+            let t = s.restoration_focus();
+            s.set_restoration_focus(t);
+            assert_eq!(
+                s.settings().quality_mode,
+                mode,
+                "the focus readout must round-trip into the same mode"
+            );
+        }
     }
 
     #[test]
