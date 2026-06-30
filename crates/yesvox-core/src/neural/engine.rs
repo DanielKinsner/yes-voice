@@ -21,7 +21,8 @@
 //! golden-tested in pure Rust with deterministic stand-in masks; only the real
 //! ONNX inference sits behind the off-by-default `neural` feature.
 
-use super::{MossformerFbank, MossformerStft};
+use super::{from_48k, to_48k, MossformerFbank, MossformerStft};
+use crate::denoise::Denoiser;
 
 /// int16 full-scale — clearvoice scales the waveform by this before feature
 /// extraction and the STFT, then divides the reconstruction back down.
@@ -76,6 +77,24 @@ impl MossformerEngine {
         let recon = self.stft.inverse(&spectrum, n);
 
         recon.iter().map(|&x| x / MAX_WAV_VALUE).collect()
+    }
+
+    /// Enhance at an arbitrary `sample_rate`, returning a same-length result.
+    /// Non-48 kHz input is taken through the resample island for the neural
+    /// pass and carried back to the source rate fitted to the input length.
+    pub fn enhance_at(&self, signal: &[f32], sample_rate: u32) -> Vec<f32> {
+        if sample_rate == 48_000 {
+            return self.enhance(signal);
+        }
+        let up = to_48k(signal, sample_rate);
+        let processed = self.enhance(&up);
+        from_48k(&processed, sample_rate, signal.len())
+    }
+}
+
+impl Denoiser for MossformerEngine {
+    fn denoise(&self, input: &[f32], sample_rate: f32) -> Vec<f32> {
+        self.enhance_at(input, sample_rate.round() as u32)
     }
 }
 
@@ -157,6 +176,32 @@ mod tests {
         let x = speech_like(100); // < one 1920-sample frame
         let eng = MossformerEngine::new(Box::new(ConstMask(0.0)));
         assert_eq!(eng.enhance(&x), x);
+    }
+
+    #[test]
+    fn enhance_at_non_48k_is_same_length_and_preserves_tone() {
+        // Identity mask + 44.1 kHz input: the Denoiser path resamples to 48k,
+        // runs an iSTFT∘STFT round-trip, and resamples back — same length out,
+        // and a passband tone survives the island round-trip.
+        let sr = 44_100.0;
+        let x = tone_at(1000.0, sr, 44_100);
+        let eng = MossformerEngine::new(Box::new(ConstMask(1.0)));
+        let y = eng.denoise(&x, sr);
+        assert_eq!(y.len(), x.len(), "Denoiser must preserve length");
+        let (lo, hi) = (3000, x.len() - 3000);
+        let p_in = crate::dsp::goertzel_power(&x[lo..hi], sr, 1000.0);
+        let p_out = crate::dsp::goertzel_power(&y[lo..hi], sr, 1000.0);
+        let d_db = 10.0 * (p_out.max(1e-12) / p_in.max(1e-12)).log10();
+        assert!(
+            d_db.abs() < 0.8,
+            "tone drifted {d_db} dB through the island"
+        );
+    }
+
+    fn tone_at(freq: f32, sr: f32, n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| 0.4 * (2.0 * PI * freq * i as f32 / sr).sin())
+            .collect()
     }
 
     #[test]

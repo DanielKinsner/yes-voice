@@ -15,8 +15,10 @@
 
 pub mod engine;
 pub mod fbank;
+pub mod resample;
 pub mod stft;
 
 pub use engine::{MaskModel, MossformerEngine};
 pub use fbank::MossformerFbank;
+pub use resample::{from_48k, to_48k, Resampler};
 pub use stft::MossformerStft;
