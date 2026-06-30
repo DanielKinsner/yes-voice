@@ -27,7 +27,7 @@ The Yes suite is **music-first**, so **singing is a first-class citizen, never a
 
 Primary user is **"pro-grade, broadly accessible"**: as close to a professional tool as possible, but usable by a wider audience. A non-engineer should get a great result fast; a pro should get full control and trust it on paid work. We serve *both* via progressive disclosure (Standard / Advanced), never by weakening the engine.
 
-Content is **equally voiceover and singing** (with singing held first-class given the music-first suite), routed by an auto-detected mode that the user can override.
+Content is **equally voiceover and singing** (with singing held first-class given the music-first suite), routed by an **explicit Voiceover/Singing toggle** (user-authoritative, smart-assisted — see §6/§11).
 
 ## 4. Operating principles (when unsure, decide this way)
 

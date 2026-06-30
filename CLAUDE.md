@@ -9,10 +9,11 @@
 ## Non-negotiable guardrails (don't drift, even before reading product.md)
 
 - **Restoration & finish, NOT production.** Fix/finish one vocal (denoise, de-reverb, de-click/pop, de-hum, declip, de-ess, loudness, de-bleed). Do **not** add mixing/mastering/multitrack/instrument/full-production features — that's yes-master or a DAW.
-- **No source/stem separator.** YesVox takes an *already-isolated* vocal; the voice is the wanted signal, not something to de-mix. (A small **de-bleed** module cleans imported separated stems — that's restoration, not separation.)
+- **No source/stem separator inside YesVox.** YesVox takes an *already-isolated* vocal; the voice is the wanted signal, not something to de-mix. (A small **de-bleed** module cleans imported separated stems — that's restoration, not separation.) Separation is a **separate engine — YesStems** (suite sibling); v1 links via a manual export → open, **not** a built-in handoff. Don't fuse them.
 - **Offline only.** No cloud, no upload, no network dependency for processing.
 - **Preserve vocal character above all** — never trade vibrato/sustain/breath/timbre for more noise removal.
 - **Standard + Advanced** progressive disclosure (mirrors yes-master): smart/adaptive defaults that don't require a manual, with full pro depth available. Non-destructive; show what was removed (A/B + difference monitor).
+- **Content mode = an explicit Voiceover/Singing toggle** (user-authoritative), assisted by smart detection — *not* auto-detected-only. Keeps singing a **separable mode** that can ship later if it can't clear the quality bar; **validate singing quality early, as a gate.**
 - **v1 = restoration core only.** Bandwidth extension, creative reverb, pitch/time, spectrogram brush-heal editing, and mobile are explicitly **later** — don't let them creep into v1.
 
 ## Status

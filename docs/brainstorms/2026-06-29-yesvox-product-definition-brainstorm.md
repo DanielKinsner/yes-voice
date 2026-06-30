@@ -18,13 +18,14 @@ Explored three identity options (restoration-purist / restoration+polish / full 
 ## Key Decisions
 
 - **Identity:** restoration + essential polish ("clean, clear, finished"), not mixing/mastering/production.
-- **Input:** already-isolated vocal; **no separator** (de-bleed module instead); suite-friendly seams.
+- **Input:** already-isolated vocal; **no separator inside YesVox** (de-bleed module instead). Separation = **YesStems** (separate engine, demucs-based, already built); v1 links via a **manual export → open** — handoff designed-for, **not** built-in (both speak WAV-in/out, so separate keeps linking easy; don't fuse engines).
 - **Audience:** pro-grade, broadly accessible → **Standard + Advanced** progressive disclosure.
-- **Content:** voiceover + singing, equal, auto-detected mode toggle (chains differ).
+- **Content:** voiceover + singing, equal — chosen via an **explicit Voiceover/Singing toggle** (user-authoritative), smart-assisted (detection pre-selects + pre-tunes). Toggle over pure auto-detect: a misclassification is worse than one click, it markets as "does both," and it keeps **singing a separable mode** shippable later if needed.
+- **Singing = validated early, as a gate.** Character-preservation on sung vocals is the moat *and* the hardest bet — prove it before building the rack around it; the toggle keeps singing shippable-later if it can't clear the bar.
 - **Constraints:** offline-only; quality > real-time; non-destructive; preserve vocal character above all.
 - **v1:** restoration core (denoise, de-reverb, de-click/pop, de-hum, declip, de-ess, loudness, de-bleed), Standard + Advanced, desktop. Everything else = later.
 - **Success (ranked):** pro-grade output character-intact → pros trust & control → non-engineer succeeds fast → fits the Yes suite. (Offline-no-quality-penalty is a given.)
-- **Suite:** Yes suite (yes-master, stemmer, YesVox); shared Standard/Advanced UX + clean handoffs; YesVox standalone-complete.
+- **Suite:** Yes suite — **yes-master** (ready to ship), **YesDAW** (~70%), **YesStems** (demucs separator, built), **YesVox**; shared Standard/Advanced UX + clean handoffs; YesVox standalone-complete. A **modular ecosystem**, each app focused.
 
 ## Open Questions
 
