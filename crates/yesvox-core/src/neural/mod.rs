@@ -13,6 +13,7 @@
 //! enhancement chain landed (all torch/clearvoice-golden). The `ort` inference
 //! and 48 kHz resample island follow as the remaining #10 increments.
 
+pub mod chunk;
 pub mod engine;
 pub mod fbank;
 #[cfg(feature = "neural")]
@@ -20,6 +21,7 @@ pub mod ort_model;
 pub mod resample;
 pub mod stft;
 
+pub use chunk::WindowedMask;
 pub use engine::{MaskModel, MossformerEngine};
 pub use fbank::MossformerFbank;
 #[cfg(feature = "neural")]
