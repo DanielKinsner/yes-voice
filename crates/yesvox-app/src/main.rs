@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use yesvox_core::{
-    analyze, export, read_audio, BleedVerdict, BuiltChain, Engine, Settings, VocalProcessor,
+    analyze, export, read_audio, BleedVerdict, BuiltChain, Engine, Preset, Settings, VocalProcessor,
 };
 
 fn main() -> ExitCode {
@@ -64,7 +64,10 @@ fn run(input: &Path, output: &Path) -> Result<PathBuf, Box<dyn std::error::Error
         .map(|n| n.get().saturating_sub(1).max(1))
         .unwrap_or(1);
     let model = std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from);
-    let mut built = BuiltChain::build(&settings, &report, model.as_deref(), workers, 0.0);
+    // The headless CLI has no preset gallery, so it renders the content mode's
+    // default preset (the GUI passes the user's gallery selection instead).
+    let preset = Preset::default_for(settings.content_mode);
+    let mut built = BuiltChain::build(&settings, preset, &report, model.as_deref(), workers, 0.0);
 
     eprintln!(
         "engine: preset {} | intensity {:?} | denoiser {:?}{}",

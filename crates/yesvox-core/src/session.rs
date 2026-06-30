@@ -268,6 +268,7 @@ impl Session {
         // here (the visible Fast-mode badge is a GUI concern).
         let mut built = BuiltChain::build(
             &self.settings,
+            self.preset,
             report,
             self.neural_model.as_deref(),
             self.workers,
@@ -344,11 +345,57 @@ mod tests {
         buf
     }
 
+    /// A clean, quiet 220 Hz tone — integrated loudness well below −16 LUFS, so a
+    /// MatchInput preset and a −16 LUFS preset render to clearly different levels.
+    fn quiet_tone_fixture(path: &Path) -> AudioBuffer {
+        let n = SR as usize * 2;
+        let x: Vec<f32> = (0..n)
+            .map(|i| 0.05 * (2.0 * PI * 220.0 * i as f32 / SR as f32).sin())
+            .collect();
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
     fn temp(tag: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!("yesvox-session-{tag}-{}.wav", std::process::id()));
         let _ = std::fs::remove_file(&p);
         p
+    }
+
+    #[test]
+    fn render_applies_the_selected_preset_not_the_mode_default() {
+        // Regression for the preset-application defect: render() must build the
+        // chain from the *selected* preset, not Preset::default_for(content_mode).
+        let path = temp("g0-selected-preset");
+        quiet_tone_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+
+        // The default voiceover preset is Podcast (loudness target −16 LUFS).
+        s.render().expect("render");
+        let podcast_lufs = s.output_lufs().expect("podcast out lufs");
+        assert!(
+            (podcast_lufs - (-16.0)).abs() <= 0.6,
+            "the default Podcast preset normalizes to −16 LUFS, got {podcast_lufs}"
+        );
+
+        // Select Dialogue-cleanup — a *non-default* voiceover preset whose loudness
+        // target is MatchInput (keep the quiet input level), not −16. Same content
+        // mode + intensity as the default, so the *only* difference is the preset
+        // character: selecting it must change what renders, not just what's shown.
+        s.select_preset(Preset::DIALOGUE_CLEANUP);
+        s.render().expect("render");
+        let dialogue_lufs = s.output_lufs().expect("dialogue out lufs");
+        assert!(
+            dialogue_lufs < -18.0,
+            "Dialogue-cleanup (MatchInput) must keep the quiet input level, not snap \
+             to the Podcast −16 default — got {dialogue_lufs} (bug: the selected \
+             preset is ignored and the mode-default Podcast is rendered)"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

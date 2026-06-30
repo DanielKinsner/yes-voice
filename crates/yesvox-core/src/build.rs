@@ -33,20 +33,23 @@ pub struct BuiltChain {
 }
 
 impl BuiltChain {
-    /// Assemble the chain for a file. `est_render_s` is the preflight render
-    /// estimate for the requested mode on the detected machine (from the SKU
-    /// table, plan §8.1); pass `0.0` to disable the downshift when no estimate is
-    /// available (e.g. the headless CLI).
+    /// Assemble the chain for a file. The caller passes the *selected* `preset`
+    /// (the gallery choice held by the [`crate::Session`]); the CLI passes
+    /// [`Preset::default_for`] since it has no gallery. `est_render_s` is the
+    /// preflight render estimate for the requested mode on the detected machine
+    /// (from the SKU table, plan §8.1); pass `0.0` to disable the downshift when
+    /// no estimate is available (e.g. the headless CLI).
     pub fn build(
         settings: &Settings,
+        preset: Preset,
         report: &AnalysisReport,
         neural_model: Option<&Path>,
         workers: usize,
         est_render_s: f32,
     ) -> Self {
-        // The content-mode toggle (user-authoritative) picks the preset; the
-        // intensity slider (also user-authoritative) drives the engine binding.
-        let preset = Preset::default_for(settings.content_mode);
+        // The selected preset (user-authoritative gallery choice) supplies the
+        // module character; the intensity slider (also user-authoritative) drives
+        // the engine binding.
         let resolved = resolve(settings.quality_mode, est_render_s);
         // Intensity owns the engine (§2.4); neural falls back to light when its
         // feature/model is absent (reported via `engine`).
@@ -105,7 +108,8 @@ mod tests {
         // the default build, so the engine falls back to light, but the mode is
         // preserved and there is no Fast-mode downshift.
         let settings = Settings::default();
-        let built = BuiltChain::build(&settings, &report(), None, 2, 0.0);
+        let preset = Preset::default_for(settings.content_mode);
+        let built = BuiltChain::build(&settings, preset, &report(), None, 2, 0.0);
         assert_eq!(built.resolved.mode, QualityMode::Balanced);
         assert!(!built.resolved.fast_mode);
         assert_eq!(built.engine, Engine::Light);
@@ -119,7 +123,8 @@ mod tests {
             ..Settings::default()
         };
         // A render estimate well over 1.5 × 45 s trips the downshift.
-        let built = BuiltChain::build(&settings, &report(), None, 2, 1000.0);
+        let preset = Preset::default_for(settings.content_mode);
+        let built = BuiltChain::build(&settings, preset, &report(), None, 2, 1000.0);
         assert_eq!(built.resolved.mode, QualityMode::Natural);
         assert_eq!(built.engine, Engine::Light);
         assert!(
@@ -135,7 +140,8 @@ mod tests {
             quality_mode: QualityMode::Natural,
             ..Settings::default()
         };
-        let built = BuiltChain::build(&settings, &report(), None, 2, 0.0);
+        let preset = Preset::default_for(settings.content_mode);
+        let built = BuiltChain::build(&settings, preset, &report(), None, 2, 0.0);
         assert_eq!(built.preset.name, "Lead Vocal");
         assert_eq!(built.resolved.mode, QualityMode::Natural);
         assert_eq!(built.engine, Engine::Light);
@@ -147,7 +153,8 @@ mod tests {
             quality_mode: QualityMode::RestorationHq,
             ..Settings::default()
         };
-        let built = BuiltChain::build(&hq, &report(), None, 2, 0.0);
+        let preset = Preset::default_for(hq.content_mode);
+        let built = BuiltChain::build(&hq, preset, &report(), None, 2, 0.0);
         assert_eq!(
             built.chain.denoise.passes(),
             2,
@@ -155,7 +162,8 @@ mod tests {
         );
 
         let balanced = Settings::default();
-        let built = BuiltChain::build(&balanced, &report(), None, 2, 0.0);
+        let preset = Preset::default_for(balanced.content_mode);
+        let built = BuiltChain::build(&balanced, preset, &report(), None, 2, 0.0);
         assert_eq!(built.chain.denoise.passes(), 1, "Balanced is single pass");
     }
 
@@ -167,7 +175,8 @@ mod tests {
             .collect();
         let mut buf = AudioBuffer::new(48_000, 16, SampleEncoding::Int, vec![ch]);
         let settings = Settings::default();
-        let mut built = BuiltChain::build(&settings, &report(), None, 2, 0.0);
+        let preset = Preset::default_for(settings.content_mode);
+        let mut built = BuiltChain::build(&settings, preset, &report(), None, 2, 0.0);
         built.chain.prepare(48_000, 4096, ChannelLayout::Mono);
         built.chain.reset();
         built.chain.process(&mut buf);
