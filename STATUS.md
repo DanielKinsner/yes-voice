@@ -4,7 +4,8 @@
 > (a slice lands, a decision is made, a blocker clears). It's the fast briefing
 > for the next person/agent. Keep it honest — "done" means gate-green on `main`.
 >
-> Last updated: 2026-06-29 (after #10 — the full MossFormer2 neural engine).
+> Last updated: 2026-06-29 (after #10 — the full MossFormer2 neural engine —
+> and #11's binding/downshift/diff-monitor logic core).
 
 ## TL;DR
 
@@ -70,9 +71,17 @@ Every module is a `VocalProcessor`; bypassed = sample-accurate identity (per-mod
 
 - **Closed (done):** #1–#8, #12–#15 (rack), **#9** (ONNX export spike → GO),
   **#10** (full MossFormer2 neural engine + SR handling + EP negotiation).
-- **Next, unblocked:** **#11** quality-mode→engine binding + slow-hardware
-  downshift (Natural/Balanced → light `SpectralDenoiser`; Restoration HQ →
-  neural `MossformerEngine` when the `neural` feature + model are present).
+- **#11 — core landed, awaiting the app/GUI surface.** The `quality` module +
+  `denoise::build_denoiser` factory implement the whole §2.4 logic: the fixed
+  mode→engine binding (Natural→light, Balanced→neural 1-pass, Restoration HQ→
+  neural 2-pass; presets can't override), the slow-hardware downshift +
+  Fast-mode flag, the neural→light unavailable-fallback, and the
+  linear-vs-wet/dry difference-monitor selection — all golden-tested. What's
+  left is *surfacing* it: the app/CLI doesn't yet build the rack + run the bound
+  engine, and the **visible** Fast-mode badge needs the GUI (#17/#18).
+- **GUI not started** — the next frontier. #17 (Standard view), #19 (batch
+  render queue), and #11's visible badge all sit on the egui shell. Target
+  layout: [`docs/ui/yesvox-v1-ui-reference.md`](docs/ui/yesvox-v1-ui-reference.md).
 - **Needs Dan — cannot be automated:**
   - **#16** singing quality gate — blind listening (≥3 ears) + license-clean
     ≥12-stem reference set. Gates the singing UI; #17/#19 wait on it.
