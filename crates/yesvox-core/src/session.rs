@@ -78,6 +78,10 @@ pub struct Session {
     report: Option<AnalysisReport>,
     output: Option<AudioBuffer>,
     cards: [Card; STAGE_COUNT],
+    /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
+    /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
+    /// with each card's own mix.
+    flow: f32,
     workers: usize,
     neural_model: Option<PathBuf>,
 }
@@ -104,6 +108,7 @@ impl Session {
             report: None,
             output: None,
             cards: [Card::default(); STAGE_COUNT],
+            flow: 1.0,
             workers,
             neural_model: std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from),
         }
@@ -170,6 +175,26 @@ impl Session {
     /// resolves to enabled.
     pub fn card_enabled(&self, card: CardId) -> bool {
         card.stages().iter().all(|&s| self.resolve_stage_enabled(s))
+    }
+
+    /// Set the global dry→wet master (the "Flow Amount" macro), clamped `[0, 1]`.
+    /// 0 makes the whole rack the identity; 1 is full effect. Invalidates the
+    /// last render.
+    pub fn set_flow_amount(&mut self, amount: f32) {
+        self.flow = amount.clamp(0.0, 1.0);
+        self.output = None;
+    }
+
+    /// The current Flow Amount master.
+    pub fn flow_amount(&self) -> f32 {
+        self.flow
+    }
+
+    /// The effective wet/dry mix a stage renders at: the card's own mix scaled by
+    /// the global Flow Amount master. The single place rack-wide macros compose,
+    /// so the null guarantees stay clean as more macros land.
+    fn effective_mix(&self, stage: Stage) -> f32 {
+        self.cards[stage as usize].mix * self.flow
     }
 
     /// Reset every card to "use the preset default" — a preset change resets the
@@ -300,11 +325,11 @@ impl Session {
             0.0,
         );
 
-        // Apply the per-card overrides (the UI rack) over the preset's defaults.
+        // Apply the per-card overrides (the UI rack) over the preset's defaults,
+        // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
         for stage in Stage::ALL {
-            let card = self.cards[stage as usize];
-            built.chain.set_mix(stage, card.mix);
-            if let Some(on) = card.enabled {
+            built.chain.set_mix(stage, self.effective_mix(stage));
+            if let Some(on) = self.cards[stage as usize].enabled {
                 built.chain.set_stage_enabled(stage, on);
             }
         }
@@ -551,6 +576,36 @@ mod tests {
             assert!((a - b).abs() <= 1e-6, "reblend 1 == original");
         }
         assert!(s.ab_match_gain().is_some());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn flow_amount_master_nulls_the_whole_rack_at_zero() {
+        let path = temp("flow-null");
+        let input = degraded_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+
+        // Flow 0 dials every card fully dry → the whole rack is the identity.
+        s.set_flow_amount(0.0);
+        assert_eq!(s.flow_amount(), 0.0);
+        s.render().expect("render");
+        let dry = s.output().unwrap();
+        for (a, b) in dry.channel(0).iter().zip(input.channel(0)) {
+            assert!((a - b).abs() <= 1e-6, "flow 0 must null the whole rack");
+        }
+
+        // Flow 1 renders identically to the default render (which never set flow).
+        s.set_flow_amount(1.0);
+        s.render().expect("render");
+        let wet = s.output().unwrap().channel(0).to_vec();
+        let mut base = Session::new();
+        base.open(&path).expect("open");
+        base.render().expect("render");
+        let base = base.output().unwrap().channel(0).to_vec();
+        for (a, b) in wet.iter().zip(&base) {
+            assert!((a - b).abs() <= 1e-6, "flow 1 == the default render");
+        }
         let _ = std::fs::remove_file(&path);
     }
 
