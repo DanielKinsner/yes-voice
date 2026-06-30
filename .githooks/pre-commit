@@ -1,0 +1,12 @@
+#!/bin/sh
+# YesVox pre-commit hook — keep red off main. Enable once per clone with:
+#   git config core.hooksPath .githooks
+# Runs fmt --check + clippy -D warnings whenever staged Rust changes.
+set -e
+
+if git diff --cached --name-only --diff-filter=ACM | grep -q '\.rs$'; then
+    echo "pre-commit: cargo fmt --all --check"
+    cargo fmt --all --check
+    echo "pre-commit: cargo clippy --all-targets --all-features -- -D warnings"
+    cargo clippy --all-targets --all-features -- -D warnings
+fi
