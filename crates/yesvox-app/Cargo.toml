@@ -10,3 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 yesvox-core = { path = "../yesvox-core" }
+
+[dev-dependencies]
+yesvox-core = { path = "../yesvox-core" }
