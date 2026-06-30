@@ -16,6 +16,16 @@ allow = [
     "Zlib",
     "MPL-2.0",
 ]
+# Per-crate exceptions for the egui/eframe GUI tree (#17). All permissive /
+# public-domain-equivalent; scoped to the exact crate so the global policy stays
+# tight. CC0/BSL are permissive code licenses; OFL/Ubuntu-font cover the fonts
+# egui bundles and are fine to redistribute in a permissive app.
+exceptions = [
+    { name = "hexf-parse", allow = ["CC0-1.0"] },           # hex float parsing (tiny-skia)
+    { name = "error-code", allow = ["BSL-1.0"] },           # arboard clipboard dep
+    { name = "clipboard-win", allow = ["BSL-1.0"] },        # arboard clipboard dep
+    { name = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] }, # bundled egui fonts
+]
 private = { ignore = true }
 confidence-threshold = 0.9
 
