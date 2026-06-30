@@ -23,10 +23,12 @@ visual target). The **high-quality neural denoiser (MossFormer2_SE_48K) is fully
 built and validated end-to-end** — Kaldi fbank front-end, STFT back-end, host
 enhancement chain, 48 kHz resample island, the `ort` ONNX-Runtime adapter
 (behind the off-by-default `neural` feature), and a windowed decoder for the
-frame-locked graph; proven against the real model + runtime. **All mechanical
-(`afk`) work up to #16 is now done** — remaining work is the GUI (#17/#19) and
-the human-gated items (#16 singing listening, #18 UI sign-off, #20 signing,
-#21 eval).
+frame-locked graph; proven against the real model + runtime. **#11's mechanical
+work is done and the rack runs end-to-end**; an adversarial review then confirmed
+the assembly is correct and surfaced three pre-existing (non-#11) `afk` gaps
+inherited from earlier milestones — see "Known gaps" below. Remaining headline
+work is the GUI (#17/#19) and the human-gated items (#16 singing listening, #18
+UI sign-off, #20 signing, #21 eval).
 
 ## What's built (the `yesvox-core` rack)
 
@@ -103,6 +105,28 @@ Every module is a `VocalProcessor`; bypassed = sample-accurate identity (per-mod
     an end-to-end CLI test proves the output is actually processed.
 
   The only #11 remnant is the **visible** Fast-mode *badge*, which needs the GUI.
+
+## Known gaps (pre-existing `afk`, surfaced by the #11 review)
+
+Mechanical and human-ear-free, but inherited from earlier milestones — not part
+of #11's chain-assembly scope:
+
+- **True-peak ceiling overshoot (limiter, #8/#14).** The assembled chain can
+  exceed −1.0 dBTP for some inputs (e.g. +0.87 dBTP on a ~2 s voice-like signal)
+  because a length-specific upstream transient slips past the limiter's
+  12 kHz-lowpassed sidechain (`FinishStage` alone never overshoots). The loudness
+  **convergence** half of plan §7.6 is gated (`guarantee_loudness.rs`, exact
+  −16/−14 LUFS); the every-preset true-peak half is blocked on this fix.
+- **Metadata round-trip (I/O, #1).** Plan §7.6 promises WAV `bext`/iXML/INFO and
+  FLAC Vorbis/application metadata round-trip as a #1 guarantee, but `io.rs`
+  reads/writes only samples + format, so that metadata is dropped on export.
+  Unbuilt; needs RIFF/FLAC chunk plumbing + a round-trip gate.
+- **Presence-bell centre frequency (finish, #14).** The Podcast presence EQ is
+  fixed at 5 kHz, but the spec disagrees with itself (§5.7 says 4 kHz, §4.3 says
+  3 kHz). A tonal/listening reconciliation for Dan, not an autonomous fix.
+
+Closed by the #11 review pass: the `proptest` property lane (was doc-claimed but
+absent) is now wired; the pass-2 gate now keys on short-term RMS to match §2.4.
 - **GUI not started** — the next frontier. #17 (Standard view), #19 (batch
   render queue), and #11's visible badge all sit on the egui shell. Target
   layout: [`docs/ui/yesvox-v1-ui-reference.md`](docs/ui/yesvox-v1-ui-reference.md).
