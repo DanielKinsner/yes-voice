@@ -14,6 +14,7 @@ pub mod audio;
 pub mod dsp;
 pub mod io;
 pub mod loudness;
+pub mod modules;
 pub mod processor;
 pub mod settings;
 
@@ -24,6 +25,7 @@ pub use audio::{AudioBuffer, ChannelLayout, SampleEncoding};
 pub use io::{
     export, read_audio, read_flac, read_wav, write_flac_with, write_wav, write_wav_with, IoError,
 };
+pub use modules::DeHum;
 pub use processor::{Passthrough, VocalProcessor};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,

@@ -150,6 +150,16 @@ impl Biquad {
         self.z2 = 0.0;
     }
 
+    /// Replace this filter's coefficients with another's while keeping the
+    /// current delay-line state — a click-free retune (plan §3.1 tracker).
+    pub fn copy_coeffs_from(&mut self, other: &Biquad) {
+        self.b0 = other.b0;
+        self.b1 = other.b1;
+        self.b2 = other.b2;
+        self.a1 = other.a1;
+        self.a2 = other.a2;
+    }
+
     /// Magnitude response at `freq` Hz (for tests / analysis), in linear units.
     pub fn magnitude(&self, sample_rate: f32, freq: f32) -> f32 {
         // H(e^jw) = (b0 + b1 z^-1 + b2 z^-2) / (1 + a1 z^-1 + a2 z^-2)
