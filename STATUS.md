@@ -4,22 +4,29 @@
 > (a slice lands, a decision is made, a blocker clears). It's the fast briefing
 > for the next person/agent. Keep it honest — "done" means gate-green on `main`.
 >
-> Last updated: 2026-06-29 (after #10 — the full MossFormer2 neural engine —
-> and #11's binding/downshift/diff-monitor logic core).
+> Last updated: 2026-06-30 (after #11 was fully surfaced — the canonical-order
+> `Chain`, the v1 preset taxonomy, the Settings+report→chain orchestration, the
+> real 2-pass Restoration HQ, and the app now running the bound rack).
 
 ## TL;DR
 
-The **entire v1 restoration/finish core is built, tested, and green on `main`**
-(Windows/macOS/Linux CI). It's a host-agnostic Rust crate (`yesvox-core`) with a
-thin CLI shell (`yesvox-app`); the **egui GUI is not built yet** (that's #17/#18,
-see [`docs/ui/yesvox-v1-ui-reference.md`](docs/ui/yesvox-v1-ui-reference.md) for
-the visual target). The **high-quality neural denoiser (MossFormer2_SE_48K) is
-now fully built and validated end-to-end** — Kaldi fbank front-end, STFT
-back-end, host enhancement chain, 48 kHz resample island, the `ort` ONNX-Runtime
-adapter (behind the off-by-default `neural` feature), and a windowed decoder for
-the frame-locked graph; proven against the real model + runtime. Remaining work
-is the quality-mode→engine binding (#11), the GUI, or human-gated (listening /
-signing accounts).
+The **entire v1 restoration/finish core is built, assembled, surfaced, tested,
+and green on `main`** (Windows/macOS/Linux CI). It's a host-agnostic Rust crate
+(`yesvox-core`) with a thin CLI shell (`yesvox-app`) that now **runs the real
+restoration rack end-to-end** — not a passthrough. The **modules are integrated
+behind the core `process()` boundary** (the canonical-order [`Chain`], the v1
+[`Preset`]s, and `BuiltChain::build` wiring intensity→engine + downshift +
+analysis-tuning), which was the explicit precondition for the singing gate
+(#16). The **egui GUI is still not built** (that's #17/#18, see
+[`docs/ui/yesvox-v1-ui-reference.md`](docs/ui/yesvox-v1-ui-reference.md) for the
+visual target). The **high-quality neural denoiser (MossFormer2_SE_48K) is fully
+built and validated end-to-end** — Kaldi fbank front-end, STFT back-end, host
+enhancement chain, 48 kHz resample island, the `ort` ONNX-Runtime adapter
+(behind the off-by-default `neural` feature), and a windowed decoder for the
+frame-locked graph; proven against the real model + runtime. **All mechanical
+(`afk`) work up to #16 is now done** — remaining work is the GUI (#17/#19) and
+the human-gated items (#16 singing listening, #18 UI sign-off, #20 signing,
+#21 eval).
 
 ## What's built (the `yesvox-core` rack)
 
@@ -46,6 +53,11 @@ Every module is a `VocalProcessor`; bypassed = sample-accurate identity (per-mod
 | 48 kHz resample island (Kaiser-sinc) + neural `Denoiser` impl | `neural::resample` | #10 | ✅ done |
 | `ort` ONNX-Runtime adapter + runtime EP negotiation (CPU fallback) | `neural::ort_model` | #10 | ✅ done |
 | Windowed mask inference for the 256-frame-locked graph | `neural::chunk` | #10 | ✅ done |
+| Canonical-order rack assembler (de-ess→breath HF handoff, all-bypass null) | `chain` | #11 | ✅ done |
+| v1 preset taxonomy (Podcast/Narration/Dialogue; Lead/Natural Vocal) | `preset` | #11 | ✅ done |
+| Settings+report→chain orchestration (resolve + build_denoiser + tune) | `build` | #11 | ✅ done |
+| Conditional 2-pass Restoration HQ (gated `max_passes`, character-protected) | `denoise` | #11 | ✅ done |
+| App runs the bound rack end-to-end (engine/Fast-mode log, de-bleed refusal) | `yesvox-app` | #11 | ✅ done |
 
 ## Architecture (orientation)
 
@@ -71,14 +83,26 @@ Every module is a `VocalProcessor`; bypassed = sample-accurate identity (per-mod
 
 - **Closed (done):** #1–#8, #12–#15 (rack), **#9** (ONNX export spike → GO),
   **#10** (full MossFormer2 neural engine + SR handling + EP negotiation).
-- **#11 — core landed, awaiting the app/GUI surface.** The `quality` module +
-  `denoise::build_denoiser` factory implement the whole §2.4 logic: the fixed
-  mode→engine binding (Natural→light, Balanced→neural 1-pass, Restoration HQ→
-  neural 2-pass; presets can't override), the slow-hardware downshift +
-  Fast-mode flag, the neural→light unavailable-fallback, and the
-  linear-vs-wet/dry difference-monitor selection — all golden-tested. What's
-  left is *surfacing* it: the app/CLI doesn't yet build the rack + run the bound
-  engine, and the **visible** Fast-mode badge needs the GUI (#17/#18).
+- **#11 — done (logic + assembly + app surface).** Beyond the original `quality`
+  module + `denoise::build_denoiser` factory (the §2.4 binding/downshift/
+  diff-monitor logic core), the rack is now **assembled and run end-to-end**:
+  - `chain::Chain` composes every module in canonical order (plan §649) behind
+    one `VocalProcessor`, threads the de-ess→breath HF handoff (§3.2), and is
+    bit-exact identity when all-bypassed (the four guarantee gates now assert
+    against it, plus a `transient_no_double_repair` gate).
+  - `preset::Preset` carries the five v1 presets (§5.7) as data and builds a
+    configured chain; intensity owns the engine (presets structurally can't
+    override it).
+  - `build::BuiltChain::build` is the one orchestration seam: content toggle →
+    preset, intensity → `resolve` (downshift/Fast-mode) → `build_denoiser`
+    (neural→light fallback), `tune_from_report` (RT60 auto-soften), and threads
+    `max_passes` so **Restoration HQ is a genuine gated 2-pass** (was dead
+    metadata; now character-protected and mechanically tested).
+  - `yesvox-app` runs the bound rack (was `Passthrough`), logs the
+    engine/intensity/Fast-mode/fallback, and honors the §4.5 de-bleed refusal;
+    an end-to-end CLI test proves the output is actually processed.
+
+  The only #11 remnant is the **visible** Fast-mode *badge*, which needs the GUI.
 - **GUI not started** — the next frontier. #17 (Standard view), #19 (batch
   render queue), and #11's visible badge all sit on the egui shell. Target
   layout: [`docs/ui/yesvox-v1-ui-reference.md`](docs/ui/yesvox-v1-ui-reference.md).
