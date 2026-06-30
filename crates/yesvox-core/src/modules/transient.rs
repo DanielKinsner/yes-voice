@@ -190,16 +190,22 @@ pub fn fill_gap(x: &mut [f32], start: usize, end: usize) {
     }
 }
 
-/// Classify an event by duration and band content.
+/// Classify an event. A plosive announces itself with a loud **low-frequency
+/// thump that follows the onset**, so we look forward ~18 ms from the onset and
+/// measure how much of that window's energy sits below ~150 Hz (a low-pass
+/// ratio, robust to an overlaid higher-pitched voice). Loud + low-band →
+/// [`TransientKind::Plosive`] (de-pop's job). Otherwise duration decides click
+/// vs mouth-click.
 fn classify(x: &[f32], start: usize, end: usize, sample_rate: f32) -> TransientKind {
-    let len_s = (end - start) as f32 / sample_rate;
-    if len_s > 0.004 {
-        // Long event: low-frequency energy → plosive, else mouth-click.
-        if low_freq_dominant(&x[start..end]) {
-            return TransientKind::Plosive;
-        }
-        return TransientKind::MouthClick;
+    let look = (0.018 * sample_rate) as usize;
+    let win_end = (start + look).min(x.len());
+    let forward = &x[start..win_end.max(start + 1).min(x.len())];
+    let rms = (forward.iter().map(|s| s * s).sum::<f32>() / forward.len().max(1) as f32).sqrt();
+    if rms > 0.05 && low_band_ratio(forward, sample_rate, 150.0) > 0.5 {
+        return TransientKind::Plosive;
     }
+
+    let len_s = (end - start) as f32 / sample_rate;
     if len_s > 0.0009 {
         TransientKind::MouthClick
     } else {
@@ -207,19 +213,18 @@ fn classify(x: &[f32], start: usize, end: usize, sample_rate: f32) -> TransientK
     }
 }
 
-/// Whether most of a slice's energy is low-frequency (slow zero-crossing rate).
-fn low_freq_dominant(seg: &[f32]) -> bool {
-    if seg.len() < 4 {
-        return true;
-    }
-    let mut crossings = 0;
-    for w in seg.windows(2) {
-        if (w[0] >= 0.0) != (w[1] >= 0.0) {
-            crossings += 1;
-        }
-    }
-    // < ~2 zero-crossings over the event → low frequency.
-    crossings <= 2
+/// Fraction of a slice's energy below `cutoff`, via a 2nd-order low-pass.
+fn low_band_ratio(seg: &[f32], sample_rate: f32, cutoff: f32) -> f32 {
+    let total: f32 = seg.iter().map(|s| s * s).sum::<f32>().max(1.0e-12);
+    let mut lp = crate::dsp::Biquad::low_pass(sample_rate, cutoff, 0.707);
+    let low: f32 = seg
+        .iter()
+        .map(|&s| {
+            let y = lp.process(s);
+            y * y
+        })
+        .sum();
+    (low / total).clamp(0.0, 1.0)
 }
 
 /// Median absolute deviation of a slice (robust spread).
