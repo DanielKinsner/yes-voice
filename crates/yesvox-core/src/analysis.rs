@@ -256,8 +256,12 @@ fn click_rate(mono: &[f32], sr: f32) -> f32 {
 /// Median of the absolute values (used for a robust threshold).
 fn median_abs(xs: &[f32]) -> f32 {
     let mut v: Vec<f32> = xs.iter().map(|x| x.abs()).collect();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v.get(v.len() / 2).copied().unwrap_or(0.0)
+    let mid = v.len() / 2;
+    if v.is_empty() {
+        return 0.0;
+    }
+    let (_, median, _) = v.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
+    *median
 }
 
 /// Detect the dominant mains hum (50 vs 60 Hz) and count its harmonics.
