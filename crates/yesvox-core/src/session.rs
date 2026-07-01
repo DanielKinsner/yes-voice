@@ -1026,6 +1026,12 @@ impl Session {
         self.preset
     }
 
+    /// Whether the active Standard intensity calls for generative reconstruction
+    /// and should be labelled with the plan's `GEN` badge.
+    pub fn generative_reconstruction_badge(&self) -> bool {
+        self.settings.quality_mode.is_generative()
+    }
+
     /// The analysis report for the open vocal, if any.
     pub fn report(&self) -> Option<&AnalysisReport> {
         self.report.as_ref()
@@ -2256,6 +2262,20 @@ mod tests {
                 "the focus readout must round-trip into the same mode"
             );
         }
+    }
+
+    #[test]
+    fn generative_badge_tracks_the_active_intensity() {
+        let mut s = Session::new();
+
+        s.set_quality_mode(QualityMode::Natural);
+        assert!(!s.generative_reconstruction_badge());
+
+        s.set_quality_mode(QualityMode::Balanced);
+        assert!(s.generative_reconstruction_badge());
+
+        s.set_quality_mode(QualityMode::RestorationHq);
+        assert!(s.generative_reconstruction_badge());
     }
 
     #[test]

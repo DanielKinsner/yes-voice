@@ -1077,7 +1077,10 @@ impl YesVoxApp {
             FIELD,
             BORDER_DIM,
         );
-        self.body_text(painter, c, 1624.0, 160.0, "Singing - Clean & Natural", TEXT);
+        self.body_text(painter, c, 1624.0, 160.0, self.session.preset().name, TEXT);
+        if preset_gen_badge_visible(&self.session) {
+            self.badge(painter, c, rect(1810.0, 142.0, 34.0, 22.0), "GEN", true);
+        }
         self.star_outline(painter, c, egui::pos2(1852.0, 153.0), 9.0);
         self.small_text(painter, c, 1608.0, 212.0, "DESCRIPTION", TEXT_MUTED);
         self.small_text(
@@ -2958,6 +2961,10 @@ fn loudness_label(t: LoudnessTarget) -> String {
     }
 }
 
+fn preset_gen_badge_visible(session: &Session) -> bool {
+    session.generative_reconstruction_badge()
+}
+
 fn format_duration(seconds: f32) -> String {
     let total = seconds.max(0.0).round() as u32;
     format!("{}:{:02}", total / 60, total % 60)
@@ -3005,6 +3012,7 @@ fn install_theme(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yesvox_core::QualityMode;
 
     #[test]
     fn default_viewport_matches_reference_canvas() {
@@ -3043,6 +3051,20 @@ mod tests {
         ] {
             assert!(!loudness_label(t).is_empty());
         }
+    }
+
+    #[test]
+    fn preset_gen_badge_follows_quality_mode() {
+        let mut session = Session::new();
+
+        session.set_quality_mode(QualityMode::Natural);
+        assert!(!preset_gen_badge_visible(&session));
+
+        session.set_quality_mode(QualityMode::Balanced);
+        assert!(preset_gen_badge_visible(&session));
+
+        session.set_quality_mode(QualityMode::RestorationHq);
+        assert!(preset_gen_badge_visible(&session));
     }
 
     #[test]
