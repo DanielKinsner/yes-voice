@@ -90,9 +90,9 @@ target. Native file import uses `rfd`.
 - **Sample rate = read-only** (export SR locked to input — hard guardrail + the
   same-length CI gate). No SR-override API; the OUTPUT panel shows it as a chip.
 - **Deferred:** real playback transport, live spectral monitor + reblend audio
-  preview (#18 Advanced), background-thread progress, native file picker, "Save
-  as New Preset" + "Add to Suite Library" persistence (stubbed — no user-preset
-  store; suite handoff is a designed-for seam, not built-in).
+  preview (#18 Advanced), background-thread progress, native save/location
+  picker, "Save as New Preset" + "Add to Suite Library" persistence (stubbed —
+  no user-preset store; suite handoff is a designed-for seam, not built-in).
 
 ## GUI dependency note (read before touching the shell)
 

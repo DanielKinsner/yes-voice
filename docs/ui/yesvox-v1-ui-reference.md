@@ -46,8 +46,8 @@ accent gradients, subtle glow on active controls.
 
 - Title `LEAD VOCAL.WAV` (edit pencil). Chips: **WAV · 48 kHz · 24-bit · Mono ·
   3:28**.
-- **FLOW AMOUNT** master slider → `x1.00` (global dry→wet macro — *not yet in
-  the backend; a v1 UI concept to design*).
+- **FLOW AMOUNT** master slider → `x1.00` (global dry→wet macro over the full
+  rack).
 - **Original / Processed** toggle; **IN −7.8 LUFS / OUT −10.1 LUFS** with stereo
   L/R meters (0 → −48 dB). *(Backend: BS.1770 loudness, #2/#14.)*
 - Waveform (0:00–3:28), blue→purple gradient, playhead.

@@ -640,8 +640,7 @@ impl Session {
             .unwrap_or_else(|| self.resolve_stage_enabled(Stage::Finish))
     }
 
-    /// Set the Leveling amount. G9 wires this into the actual leveler; for now it
-    /// is tracked state only and does not change audio.
+    /// Set the Leveling amount that feeds the program-level gain rider.
     pub fn set_leveling_amount(&mut self, amount: f32) {
         self.finish_cards.leveling_amount = amount.clamp(0.0, 1.0);
         self.output = None;
