@@ -62,7 +62,16 @@ impl Default for SingingSettings {
     }
 }
 
-/// Export-stage preferences (plan §1.2 / §5.6): bit depth and dither.
+/// Default FLAC compression level. Plan §5.6 pins the user-facing range at
+/// 0..8 and the default at 5.
+pub const DEFAULT_FLAC_COMPRESSION_LEVEL: u8 = 5;
+
+fn default_flac_compression_level() -> u8 {
+    DEFAULT_FLAC_COMPRESSION_LEVEL
+}
+
+/// Export-stage preferences (plan §1.2 / §5.6): bit depth, dither, and FLAC
+/// compression level.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExportSettings {
     /// Override the export bit depth; `None` honors the source file's depth.
@@ -71,6 +80,9 @@ pub struct ExportSettings {
     /// Apply TPDF dither on ≤24-bit integer export (plan §1.2). On by default.
     #[serde(default = "default_true")]
     pub dither: bool,
+    /// FLAC compression level in the user-facing 0..8 range.
+    #[serde(default = "default_flac_compression_level")]
+    pub flac_compression_level: u8,
 }
 
 fn default_true() -> bool {
@@ -82,6 +94,7 @@ impl Default for ExportSettings {
         ExportSettings {
             bit_depth_override: None,
             dither: true,
+            flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
         }
     }
 }
@@ -97,6 +110,7 @@ impl ExportSettings {
             // Dither only ever applies to ≤24-bit integer export; float export
             // is already lossless, and 32-bit int is below the noise floor.
             dither: self.dither && source_encoding == SampleEncoding::Int && bits <= 24,
+            flac_compression_level: self.flac_compression_level.min(8),
         }
     }
 }
@@ -110,6 +124,8 @@ pub struct ExportOptions {
     pub encoding: SampleEncoding,
     /// Whether to apply TPDF dither before quantization.
     pub dither: bool,
+    /// FLAC compression level in the user-facing 0..8 range.
+    pub flac_compression_level: u8,
 }
 
 /// The whole versioned settings document.
@@ -262,6 +278,10 @@ mod tests {
             "missing singing slot decodes to unlocked"
         );
         assert!(s.export.dither);
+        assert_eq!(
+            s.export.flac_compression_level, DEFAULT_FLAC_COMPRESSION_LEVEL,
+            "missing FLAC level decodes to the planned default"
+        );
         // The additive quality_mode field falls back to the Balanced default.
         assert_eq!(s.quality_mode, QualityMode::Balanced);
     }
@@ -287,5 +307,38 @@ mod tests {
         // 32-bit int and float → no dither.
         assert!(!e.to_options(32, SampleEncoding::Int).dither);
         assert!(!e.to_options(32, SampleEncoding::Float).dither);
+    }
+
+    #[test]
+    fn export_settings_persist_flac_level_and_clamp_to_range() {
+        let s = Settings {
+            export: ExportSettings {
+                flac_compression_level: 8,
+                ..ExportSettings::default()
+            },
+            ..Settings::default()
+        };
+        let json = s.to_json().unwrap();
+        assert!(json.contains("\"flac_compression_level\": 8"));
+        let back = Settings::from_json(&json).unwrap();
+        assert_eq!(back.export.flac_compression_level, 8);
+        assert_eq!(
+            back.export
+                .to_options(16, SampleEncoding::Int)
+                .flac_compression_level,
+            8
+        );
+
+        let too_high = ExportSettings {
+            flac_compression_level: 99,
+            ..ExportSettings::default()
+        };
+        assert_eq!(
+            too_high
+                .to_options(16, SampleEncoding::Int)
+                .flac_compression_level,
+            8,
+            "invalid future/user-edited levels clamp to the planned max"
+        );
     }
 }

@@ -60,5 +60,5 @@ pub use render_queue::{
 pub use session::{IsolationVerdict, OutputFormat, Session, SessionError, VocalIsolationCheck};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,
-    SCHEMA_VERSION,
+    DEFAULT_FLAC_COMPRESSION_LEVEL, SCHEMA_VERSION,
 };

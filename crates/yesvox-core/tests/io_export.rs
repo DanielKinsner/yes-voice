@@ -7,7 +7,7 @@ use std::path::Path;
 
 use yesvox_core::{
     export, read_audio, read_wav, write_wav, write_wav_with, AudioBuffer, ExportOptions,
-    SampleEncoding,
+    SampleEncoding, DEFAULT_FLAC_COMPRESSION_LEVEL,
 };
 
 /// A deterministic mono ramp + tone, values strictly inside (-1, 1).
@@ -32,6 +32,7 @@ fn export_never_overwrites_and_auto_suffixes() {
         bit_depth: 16,
         encoding: SampleEncoding::Int,
         dither: false,
+        flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
     };
 
     let first = export(&desired, &buf, opts).expect("first export");
@@ -64,6 +65,7 @@ fn dither_perturbs_within_one_lsb_and_no_dither_is_exact() {
             bit_depth: 16,
             encoding: SampleEncoding::Int,
             dither: true,
+            flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
         },
     )
     .expect("dithered write");
@@ -74,6 +76,7 @@ fn dither_perturbs_within_one_lsb_and_no_dither_is_exact() {
             bit_depth: 16,
             encoding: SampleEncoding::Int,
             dither: false,
+            flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
         },
     )
     .expect("clean write");
@@ -112,6 +115,7 @@ fn dither_is_reproducible_across_runs() {
         bit_depth: 16,
         encoding: SampleEncoding::Int,
         dither: true,
+        flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
     };
     write_wav_with(&a, &buf, opts).unwrap();
     write_wav_with(&b, &buf, opts).unwrap();
@@ -136,6 +140,7 @@ fn flac_round_trips_length_rate_channels_and_samples() {
             bit_depth: 16,
             encoding: SampleEncoding::Int,
             dither: false,
+            flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
         },
     )
     .expect("flac export");
@@ -160,6 +165,60 @@ fn flac_round_trips_length_rate_channels_and_samples() {
     }
 
     common::remove(&[&written]);
+}
+
+#[test]
+fn flac_compression_level_changes_encoding_without_changing_audio() {
+    let buf = tone(8_000, 16, SampleEncoding::Int);
+    let low = std::env::temp_dir().join(format!("yesvox-flac-low-{}.flac", std::process::id()));
+    let high = std::env::temp_dir().join(format!("yesvox-flac-high-{}.flac", std::process::id()));
+    common::remove(&[&low, &high]);
+
+    let base = ExportOptions {
+        bit_depth: 16,
+        encoding: SampleEncoding::Int,
+        dither: false,
+        flac_compression_level: 0,
+    };
+    let low_written = export(&low, &buf, base).expect("level 0 flac export");
+    let high_written = export(
+        &high,
+        &buf,
+        ExportOptions {
+            flac_compression_level: 8,
+            ..base
+        },
+    )
+    .expect("level 8 flac export");
+
+    assert_ne!(
+        common::read_bytes(&low_written),
+        common::read_bytes(&high_written),
+        "FLAC compression level must reach the encoder config"
+    );
+
+    let low_back = read_audio(&low_written).expect("read level 0 flac");
+    let high_back = read_audio(&high_written).expect("read level 8 flac");
+    assert_eq!(low_back.frames(), buf.frames());
+    assert_eq!(high_back.frames(), buf.frames());
+    let lsb = 1.0f32 / (1u32 << 15) as f32;
+    for ((low_sample, high_sample), source_sample) in low_back
+        .channel(0)
+        .iter()
+        .zip(high_back.channel(0))
+        .zip(buf.channel(0))
+    {
+        assert!(
+            (low_sample - source_sample).abs() <= lsb,
+            "level 0 FLAC sample drifted beyond 1 LSB"
+        );
+        assert!(
+            (high_sample - source_sample).abs() <= lsb,
+            "level 8 FLAC sample drifted beyond 1 LSB"
+        );
+    }
+
+    common::remove(&[&low_written, &high_written]);
 }
 
 #[test]

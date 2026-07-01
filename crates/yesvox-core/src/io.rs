@@ -171,6 +171,7 @@ pub fn write_wav(path: &Path, buffer: &AudioBuffer) -> Result<(), IoError> {
             bit_depth: buffer.bits_per_sample(),
             encoding: buffer.encoding(),
             dither: false,
+            flac_compression_level: crate::settings::DEFAULT_FLAC_COMPRESSION_LEVEL,
         },
     )
 }
@@ -242,7 +243,7 @@ pub fn write_flac_with(
         }
     }
 
-    let config = flacenc::config::Encoder::default()
+    let config = flac_encoder_config(opts.flac_compression_level)
         .into_verified()
         .map_err(|e| IoError::FlacEncode(format!("{e:?}")))?;
     let source = flacenc::source::MemSource::from_samples(
@@ -263,6 +264,23 @@ pub fn write_flac_with(
     std::fs::write(&tmp, sink.as_slice())?;
     std::fs::rename(&tmp, path)?;
     Ok(())
+}
+
+fn flac_encoder_config(level: u8) -> flacenc::config::Encoder {
+    let level = level.min(8);
+    let mut config = flacenc::config::Encoder::default();
+    config.block_size = match level {
+        0..=2 => 1024,
+        3..=5 => 4096,
+        _ => 8192,
+    };
+    config.subframe_coding.use_lpc = level >= 3;
+    config.subframe_coding.qlpc.lpc_order = match level {
+        0..=2 => 1,
+        3..=5 => 10,
+        _ => 12,
+    };
+    config
 }
 
 /// Export a processed buffer to `desired`, **never overwriting** an existing

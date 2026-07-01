@@ -63,6 +63,7 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **#19e** | **Batch preset mode** — `RenderQueue` now supports force-preset mode and per-file detection mode, with low-confidence fallback and crash-recovery JSON compatibility. |
 | **#19f** | **GUI queue affordances** — the Standard shell now exposes queue-current, force-vs-detect batch mode, pause/resume, pending-batch export through `RenderQueue`, and tested queue summaries. |
 | **#19g** | **Batch progress/cancel surface** — `RenderQueue::run_with_progress()` reports file-boundary progress and can cancel before the next file, leaving unprocessed rows pending; the GUI batch export path uses that observer and exposes a cancel affordance. |
+| **#19h** | **FLAC level persistence + encoder wiring** — `ExportSettings` now persists/clamps the planned 0–8 FLAC compression level, `ExportOptions` carries it to the FLAC writer, and tests prove level 0 vs 8 reach the encoder without changing decoded audio. |
 | **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
 
 ## Next up (remaining mechanical gaps)
@@ -73,12 +74,13 @@ Build order, mechanical-first, each TDD'd:
    product.md/plan; ship Revert-only, or a real undo stack?).
 
 Then continue **#19** batch/export work if live issue review finds a remaining
-AFK gap, especially export-panel FLAC-level persistence and metadata round-trip
-coverage. GUI polish remains: finer pixel/spacing adjustments vs the mock and
-the real playback-backed transport + spectral-monitor/reblend (#18). The shell
-currently paints reference/deterministic placeholder waveforms, meters, spectrum,
-and transport controls when no file is loaded so the fresh launch matches the
-visual target. Native file import uses `rfd`.
+AFK gap, especially original-file metadata round-trip coverage (BWF/iXML/INFO
+for WAV, Vorbis comments/application blocks for FLAC). GUI polish remains: finer
+pixel/spacing adjustments vs the mock and the real playback-backed transport +
+spectral-monitor/reblend (#18). The shell currently paints reference/deterministic
+placeholder waveforms, meters, spectrum, and transport controls when no file is
+loaded so the fresh launch matches the visual target. Native file import uses
+`rfd`.
 
 ## Decisions on record
 
