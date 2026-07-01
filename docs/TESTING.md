@@ -1,6 +1,6 @@
 # Testing & engineering discipline
 
-The canonical reference for how YesVox is verified. Mirrors the Yes-suite conventions (yes-master / yes-daw) and adds the gaps they were missing. The governing rule, from [`CLAUDE.md`](../CLAUDE.md): **every check is mechanical (exit 0/1) — Dan does not read diffs or hand-verify by ear/eye.** The only exceptions are the explicit blind-listening gates (#16 singing, #21 final eval), which are `hitl`.
+The canonical reference for how YesVox is verified. Mirrors the Yes-suite conventions (yes-master / yes-daw) and adds the gaps they were missing. The governing rule, from [`CLAUDE.md`](../CLAUDE.md): **every check is mechanical (exit 0/1) — Dan does not read diffs or hand-verify by ear/eye.** The singing gate (#16) is mechanical: the `singing` preservation metrics run in CI. The final evaluation (#21) is the only optional listening lane, and it is non-blocking.
 
 ## The one gate
 
@@ -46,7 +46,8 @@ An autonomous build loop must **never** make a red golden green by re-blessing i
 - **Property lane** — `proptest` over value types (format/SR/channel contract, param ranges). Added with #1's data contract.
 - **Perf lane** — Criterion benches for the <60 s drop-to-export budget (plan §8.4); tracked once the denoise engines land (#8/#10).
 - **Neural lane** (`--features neural`) — the `ort` ONNX engine is off by default, so the fast lane never builds it. A compile-only CI job (`cargo clippy -p yesvox-core --features neural -D warnings`, `load-dynamic` ⇒ no native download) stops the feature-gated code from rotting. Its real end-to-end parity check is an **`#[ignore]`d** integration test (`ort_mask_matches_golden`) — it needs the fetched ONNX weights (`YESVOX_MODEL_PATH`) and the onnxruntime shared lib (`ORT_DYLIB_PATH`), so it runs on a developer machine, not CI. The always-on host DSP (fbank/STFT/engine/resample/chunk) **is** golden-tested in the fast lane; goldens are blessed by the `spikes/mossformer2-onnx/*_golden.py` scripts.
-- **Listening lane** (`hitl`) — blind A/B sign-off for the singing gate (#16) and final eval (#21). Automated tests cannot approve taste; capture the listening note before any preset-calibration change.
+- **Singing lane** — `tests/singing_gate.rs` runs the synthetic sung-character preservation checks in CI: F0 cents, vibrato rate/depth, HNR, spectral-envelope cosine, and tail survival.
+- **Listening lane** (`hitl`) — optional final eval (#21) on the reference laptops. It can inform preset calibration, but it is not a ship-blocking replacement for the mechanical gate.
 
 ## Commit discipline
 
