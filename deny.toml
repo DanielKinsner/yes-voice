@@ -35,6 +35,11 @@ wildcards = "allow"
 
 [advisories]
 yanked = "deny"
+# Accepted, documented advisories (not vulnerabilities; out of our control):
+# - RUSTSEC-2026-0192: `ttf-parser` (transitive egui font-parsing dep) was
+#   declared *unmaintained* by its author. Not a security hole; egui must migrate
+#   to `skrifa` upstream. Ignore rather than block the whole GUI tree (#17).
+ignore = ["RUSTSEC-2026-0192"]
 
 [sources]
 unknown-registry = "deny"
