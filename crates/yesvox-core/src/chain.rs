@@ -153,6 +153,18 @@ impl Chain {
         self.mix[stage as usize]
     }
 
+    /// Configure the `Click` sub-path inside the shared de-click module.
+    pub fn set_click_repair(&mut self, enabled: bool, amount: f32) {
+        self.declick.set_click_enabled(enabled);
+        self.declick.set_click_amount(amount);
+    }
+
+    /// Configure the `MouthClick` sub-path inside the shared de-click module.
+    pub fn set_mouth_click_repair(&mut self, enabled: bool, amount: f32) {
+        self.declick.set_mouth_click_enabled(enabled);
+        self.declick.set_mouth_click_amount(amount);
+    }
+
     /// Enable or bypass a stage (the UI card toggle).
     pub fn set_stage_enabled(&mut self, stage: Stage, on: bool) {
         match stage {

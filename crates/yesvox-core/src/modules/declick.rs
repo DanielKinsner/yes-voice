@@ -16,6 +16,10 @@ use crate::processor::VocalProcessor;
 #[derive(Clone, Copy, Debug)]
 pub struct DeClick {
     enabled: bool,
+    click_enabled: bool,
+    mouth_click_enabled: bool,
+    click_amount: f32,
+    mouth_click_amount: f32,
     detector: TransientDetector,
     sample_rate: f32,
 }
@@ -24,6 +28,10 @@ impl Default for DeClick {
     fn default() -> Self {
         DeClick {
             enabled: true,
+            click_enabled: true,
+            mouth_click_enabled: true,
+            click_amount: 1.0,
+            mouth_click_amount: 1.0,
             detector: TransientDetector::default(),
             sample_rate: 48_000.0,
         }
@@ -46,9 +54,57 @@ impl DeClick {
         self.enabled
     }
 
+    /// Enable or bypass the short click/crackle path.
+    pub fn set_click_enabled(&mut self, on: bool) {
+        self.click_enabled = on;
+    }
+
+    /// Whether the short click/crackle path is active.
+    pub fn click_enabled(&self) -> bool {
+        self.click_enabled
+    }
+
+    /// Enable or bypass the mouth-click/lip-smack path.
+    pub fn set_mouth_click_enabled(&mut self, on: bool) {
+        self.mouth_click_enabled = on;
+    }
+
+    /// Whether the mouth-click/lip-smack path is active.
+    pub fn mouth_click_enabled(&self) -> bool {
+        self.mouth_click_enabled
+    }
+
+    /// Set the short click/crackle repair amount.
+    pub fn set_click_amount(&mut self, amount: f32) {
+        self.click_amount = amount.clamp(0.0, 1.0);
+    }
+
+    /// Current short click/crackle repair amount.
+    pub fn click_amount(&self) -> f32 {
+        self.click_amount
+    }
+
+    /// Set the mouth-click/lip-smack repair amount.
+    pub fn set_mouth_click_amount(&mut self, amount: f32) {
+        self.mouth_click_amount = amount.clamp(0.0, 1.0);
+    }
+
+    /// Current mouth-click/lip-smack repair amount.
+    pub fn mouth_click_amount(&self) -> f32 {
+        self.mouth_click_amount
+    }
+
     /// This module owns the short-impulse kinds; plosives belong to de-pop.
     fn owns(kind: TransientKind) -> bool {
         matches!(kind, TransientKind::Click | TransientKind::MouthClick)
+    }
+
+    fn repair_amount(&self, kind: TransientKind) -> f32 {
+        match kind {
+            TransientKind::Click if self.click_enabled => self.click_amount,
+            TransientKind::MouthClick if self.mouth_click_enabled => self.mouth_click_amount,
+            _ => 0.0,
+        }
     }
 }
 
@@ -66,8 +122,18 @@ impl VocalProcessor for DeClick {
             let samples = buffer.channel_mut(ch);
             let events = self.detector.detect(samples, sr);
             for ev in events {
-                if Self::owns(ev.kind) {
+                let amount = self.repair_amount(ev.kind);
+                if amount <= 0.0 {
+                    continue;
+                }
+                if amount >= 1.0 {
                     fill_gap(samples, ev.start, ev.end);
+                } else if Self::owns(ev.kind) {
+                    let dry = samples[ev.start..ev.end].to_vec();
+                    fill_gap(samples, ev.start, ev.end);
+                    for (sample, dry) in samples[ev.start..ev.end].iter_mut().zip(dry) {
+                        *sample = (1.0 - amount) * dry + amount * *sample;
+                    }
                 }
             }
         }
@@ -99,6 +165,17 @@ mod tests {
         (0..n)
             .map(|i| amp * (2.0 * PI * freq * i as f32 / SR as f32).sin())
             .collect()
+    }
+
+    fn click_and_mouth_fixture() -> Vec<f32> {
+        let mut x = tone(200.0, 0.25, 48_000);
+        x[6000] += 0.9;
+        let start = 18_000;
+        for i in 0..120 {
+            let t = i as f32 / SR as f32;
+            x[start + i] += 0.75 * (2.0 * PI * 4800.0 * t).sin();
+        }
+        x
     }
 
     #[test]
@@ -182,5 +259,67 @@ mod tests {
         for (a, b) in out.channel(0).iter().zip(&x) {
             assert!((a - b).abs() <= f32::EPSILON, "bypass must be identity");
         }
+    }
+
+    #[test]
+    fn click_and_mouth_paths_can_be_bypassed_independently() {
+        let x = click_and_mouth_fixture();
+
+        let full = run(DeClick::new(), buf(x.clone()));
+
+        let mut no_click = DeClick::new();
+        no_click.set_click_enabled(false);
+        let no_click = run(no_click, buf(x.clone()));
+        assert!(
+            (no_click.channel(0)[6000] - x[6000]).abs() <= f32::EPSILON,
+            "click path bypass must leave the short click untouched"
+        );
+        assert!(
+            no_click
+                .channel(0)
+                .iter()
+                .zip(&x)
+                .any(|(a, b)| (a - b).abs() > 1e-4),
+            "mouth-click path should still repair its event"
+        );
+
+        let mut no_mouth = DeClick::new();
+        no_mouth.set_mouth_click_enabled(false);
+        let no_mouth = run(no_mouth, buf(x.clone()));
+        assert!(
+            no_mouth.channel(0)[18_000..18_120]
+                .iter()
+                .zip(&x[18_000..18_120])
+                .all(|(a, b)| (a - b).abs() <= f32::EPSILON),
+            "mouth-click path bypass must leave the mouth-click region untouched"
+        );
+        assert!(
+            (no_mouth.channel(0)[6000] - full.channel(0)[6000]).abs() <= 1e-6,
+            "click repair should still run when only mouth-clicks are bypassed"
+        );
+    }
+
+    #[test]
+    fn independent_amounts_scale_only_their_transient_kind() {
+        let x = click_and_mouth_fixture();
+
+        let mut dry_click = DeClick::new();
+        dry_click.set_click_amount(0.0);
+        let dry_click = run(dry_click, buf(x.clone()));
+        assert!(
+            (dry_click.channel(0)[6000] - x[6000]).abs() <= f32::EPSILON,
+            "click amount 0 must leave click samples untouched"
+        );
+
+        let mut half_mouth = DeClick::new();
+        half_mouth.set_mouth_click_amount(0.5);
+        let half_mouth = run(half_mouth, buf(x.clone()));
+        let full = run(DeClick::new(), buf(x.clone()));
+        let idx = 18_050;
+        let expected = 0.5 * x[idx] + 0.5 * full.channel(0)[idx];
+        assert!(
+            (half_mouth.channel(0)[idx] - expected).abs() <= 1e-6,
+            "mouth-click amount must blend only the mouth-click repair"
+        );
     }
 }

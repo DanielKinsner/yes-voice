@@ -161,6 +161,56 @@ impl FinishCards {
     }
 }
 
+/// Independent Standard-card state for the two transient paths that share
+/// `Stage::DeClick` internally.
+#[derive(Clone, Copy)]
+struct TransientCards {
+    click_enabled: Option<bool>,
+    mouth_click_enabled: Option<bool>,
+    click_amount: f32,
+    mouth_click_amount: f32,
+}
+
+impl Default for TransientCards {
+    fn default() -> Self {
+        TransientCards {
+            click_enabled: None,
+            mouth_click_enabled: None,
+            click_amount: 1.0,
+            mouth_click_amount: 1.0,
+        }
+    }
+}
+
+impl TransientCards {
+    fn set_enabled(&mut self, card: CardId, on: bool) -> bool {
+        match card {
+            CardId::DeClickDePop => self.click_enabled = Some(on),
+            CardId::MouthClicks => self.mouth_click_enabled = Some(on),
+            _ => return false,
+        }
+        true
+    }
+
+    fn amount(&self, card: CardId) -> Option<f32> {
+        match card {
+            CardId::DeClickDePop => Some(self.click_amount),
+            CardId::MouthClicks => Some(self.mouth_click_amount),
+            _ => None,
+        }
+    }
+
+    fn set_amount(&mut self, card: CardId, amount: f32) -> bool {
+        let amount = amount.clamp(0.0, 1.0);
+        match card {
+            CardId::DeClickDePop => self.click_amount = amount,
+            CardId::MouthClicks => self.mouth_click_amount = amount,
+            _ => return false,
+        }
+        true
+    }
+}
+
 /// A stateful vocal-editing session.
 pub struct Session {
     settings: Settings,
@@ -170,6 +220,7 @@ pub struct Session {
     output: Option<AudioBuffer>,
     cards: [Card; STAGE_COUNT],
     finish_cards: FinishCards,
+    transient_cards: TransientCards,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -214,6 +265,7 @@ impl Session {
             output: None,
             cards: [Card::default(); STAGE_COUNT],
             finish_cards: FinishCards::default(),
+            transient_cards: TransientCards::default(),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -261,6 +313,13 @@ impl Session {
             self.output = None;
             return;
         }
+        if self.transient_cards.set_amount(card, amount) {
+            if card == CardId::DeClickDePop {
+                self.set_stage_mix(Stage::DePop, amount);
+            }
+            self.output = None;
+            return;
+        }
         if card == CardId::Loudness {
             return;
         }
@@ -272,6 +331,9 @@ impl Session {
     /// A visible Standard card's current amount.
     pub fn card_amount(&self, card: CardId) -> f32 {
         if let Some(amount) = self.finish_cards.amount(card) {
+            return amount;
+        }
+        if let Some(amount) = self.transient_cards.amount(card) {
             return amount;
         }
         if card == CardId::Loudness {
@@ -308,6 +370,14 @@ impl Session {
             self.output = None;
             return;
         }
+        if self.transient_cards.set_enabled(card, on) {
+            if card == CardId::DeClickDePop {
+                self.set_stage_enabled(Stage::DePop, on);
+            } else {
+                self.output = None;
+            }
+            return;
+        }
         for &stage in card.stages() {
             self.set_stage_enabled(stage, on);
         }
@@ -319,12 +389,79 @@ impl Session {
         if let Some(on) = self.resolve_finish_card_enabled(card) {
             return on;
         }
+        if let Some(on) = self.resolve_transient_card_enabled(card) {
+            return on;
+        }
         card.stages().iter().all(|&s| self.resolve_stage_enabled(s))
     }
 
     fn resolve_finish_card_enabled(&self, card: CardId) -> Option<bool> {
         let sub = self.finish_cards.enabled_override(card)?;
         Some(self.resolve_stage_enabled(Stage::Finish) && sub)
+    }
+
+    fn resolve_transient_card_enabled(&self, card: CardId) -> Option<bool> {
+        match card {
+            CardId::DeClickDePop => {
+                Some(self.click_path_enabled() && self.resolve_stage_enabled(Stage::DePop))
+            }
+            CardId::MouthClicks => Some(self.mouth_click_path_enabled()),
+            _ => None,
+        }
+    }
+
+    fn click_path_enabled(&self) -> bool {
+        self.resolve_stage_enabled(Stage::DeClick)
+            && self.transient_cards.click_enabled.unwrap_or(true)
+    }
+
+    fn mouth_click_path_enabled(&self) -> bool {
+        self.resolve_stage_enabled(Stage::DeClick)
+            && self.transient_cards.mouth_click_enabled.unwrap_or(true)
+    }
+
+    /// Enable or bypass the short Click/crackle path without touching Mouth Clicks.
+    pub fn set_click_repair_enabled(&mut self, on: bool) {
+        self.transient_cards.click_enabled = Some(on);
+        self.output = None;
+    }
+
+    /// Whether short Click/crackle repair is effectively active.
+    pub fn click_repair_enabled(&self) -> bool {
+        self.click_path_enabled()
+    }
+
+    /// Enable or bypass Mouth Clicks without touching short Click/crackle repair.
+    pub fn set_mouth_click_enabled(&mut self, on: bool) {
+        self.transient_cards.mouth_click_enabled = Some(on);
+        self.output = None;
+    }
+
+    /// Whether Mouth Click repair is effectively active.
+    pub fn mouth_click_enabled(&self) -> bool {
+        self.mouth_click_path_enabled()
+    }
+
+    /// Set the short Click/crackle amount.
+    pub fn set_click_repair_amount(&mut self, amount: f32) {
+        self.transient_cards.click_amount = amount.clamp(0.0, 1.0);
+        self.output = None;
+    }
+
+    /// Current short Click/crackle amount.
+    pub fn click_repair_amount(&self) -> f32 {
+        self.transient_cards.click_amount
+    }
+
+    /// Set the Mouth Click amount.
+    pub fn set_mouth_click_amount(&mut self, amount: f32) {
+        self.transient_cards.mouth_click_amount = amount.clamp(0.0, 1.0);
+        self.output = None;
+    }
+
+    /// Current Mouth Click amount.
+    pub fn mouth_click_amount(&self) -> f32 {
+        self.transient_cards.mouth_click_amount
     }
 
     /// Enable or bypass the Presence/Air card without affecting Leveling or
@@ -516,6 +653,7 @@ impl Session {
     fn reset_cards(&mut self) {
         self.cards = [Card::default(); STAGE_COUNT];
         self.finish_cards = FinishCards::default();
+        self.transient_cards = TransientCards::default();
         self.loudness_override = None;
     }
 
@@ -716,6 +854,14 @@ impl Session {
             .chain
             .finish
             .set_presence_air_amount(self.presence_air_amount());
+        built.chain.set_click_repair(
+            self.click_repair_enabled(),
+            self.click_repair_amount() * self.flow,
+        );
+        built.chain.set_mouth_click_repair(
+            self.mouth_click_enabled(),
+            self.mouth_click_amount() * self.flow,
+        );
 
         // De-bleed refusal (plan §4.5): refuse a mix before processing.
         let verdict = built.chain.assess_bleed(input);
@@ -780,6 +926,22 @@ mod tests {
             .collect();
         for p in [5_000usize, 15_000, 25_000, 35_000] {
             x[p] += 0.9;
+        }
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
+    fn transient_fixture(path: &Path) -> AudioBuffer {
+        let n = 48_000;
+        let mut x: Vec<f32> = (0..n)
+            .map(|i| 0.25 * (2.0 * PI * 200.0 * i as f32 / SR as f32).sin())
+            .collect();
+        x[6000] += 0.9;
+        let start = 18_000;
+        for i in 0..120 {
+            let t = i as f32 / SR as f32;
+            x[start + i] += 0.75 * (2.0 * PI * 4800.0 * t).sin();
         }
         let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
         write_wav(path, &buf).expect("write fixture");
@@ -1122,6 +1284,122 @@ mod tests {
     }
 
     #[test]
+    fn transient_card_enables_are_independent_session_state() {
+        let mut s = Session::new();
+        assert!(s.click_repair_enabled());
+        assert!(s.mouth_click_enabled());
+
+        s.set_card_enabled(CardId::DeClickDePop, false);
+        assert!(!s.click_repair_enabled());
+        assert!(s.mouth_click_enabled());
+        assert_eq!(
+            s.stage_enabled_override(Stage::DeClick),
+            None,
+            "De-click / De-pop must not bypass the whole shared DeClick stage"
+        );
+        assert_eq!(
+            s.stage_enabled_override(Stage::DePop),
+            Some(false),
+            "De-click / De-pop still drives the DePop stage"
+        );
+        assert!(!s.card_enabled(CardId::DeClickDePop));
+        assert!(s.card_enabled(CardId::MouthClicks));
+
+        s.set_mouth_click_enabled(false);
+        assert!(!s.mouth_click_enabled());
+        s.set_click_repair_enabled(true);
+        assert!(s.click_repair_enabled());
+        assert!(!s.mouth_click_enabled());
+
+        s.select_preset(Preset::NARRATION);
+        assert!(s.click_repair_enabled());
+        assert!(s.mouth_click_enabled());
+    }
+
+    #[test]
+    fn transient_card_amounts_do_not_mutate_each_other() {
+        let mut s = Session::new();
+        s.set_card_amount(CardId::DeClickDePop, 0.25);
+        assert_eq!(s.click_repair_amount(), 0.25);
+        assert_eq!(s.card_amount(CardId::DeClickDePop), 0.25);
+        assert_eq!(
+            s.mouth_click_amount(),
+            1.0,
+            "De-click amount must not change Mouth Clicks"
+        );
+        assert_eq!(
+            s.stage_mix(Stage::DeClick),
+            1.0,
+            "Click amount must not mutate the whole shared DeClick stage mix"
+        );
+        assert_eq!(
+            s.stage_mix(Stage::DePop),
+            0.25,
+            "De-click / De-pop amount still drives the DePop amount"
+        );
+
+        s.set_card_amount(CardId::MouthClicks, 0.4);
+        assert_eq!(s.mouth_click_amount(), 0.4);
+        assert_eq!(s.click_repair_amount(), 0.25);
+        assert_eq!(s.stage_mix(Stage::DePop), 0.25);
+
+        s.select_preset(Preset::NARRATION);
+        assert_eq!(s.click_repair_amount(), 1.0);
+        assert_eq!(s.mouth_click_amount(), 1.0);
+        assert_eq!(s.stage_mix(Stage::DePop), 1.0);
+    }
+
+    #[test]
+    fn transient_card_enables_reach_the_rendered_declick_paths() {
+        let path = temp("g11-transient-render");
+        transient_fixture(&path);
+
+        let render = |click_on: bool, mouth_on: bool| {
+            let mut s = Session::new();
+            s.open(&path).unwrap();
+            for stage in Stage::ALL {
+                s.set_stage_enabled(stage, false);
+            }
+            s.set_stage_enabled(Stage::DeClick, true);
+            s.set_card_enabled(CardId::DeClickDePop, click_on);
+            s.set_card_enabled(CardId::MouthClicks, mouth_on);
+            s.render().unwrap();
+            (
+                s.input().unwrap().channel(0).to_vec(),
+                s.output().unwrap().channel(0).to_vec(),
+            )
+        };
+
+        let (input, no_click) = render(false, true);
+        assert!(
+            (no_click[6000] - input[6000]).abs() <= f32::EPSILON,
+            "click-card bypass must leave the short click untouched"
+        );
+        assert!(
+            no_click[18_000..18_120]
+                .iter()
+                .zip(&input[18_000..18_120])
+                .any(|(a, b)| (a - b).abs() > 1e-4),
+            "mouth-click repair must still run when the click card is bypassed"
+        );
+
+        let (input, no_mouth) = render(true, false);
+        assert!(
+            (no_mouth[6000] - input[6000]).abs() > 1e-4,
+            "short click repair must still run when Mouth Clicks is bypassed"
+        );
+        assert!(
+            no_mouth[18_000..18_120]
+                .iter()
+                .zip(&input[18_000..18_120])
+                .all(|(a, b)| (a - b).abs() <= f32::EPSILON),
+            "Mouth Clicks bypass must leave the mouth-click region untouched"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn finish_card_enables_reach_the_rendered_finish_stage() {
         let path = temp("finish-card-render");
         quiet_tone_fixture(&path);
@@ -1393,11 +1671,12 @@ mod tests {
             "Lead Vocal keeps de-reverb off to protect tails"
         );
 
-        // One UI card fans out to two engine stages (De-click/De-pop → DeClick+DePop).
+        // One UI card fans out to DePop plus the Click sub-path under DeClick.
         s.set_card_enabled(CardId::DeClickDePop, false);
-        assert_eq!(s.stage_enabled_override(Stage::DeClick), Some(false));
+        assert_eq!(s.stage_enabled_override(Stage::DeClick), None);
         assert_eq!(s.stage_enabled_override(Stage::DePop), Some(false));
         assert!(!s.card_enabled(CardId::DeClickDePop));
+        assert!(s.card_enabled(CardId::MouthClicks));
         // A 1:1 card resolves through the same path.
         assert!(s.card_enabled(CardId::Denoise));
     }
