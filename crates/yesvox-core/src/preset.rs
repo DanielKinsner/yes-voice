@@ -11,8 +11,8 @@
 //! so [`Preset::build_chain`] takes the already-built denoiser as an argument.
 //! That is the structural reason a preset can never override the binding.
 //!
-//! The singing presets are defined here so the data exists, but the Singing
-//! toggle only surfaces them once the §6 listening gate (#16) passes.
+//! The singing presets are defined here and surface as first-class v1 choices;
+//! their character-preservation contract is enforced by the §6 mechanical gate.
 
 use std::sync::Arc;
 

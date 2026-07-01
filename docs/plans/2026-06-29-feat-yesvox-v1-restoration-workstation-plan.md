@@ -456,7 +456,7 @@ Buckets (each with its own refset directory, manifest, and CI job):
 
 Datasets: SingVERSE + EDB (CC-BY) for singing; DNS Challenge + EARS for speech; internal synthetic-defect generator for repair; creative set internally curated.
 
-Metrics (always paired with blinded listening): SI-SDR (synthetic-defect), spectral-envelope cosine similarity on dry vocal regions (>=0.95), PESQ (speech only - never sung), STOI (intelligibility), SRMR (dereverb), DNSMOS P.835, NISQA, UTMOS as advisory on singing. POLQA flagged as open question (license cost vs value).
+Metrics (mechanical first, with optional blinded listening for calibration): SI-SDR (synthetic-defect), spectral-envelope cosine similarity on dry vocal regions (>=0.95), PESQ (speech only - never sung), STOI (intelligibility), SRMR (dereverb), DNSMOS P.835, NISQA, UTMOS as advisory on singing. POLQA flagged as open question (license cost vs value).
 
 ### 6.5 Per-phase release gate
 
@@ -569,9 +569,9 @@ flowchart LR
   M2 --> M3[M3 Finish chain]
   M3 --> MG{M-GATE Singing}
   MG -- pass --> M4[M4 Standard UX]
-  MG -- fail --> M4V[M4 Voiceover-only]
+  MG -- fail --> M4R[Fix singing regression]
+  M4R --> MG
   M4 --> M5[M5 Advanced + spectro]
-  M4V --> M5
   M5 --> M6[M6 Batch+Render+Pkg]
   M6 --> M7[M7 Hardening+Eval]
 ```
@@ -584,7 +584,7 @@ flowchart LR
 
 **M3 - Finish chain.** WPE light tier with tail-preservation enum; breath control (deterministic classifier + transient-gated HF after de-ess); presence/air shelves; `fundsp` leveling; loudness target (-16 / -14 / Match / Peak) with f64 sidechain true-peak limiter (look-ahead >=5 ms, HP sidechain above air band). De-bleed residual measurement + block/warn thresholds. **Deps:** M2.
 
-**M-GATE - Singing validation.** Run the mechanical §6 protocol in CI (F0 <=3 cents, vibrato ±10%, F1/F2/spectral-envelope preservation, HNR drop <=2 dB, tail survival >=6 dB above WPE truncation). **Branch:** PASS -> M4 full; FAIL -> fix the mechanical regression before claiming singing-ready. Optional listening can inform calibration, but it does not replace or block the CI gate.
+**M-GATE - Singing validation.** Run the mechanical §6 protocol in CI (F0 <=3 cents, vibrato ±10%, spectral-envelope cosine >=0.95, HNR drop <=2 dB, tail survival >=6 dB above WPE truncation). **Branch:** PASS -> M4 full; FAIL -> fix the mechanical regression before claiming singing-ready. Optional listening can inform calibration, but it does not replace or block the CI gate.
 
 **M4 - Standard UX.** Analysis pass UI + content detection w/ 0.70 confidence threshold; preset gallery per content mode; intensity slider coupled to preset defaults; toggle override re-runs preset auto-apply. Generative-reconstruction badge wiring (§5.4). **Deps:** M3, M-GATE.
 
