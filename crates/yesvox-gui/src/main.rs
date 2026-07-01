@@ -7,12 +7,16 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{fmt::Debug, hash::Hash, path::PathBuf};
+use std::{
+    fmt::Debug,
+    hash::Hash,
+    path::{Path, PathBuf},
+};
 
 use eframe::egui;
 use yesvox_core::{
-    AudioBuffer, CardId, ContentMode, LoudnessTarget, OutputFormat, Preset, Session,
-    VocalIsolationCheck,
+    AudioBuffer, BatchPresetMode, CardId, ContentMode, JobStatus, LoudnessTarget, OutputFormat,
+    Preset, RenderQueue, Session, VocalIsolationCheck,
 };
 
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
@@ -62,6 +66,109 @@ enum Tab {
 enum AbView {
     Original,
     Processed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuiBatchPresetMode {
+    ForceSelected,
+    DetectPerFile,
+}
+
+impl GuiBatchPresetMode {
+    fn label(self) -> &'static str {
+        match self {
+            GuiBatchPresetMode::ForceSelected => "Force preset",
+            GuiBatchPresetMode::DetectPerFile => "Detect each",
+        }
+    }
+
+    fn to_core(self, fallback: Preset) -> BatchPresetMode {
+        match self {
+            GuiBatchPresetMode::ForceSelected => BatchPresetMode::Force(fallback),
+            GuiBatchPresetMode::DetectPerFile => BatchPresetMode::DetectPerFile { fallback },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BatchQueueRow {
+    input: PathBuf,
+    output: PathBuf,
+    status: JobStatus,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct BatchQueueCounts {
+    pending: usize,
+    done: usize,
+    failed: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BatchQueueUi {
+    rows: Vec<BatchQueueRow>,
+    mode: GuiBatchPresetMode,
+    paused: bool,
+}
+
+impl Default for BatchQueueUi {
+    fn default() -> Self {
+        BatchQueueUi {
+            rows: Vec::new(),
+            mode: GuiBatchPresetMode::ForceSelected,
+            paused: false,
+        }
+    }
+}
+
+impl BatchQueueUi {
+    fn enqueue(&mut self, input: PathBuf, output: PathBuf) -> bool {
+        if self
+            .rows
+            .iter()
+            .any(|row| row.input == input && matches!(row.status, JobStatus::Pending))
+        {
+            return false;
+        }
+        self.rows.push(BatchQueueRow {
+            input,
+            output,
+            status: JobStatus::Pending,
+        });
+        true
+    }
+
+    fn counts(&self) -> BatchQueueCounts {
+        let mut counts = BatchQueueCounts::default();
+        for row in &self.rows {
+            match row.status {
+                JobStatus::Pending => counts.pending += 1,
+                JobStatus::Done(_) => counts.done += 1,
+                JobStatus::Failed(_) => counts.failed += 1,
+            }
+        }
+        counts
+    }
+
+    fn summary_label(&self) -> String {
+        let counts = self.counts();
+        if self.rows.is_empty() {
+            "No queued vocals".to_owned()
+        } else {
+            format!(
+                "{} queued - {} done - {} failed",
+                counts.pending, counts.done, counts.failed
+            )
+        }
+    }
+
+    fn pending_count(&self) -> usize {
+        self.counts().pending
+    }
+
+    fn preset_mode(&self, fallback: Preset) -> BatchPresetMode {
+        self.mode.to_core(fallback)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -151,6 +258,7 @@ struct YesVoxApp {
     volume_match: bool,
     preview_lufs: bool,
     add_to_library: bool,
+    batch_queue: BatchQueueUi,
     isolation_check: Option<VocalIsolationCheck>,
 }
 
@@ -194,6 +302,7 @@ impl YesVoxApp {
             volume_match: false,
             preview_lufs: false,
             add_to_library: true,
+            batch_queue: BatchQueueUi::default(),
             isolation_check: None,
         }
     }
@@ -246,6 +355,59 @@ impl YesVoxApp {
             }
             Err(e) => self.status = format!("Render failed: {e}"),
         }
+    }
+
+    fn queue_current_vocal(&mut self) {
+        let Some(input) = self.source_path.clone() else {
+            self.status = "Queue needs an imported vocal".to_owned();
+            return;
+        };
+        let output = self
+            .session
+            .export_target()
+            .unwrap_or_else(|| batch_output_path(&input, self.session.output_format()));
+        if self.batch_queue.enqueue(input, output) {
+            self.status = format!("Queued - {}", self.batch_queue.summary_label());
+        } else {
+            self.status = "Already queued".to_owned();
+        }
+    }
+
+    fn run_batch_queue(&mut self) {
+        if self.batch_queue.paused {
+            self.status = "Batch queue is paused".to_owned();
+            return;
+        }
+        if self.batch_queue.pending_count() == 0 {
+            self.status = "No pending batch items".to_owned();
+            return;
+        }
+
+        let preset_mode = self.batch_queue.preset_mode(self.session.preset());
+        let mut queue = match preset_mode {
+            BatchPresetMode::Force(preset) => {
+                RenderQueue::new(self.session.settings().clone(), preset)
+            }
+            BatchPresetMode::DetectPerFile { fallback } => {
+                RenderQueue::detect_per_file(self.session.settings().clone(), fallback)
+            }
+        };
+        let mut pending_indices = Vec::new();
+        for (index, row) in self.batch_queue.rows.iter().enumerate() {
+            if matches!(row.status, JobStatus::Pending) {
+                queue.enqueue(row.input.clone(), row.output.clone());
+                pending_indices.push(index);
+            }
+        }
+
+        let summary = queue.run();
+        for (queue_item, row_index) in queue.items().iter().zip(pending_indices) {
+            self.batch_queue.rows[row_index].status = queue_item.status.clone();
+        }
+        self.status = format!(
+            "Batch exported {} - {} failed",
+            summary.done, summary.failed
+        );
     }
 
     fn check_isolation_now(&mut self) {
@@ -989,7 +1151,7 @@ impl YesVoxApp {
             self.session.set_dither(next);
         }
 
-        let file = rect(1588.0, 680.0, 304.0, 250.0);
+        let file = rect(1588.0, 680.0, 304.0, 216.0);
         paint_panel(painter, c, file, 8, alpha(PANEL_2, 230), BORDER_DIM);
         self.section_label(painter, c, 1608.0, 714.0, "FILE");
         self.help_dot(painter, c, egui::pos2(1658.0, 706.0));
@@ -1003,11 +1165,11 @@ impl YesVoxApp {
             BORDER_DIM,
         );
         self.body_text(painter, c, 1622.0, 798.0, &self.name_input, TEXT);
-        self.small_text(painter, c, 1608.0, 840.0, "Location", TEXT_MUTED);
+        self.small_text(painter, c, 1608.0, 822.0, "Location", TEXT_MUTED);
         paint_panel(
             painter,
             c,
-            rect(1608.0, 858.0, 264.0, 40.0),
+            rect(1608.0, 840.0, 264.0, 34.0),
             5,
             FIELD,
             BORDER_DIM,
@@ -1017,13 +1179,14 @@ impl YesVoxApp {
             .output_location()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "/Users/You/Music/YesVox".to_owned());
-        self.body_text(painter, c, 1622.0, 884.0, &location, TEXT);
-        self.folder_icon(painter, c, egui::pos2(1850.0, 878.0));
+        let location = truncate_middle(&location, 30);
+        self.body_text(painter, c, 1622.0, 858.0, &location, TEXT);
+        self.folder_icon(painter, c, egui::pos2(1850.0, 856.0));
         if self.checkbox(
             ui,
             painter,
             c,
-            rect(1608.0, 904.0, 22.0, 22.0),
+            rect(1608.0, 878.0, 18.0, 18.0),
             self.add_to_library,
             "suite_library",
         ) {
@@ -1033,7 +1196,7 @@ impl YesVoxApp {
             painter,
             c,
             1640.0,
-            922.0,
+            888.0,
             "Add to Yes Suite Library",
             TEXT_MUTED,
         );
@@ -1041,18 +1204,78 @@ impl YesVoxApp {
         paint_panel(
             painter,
             c,
-            rect(1588.0, 942.0, 304.0, 42.0),
+            rect(1588.0, 906.0, 304.0, 86.0),
             8,
             alpha(PANEL_2, 230),
             BORDER_DIM,
         );
-        self.section_label(painter, c, 1608.0, 968.0, "TOOLS");
-        self.body_text(painter, c, 1858.0, 968.0, "v", TEXT_MUTED);
+        self.section_label(painter, c, 1608.0, 930.0, "BATCH QUEUE");
+        self.small_text(
+            painter,
+            c,
+            1710.0,
+            930.0,
+            &self.batch_queue.summary_label(),
+            TEXT_MUTED,
+        );
+        let force_active = self.batch_queue.mode == GuiBatchPresetMode::ForceSelected;
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            rect(1608.0, 948.0, 112.0, 30.0),
+            GuiBatchPresetMode::ForceSelected.label(),
+            force_active,
+            "batch_force_preset",
+        ) {
+            self.batch_queue.mode = GuiBatchPresetMode::ForceSelected;
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            rect(1726.0, 948.0, 112.0, 30.0),
+            GuiBatchPresetMode::DetectPerFile.label(),
+            !force_active,
+            "batch_detect_each",
+        ) {
+            self.batch_queue.mode = GuiBatchPresetMode::DetectPerFile;
+        }
+        if self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(1844.0, 948.0, 36.0, 30.0),
+            if self.batch_queue.paused { ">" } else { "||" },
+            "batch_pause",
+        ) {
+            self.batch_queue.paused = !self.batch_queue.paused;
+        }
+        if self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(1608.0, 982.0, 128.0, 30.0),
+            "+ Queue Current",
+            "batch_queue_current",
+        ) {
+            self.queue_current_vocal();
+        }
+        if self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(1744.0, 982.0, 136.0, 30.0),
+            "Export Batch",
+            "batch_export",
+        ) {
+            self.run_batch_queue();
+        }
         if self.gradient_button(
             ui,
             painter,
             c,
-            rect(1588.0, 994.0, 304.0, 36.0),
+            rect(1588.0, 1010.0, 304.0, 28.0),
             "EXPORT VOCAL",
             "export_vocal",
         ) {
@@ -2658,6 +2881,37 @@ fn alpha(c: egui::Color32, a: u8) -> egui::Color32 {
     egui::Color32::from_rgba_premultiplied(r, g, b, a)
 }
 
+fn batch_output_path(input: &Path, format: OutputFormat) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("vocal");
+    let name = format!("{stem}_YesVox.{}", format.extension());
+    input
+        .parent()
+        .map(|parent| parent.join(&name))
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+fn truncate_middle(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_owned();
+    }
+    let keep = max_chars.saturating_sub(3);
+    let front = keep / 2;
+    let back = keep - front;
+    let prefix: String = value.chars().take(front).collect();
+    let suffix: String = value
+        .chars()
+        .rev()
+        .take(back)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{prefix}...{suffix}")
+}
+
 fn loudness_label(t: LoudnessTarget) -> String {
     match t {
         LoudnessTarget::Podcast => "-16 LUFS".to_owned(),
@@ -2753,5 +3007,65 @@ mod tests {
         ] {
             assert!(!loudness_label(t).is_empty());
         }
+    }
+
+    #[test]
+    fn batch_queue_summary_counts_pending_done_and_failed() {
+        let mut queue = BatchQueueUi::default();
+        queue.enqueue(PathBuf::from("a.wav"), PathBuf::from("a_YesVox.wav"));
+        queue.enqueue(PathBuf::from("b.wav"), PathBuf::from("b_YesVox.wav"));
+        queue.rows[0].status = JobStatus::Done(PathBuf::from("a_YesVox.wav"));
+        queue.rows[1].status = JobStatus::Failed("decode failed".to_owned());
+
+        assert_eq!(
+            queue.counts(),
+            BatchQueueCounts {
+                pending: 0,
+                done: 1,
+                failed: 1
+            }
+        );
+        assert_eq!(queue.summary_label(), "0 queued - 1 done - 1 failed");
+    }
+
+    #[test]
+    fn batch_queue_rejects_duplicate_pending_inputs_only() {
+        let mut queue = BatchQueueUi::default();
+        assert!(queue.enqueue(PathBuf::from("a.wav"), PathBuf::from("a_YesVox.wav")));
+        assert!(!queue.enqueue(PathBuf::from("a.wav"), PathBuf::from("a_YesVox_2.wav")));
+        queue.rows[0].status = JobStatus::Failed("decode failed".to_owned());
+
+        assert!(queue.enqueue(PathBuf::from("a.wav"), PathBuf::from("a_YesVox_retry.wav")));
+        assert_eq!(queue.pending_count(), 1);
+    }
+
+    #[test]
+    fn gui_batch_mode_maps_to_core_render_queue_mode() {
+        let mut queue = BatchQueueUi::default();
+        assert_eq!(
+            queue.preset_mode(Preset::NARRATION),
+            BatchPresetMode::Force(Preset::NARRATION)
+        );
+
+        queue.mode = GuiBatchPresetMode::DetectPerFile;
+        assert_eq!(
+            queue.preset_mode(Preset::NARRATION),
+            BatchPresetMode::DetectPerFile {
+                fallback: Preset::NARRATION
+            }
+        );
+    }
+
+    #[test]
+    fn batch_output_path_uses_input_folder_stem_and_export_extension() {
+        let path = batch_output_path(Path::new("clips/Lead Vocal.wav"), OutputFormat::Flac);
+
+        assert_eq!(path, PathBuf::from("clips/Lead Vocal_YesVox.flac"));
+    }
+
+    #[test]
+    fn middle_truncation_keeps_both_ends() {
+        assert_eq!(truncate_middle("short", 12), "short");
+        assert_eq!(truncate_middle("C:/very/long/location", 12), "C:/v...ation");
     }
 }

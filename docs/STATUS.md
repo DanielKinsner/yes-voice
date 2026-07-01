@@ -61,6 +61,7 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **#19c** | **Per-file render logs + failure summary** — `RenderQueue::run_with_log()` appends JSONL entries per processed file and returns failed-item details for end-of-batch retry/summary UI. |
 | **#19d** | **Retry selected failures** — `RenderQueue::retry_failed()` marks selected failed queue items pending so the next run retries only those items. |
 | **#19e** | **Batch preset mode** — `RenderQueue` now supports force-preset mode and per-file detection mode, with low-confidence fallback and crash-recovery JSON compatibility. |
+| **#19f** | **GUI queue affordances** — the Standard shell now exposes queue-current, force-vs-detect batch mode, pause/resume, pending-batch export through `RenderQueue`, and tested queue summaries. |
 | **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
 
 ## Next up (remaining mechanical gaps)
@@ -70,9 +71,9 @@ Build order, mechanical-first, each TDD'd:
 1. **G18** — undo/redo. **Needs a scope decision from Dan** (unspec'd in
    product.md/plan; ship Revert-only, or a real undo stack?).
 
-Then continue **#19** batch/export work: GUI queue affordances. GUI polish
-remains: finer pixel/spacing adjustments vs the mock and the real
-playback-backed transport + spectral-monitor/reblend
+Then continue **#19** batch/export work: background progress/cancel polish around
+the queue UI if needed. GUI polish remains: finer pixel/spacing adjustments vs
+the mock and the real playback-backed transport + spectral-monitor/reblend
 (#18). The shell currently paints reference/deterministic placeholder waveforms,
 meters, spectrum, and transport controls when no file is loaded so the fresh
 launch matches the visual target. Native file import uses `rfd`.
