@@ -10,7 +10,7 @@ origin: docs/brainstorms/2026-06-29-yesvox-product-definition-brainstorm.md
 
 ## Overview
 
-YesVox v1 is a standalone offline desktop app that restores and lightly polishes an already-isolated vocal (voiceover or singing), shipped as part of the music-first "Yes" suite alongside yes-master, YesDAW, and YesStems. It is a thin egui shell over one host-agnostic Rust core crate (`yesvox-core`) whose v1 ML stack is two denoisers (DeepFilterNet3 via `tract`; MossFormer2_SE_48K via vendored static `ort` against ONNX Runtime 1.26.x C++) feeding a deterministic-DSP repair rack (A-SPADE declip, AR/LSAR de-click + mouth-click, IIR notch/comb de-hum, WPE-light de-reverb, split/wide de-ess, breath control, true-peak limiter). Singing is held to the same quality bar as speech via a quantitative release gate placed between rack completion and Standard-UI wiring; if it fails, the toggle is hidden and v1 ships voiceover-only with the singing settings slot pre-reserved so no schema break is needed when v1.x adds it back. The product is offline-only, non-destructive, same-take-same-length, quality-over-realtime, and ships only the restoration + essential-finish identity locked in the product north-star.
+YesVox v1 is a standalone offline desktop app that restores and lightly polishes an already-isolated vocal (voiceover or singing), shipped as part of the music-first "Yes" suite alongside yes-master, YesDAW, and YesStems. It is a thin egui shell over one host-agnostic Rust core crate (`yesvox-core`) whose v1 ML stack is two denoisers (DeepFilterNet3 via `tract`; MossFormer2_SE_48K via vendored static `ort` against ONNX Runtime 1.26.x C++) feeding a deterministic-DSP repair rack (A-SPADE declip, AR/LSAR de-click + mouth-click, IIR notch/comb de-hum, WPE-light de-reverb, split/wide de-ess, breath control, true-peak limiter). Singing is held to the same quality bar as speech via the mechanical `singing` metric gate in CI; Singing ships as a first-class explicit toggle, and any future regression in that gate must be fixed before claiming the slice done. The product is offline-only, non-destructive, same-take-same-length, quality-over-realtime, and ships only the restoration + essential-finish identity locked in the product north-star.
 
 ## 1. Architecture & the RT-safe host-agnostic core
 
@@ -343,7 +343,7 @@ The Voiceover/Singing toggle is always user-authoritative.
 - `conf <  0.70` -> pre-select best guess, highlight toggle, show "Confirm content type" pill. No preset applies until confirmed.
 - User flips toggle at any time -> **re-run preset auto-apply** with the new mode (not a relabel). If rack was already in "Modified [Preset]", prompt "Discard Modified [VO Podcast] for new Singing preset?"
 
-If the singing gate fails pre-release: hide the toggle, force `content = Voiceover`, analyzer collapses `Singing -> Unknown -> Voiceover`. Settings schema slot stays.
+If the singing gate fails in CI, fix the mechanical regression before release; do not replace the gate with hidden fallback behavior. Settings schema still keeps the singing slot stable.
 
 ### 5.3 Standard surface
 
@@ -445,7 +445,7 @@ Singing quality is treated as a **release gate**, not a feature flag we hope pas
 2. **Hide the Singing toggle entirely** in Standard and Advanced - not greyed, not tooltipped, **not rendered**. Detection reports `voiceover` or `unknown -> voiceover-default`.
 3. Singing presets and (future) SRS integration remain compiled behind `cfg(feature = "singing_darklaunch")` for continued internal tuning against the same refset; no UI path reaches them.
 4. Public copy: **"v1 is voiceover; singing ships in v1.x."** No "coming soon" placeholder, no roadmap teaser in-app.
-5. **Settings-schema slot reserved now** (§5.8): `content_mode: enum { Voiceover, Singing }` with `Singing` accepted-but-ignored by the voiceover-only build, and `singing: { preset, intensity, tail_preservation, ... }` block present and round-tripped. v1.x ships singing with **zero settings-file format break**.
+5. **Settings-schema slot reserved now** (§5.8): `content_mode: enum { Voiceover, Singing }` with `Singing` accepted by the v1 build, and `singing: { preset, intensity, tail_preservation, ... }` block present and round-tripped so future singing refinements require **zero settings-file format break**.
 
 ### 6.4 Broader evaluation protocol
 
@@ -462,7 +462,7 @@ Metrics (always paired with blinded listening): SI-SDR (synthetic-defect), spect
 
 ### 6.5 Per-phase release gate
 
-A phase merges to `main` only when, on the relevant buckets: (1) >=1 fidelity metric improves; (2) no intelligibility regression (STOI delta >=-0.01 on speech); (3) blinded listening pass (>=3 ears, loudness-matched, randomized) confirming clean cleanup without consonant chipping, tails preserved, sung vibrato/sustain intact. Failing any of (1)-(3) blocks the merge; results land in `docs/eval/<phase>/report.html` linked from the PR.
+A phase merges to `main` only when the relevant mechanical buckets pass: (1) >=1 fidelity metric improves; (2) no intelligibility regression (STOI delta >=-0.01 on speech); and, for singing, the CI `singing` metric gate confirms F0, vibrato, HNR, spectral-envelope, and tail preservation. Optional blinded listening can inform preset calibration, but it is not a ship blocker; mechanical failures block the merge and results land in `docs/eval/<phase>/report.html` linked from the PR.
 
 ## 7. Offline, packaging, licensing, platforms & the CI guarantee tests
 
@@ -552,7 +552,7 @@ These four tests turn invariants into contracts. They run on every PR, gate rele
 
 Adopted from the Yes suite (yes-master / yes-daw audit, 2026-06-29) with the gaps they lacked closed. Full reference: `CLAUDE.md` + `docs/TESTING.md`.
 
-- **Mechanical-only verification.** Dan does not read diffs or hand-verify by ear/eye; every check is a self-asserting test (exit 0/1), a CI gate, or a golden compare. The only human-ear gates are the blind-listening sign-offs (§6 singing gate / #16 and final eval / #21), marked `hitl`.
+- **Mechanical-only verification.** Dan does not read diffs or hand-verify by ear/eye; every check is a self-asserting test (exit 0/1), a CI gate, or a golden compare. The #16 singing gate is mechanical in CI; #21 final listening remains optional, non-blocking `hitl`.
 - **One canonical gate, byte-identical locally and in CI:** `cargo xtask gate` = `cargo fmt --check` → `cargo clippy --all-targets -- -D warnings` → `cargo test` → `cargo deny check`. CI matrix = Windows + macOS + Linux (Linux is a cheap `cargo test` portability lane even though it is not a v1 ship target).
 - **Hard gates the siblings already enforce, kept verbatim:** `cargo fmt --check`, `cargo clippy -D warnings`, full `cargo test` (unit + integration), warnings-as-errors on our crates only (vendored deps exempt).
 - **Gaps we close that both siblings lacked:** a pre-commit hook (`core.hooksPath .githooks`) running fmt + clippy on staged Rust; `cargo-deny` + `cargo-audit` for code-license / advisory hygiene (distinct from the model-**weights** audit in §7.5); `proptest` for the format/SR/channel contract + parameter value-types; Criterion perf benches guarding the §8.4 <60 s budget.
@@ -586,7 +586,7 @@ flowchart LR
 
 **M3 - Finish chain.** WPE light tier with tail-preservation enum; breath control (deterministic classifier + transient-gated HF after de-ess); presence/air shelves; `fundsp` leveling; loudness target (-16 / -14 / Match / Peak) with f64 sidechain true-peak limiter (look-ahead >=5 ms, HP sidechain above air band). De-bleed residual measurement + block/warn thresholds. **Deps:** M2.
 
-**M-GATE - Singing validation.** Run §6 protocol (F0 <=3 cents, vibrato ±10%, F1/F2 <=5%, HNR drop <=2 dB, tail survival >=6 dB above WPE truncation, 3-ear blind A/B >=66%). **Branch:** PASS -> M4 full; FAIL -> M4 voiceover-only, hide Singing toggle, dark-launch behind `singing.enabled=false`, schema slot already reserved.
+**M-GATE - Singing validation.** Run the mechanical §6 protocol in CI (F0 <=3 cents, vibrato ±10%, F1/F2/spectral-envelope preservation, HNR drop <=2 dB, tail survival >=6 dB above WPE truncation). **Branch:** PASS -> M4 full; FAIL -> fix the mechanical regression before claiming singing-ready. Optional listening can inform calibration, but it does not replace or block the CI gate.
 
 **M4 - Standard UX.** Analysis pass UI + content detection w/ 0.70 confidence threshold; preset gallery per content mode; intensity slider coupled to preset defaults; toggle override re-runs preset auto-apply. Generative-reconstruction badge wiring (§5.4). **Deps:** M3, M-GATE.
 
@@ -605,7 +605,7 @@ Render-time budgets on a 30 s clip on either SKU: total <=60 s drop-to-export (d
 | # | Risk | Mitigation |
 |---|------|------------|
 | R1 | **MossFormer2 ONNX export infeasible** (MHA de-fuse, static chunk, parity loss) | Spike export in M2 week 1 on a 10 s fixture; PESQ delta vs Torch <=0.05; fallback = Balanced/HQ both run DFN3 stacked w/ heavier post + WPE tier-2, drop "true 48 kHz" claim |
-| R2 | **Singing gate fails** | M-GATE placed pre-UI; fallback path pre-built (hide toggle, schema slot reserved, dark-launch flag); ship v1 voiceover-first, v1.x singing |
+| R2 | **Singing gate fails** | Treat as a mechanical regression: keep the schema slot stable, fix the failing metric before release, and do not substitute optional listening or hidden fallback behavior for the CI gate |
 | R3 | **egui spectrogram + `egui_wgpu` is trailblazing** | Read-only v1 (brush-heal already deferred); spike in M5 week 1; fallback = CPU-rendered tiled bitmap on a worker |
 | R4 | **`ort` rc churn + ORT 1.26.x C++ regressions** | Pin exact rc crate + pinned C++ vendored statically; abstract behind `InferenceBackend` trait so `tract` (DFN3) or future stable `ort` swap is local; CI version-pin assertion |
 | R5 | **Offline footprint > 2 GB** | Tier weights: DFN3 + deterministic rack in installer; MossFormer2 fp32 as on-demand pack; INT8/FP16 quant pass in M7 if over budget |
@@ -632,7 +632,7 @@ These are scope guards, not delayed features. They are out forever because they 
 | Success criterion / guarantee | Concrete test | Threshold |
 |---|---|---|
 | (1) Pro-grade output, character intact - speech | Reference set (>=20 vocals) spectral-envelope cosine on dry voiced regions | >=0.95 |
-| (1) Pro-grade output - singing held to same bar | M-GATE protocol (§6.2): F0 / vibrato / F1-F2 / HNR / tail / blind A/B | <=3 cents; ±10%; <=5%; HNR drop <=2 dB; tail >=6 dB above WPE; >=66% prefer (3 ears) |
+| (1) Pro-grade output - singing held to same bar | Mechanical M-GATE protocol (§6.2): F0 / vibrato / spectral-envelope / HNR / tail | <=3 cents; ±10%; cosine >=0.95; HNR drop <=2 dB; tail survives within tolerance |
 | (1) LUFS-S preservation in voiced regions, Natural@default | LUFS-S delta input vs output on voiced frames | <=1 LU |
 | (1) Standalone-impressive finish | Blind A/B vs corrective-only baseline on Podcast/Narration/Lead Vocal presets, loudness-matched -23 LUFS-S | >=66% prefer with-finish output (>=3 ears) |
 | (2) Pros trust + control - Advanced parameter coverage | Per-module param checklist sign-off | 100 % engine params exposed |
@@ -679,7 +679,7 @@ The single source of truth is `ParamTree` in `yesvox-core` (versioned, serializa
 - Every Advanced control reads/writes a `ParamPatch` against the tree.
 - Every Standard preset is a stored `ParamPatch` plus `intensity_default` and `loudness_target`.
 - The CI parameter-coverage checklist (`docs/advanced-param-coverage.md`) is regenerated from the tree's introspection on each PR; a new param without a checklist entry fails the build.
-- The settings schema slot for `singing.*` exists in `ParamTree` from M0; both Standard (hidden toggle if voiceover-only build) and Advanced (no UI if voiceover-only build) consume the same tree.
+- The settings schema slot for `singing.*` exists in `ParamTree` from M0; both Standard and Advanced consume the same tree while the explicit Voiceover/Singing toggle remains user-authoritative.
 - The render report carries the full effective `ParamPatch` actually used, so the report -> reproducible-render path is closed for support/debug.
 
 ### Integration-test scenarios
@@ -697,7 +697,7 @@ From product.md §12 and the brainstorm Open Questions:
 - **Tech stack final pick (Rust + egui vs C++ + Qt).** **Resolved: Rust + `egui` + `ort` (ONNX Runtime, vendored + statically linked) + `tract`** (master brief §9 lead). Rationale: zero-FFI to the Rust core, matches the Yes suite, offline-clean packaging, and the strongest fit for the read-only spectrogram surface v1 needs. The `InferenceBackend` trait (risk R4) localizes any future engine swap; a C++/Qt pivot would be a full rewrite and is explicitly not taken in v1.
 - **De-bleed: pure-DSP vs small ML for v1.** **Resolved: pure-DSP** (comb-notch + spectral subtraction over an energy-VAD noise estimate, §4.5) — no shipped learned weights, honoring the brief §6.1 licensing discipline. A small ML de-bleed is a v1.x option only if measured residual quality demands it.
 - **Mobile Standard view for YesVox.** **Flagged / deferred** (§8.3). Desktop is primary for v1; the Standard surface is intentionally designed as the natural future mobile form (product §6), so the seam is preserved without building it.
-- **Singing as v1 feature vs v1.x.** **Resolved (gate-conditional).** Held to the same bar as speech via the §6 quantitative release gate. Gate timing = between rack completion (M3) and Standard-UI wiring (M4). Fallback flow is voiceover-only ship with the `singing.*` schema slot reserved and dark-launch flag pre-built.
+- **Singing as v1 feature vs v1.x.** **Resolved: v1 ships Singing first-class.** Held to the same bar as speech via the §6 quantitative release gate in CI; the explicit Voiceover/Singing toggle is user-authoritative, and a gate failure is a regression to fix before release.
 - **Source separator inside YesVox.** **Resolved: never.** §8.3b permanent non-goal. De-bleed (§4.5) is restoration on an imported stem, not separation. The `VocalSourceProvider` seam (§1.6) means a future in-app separator would be an additional implementation, not a rewrite.
 - **Pricing model and Yes-suite bundle relationship.** **Flagged.** Unresolved product-side. §7.2 keeps it deferrable: the activation key carries an `entitlements: ["yesvox", ...]` array so single-app and suite-bundle modes resolve through the same activation server, key format, and client check.
 - **Bundled-weights footprint ceiling.** **Resolved: <=2 GB** (CI-enforced in §7.5/§7.6). Drives the choice to keep MossFormer2_SE_48K bundled fp16 and ship `pack.mossformer2-fp32` on demand.

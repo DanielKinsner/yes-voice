@@ -36,8 +36,8 @@ accent gradients, subtle glow on active controls.
 - **VOCAL ORDER** — "1 vocal • 3:28". Selected item `01 Lead Vocal.wav 3:28`
   with a mini waveform. **+ Add Vocal**.
 - **VOICE TYPE** — two big toggles: **Voiceover** (mic) | **Singing** (note,
-  selected here). *(Backend: content mode, #2; Singing only selectable once the
-  #16 singing gate passes.)*
+  selected here). *(Backend: content mode, #2; Singing is first-class after the
+  #16 mechanical gate.)*
 - **SMART ASSIST** card (AI badge): "Analyzes your vocal and builds the best
   settings for a clean, natural result." → **Analyze Vocal** button.
 - **Bottom:** "Analyzing audio 14%" progress; **Import Vocal** (upload).
@@ -113,10 +113,10 @@ ANALYZING AUDIO`.
 - **Restore/Polish split** mirrors the backend's two rack groups — wire each card
   to its module's `set_enabled` + a single intensity/strength param; the circular
   knobs are those params.
-- **Singing UI is conditional.** This mock shows the singing-enabled state. Per
-  the product guardrails, the Singing toggle + singing presets appear **only if
-  the #16 quality gate passes**; otherwise ship voiceover-only with the slot
-  reserved (schema already supports this — `SingingSettings`).
+- **Singing UI ships first-class.** This mock shows the singing-enabled state.
+  Per the product guardrails, the explicit Voiceover/Singing toggle is
+  user-authoritative, and singing quality is guarded by the #16 mechanical gate
+  (schema already supports this — `SingingSettings`).
 - **"Mouth Clicks" is a sub-control**, not a separate engine — the shared
   transient detector already classifies `MouthClick` distinctly from `Click`.
 - **FLOW AMOUNT** and the two radial macros are global controls with no 1:1
