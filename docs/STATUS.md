@@ -9,8 +9,8 @@
 
 Building **#17 — the Standard view**. The engine (`yesvox-core` rack) already
 existed; this phase builds the agent-callable, mechanically-tested `Session`
-surface the UI needs, then a thin **egui shell** over it. Both are underway and
-**green**.
+surface the UI needs, then a custom-painted **egui shell** over it. Both are
+underway and **green**.
 
 - **Workspace:** `yesvox-core` (lib), `yesvox-app` (headless CLI, bin `yesvox`),
   **`yesvox-gui`** (the egui app, bin `yesvox-gui`, **new**), `xtask`.
@@ -52,7 +52,7 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **G12/13** | **OUTPUT + FILE** panels — `OutputFormat`, bit-depth/dither, name/location, `export_target()`/`export_to_target()`. |
 | **G15** | **Volume Match** — `ab_matched_input()`. |
 | **G17** | **Waveform peaks + channel meters** — `monitor::waveform_peaks / channel_peak_db / channel_rms_db`. |
-| **GUI** | **egui Standard-view shell** (`crates/yesvox-gui`) wired to all of the above. |
+| **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
 
 ## Next up (remaining mechanical gaps)
 
@@ -69,8 +69,11 @@ Build order, mechanical-first, each TDD'd:
 5. **G18** — undo/redo. **Needs a scope decision from Dan** (unspec'd in
    product.md/plan; ship Revert-only, or a real undo stack?).
 
-Then GUI polish: native file picker (`rfd`), theme/spacing fidelity vs the mock,
-and (deferred) the playback transport + spectral-monitor/reblend (#18).
+Then GUI polish: native file picker (`rfd`), finer pixel/spacing adjustments vs
+the mock, and the real playback-backed transport + spectral-monitor/reblend
+(#18). The shell currently paints reference/deterministic placeholder waveforms,
+meters, spectrum, and transport controls when no file is loaded so the fresh
+launch matches the visual target.
 
 ## Decisions on record
 
@@ -79,18 +82,18 @@ and (deferred) the playback transport + spectral-monitor/reblend (#18).
   only binds the denoiser; polish has no engine binding).
 - **Sample rate = read-only** (export SR locked to input — hard guardrail + the
   same-length CI gate). No SR-override API; the OUTPUT panel shows it as a chip.
-- **Deferred:** playback transport, spectral monitor + reblend slider (#18
-  Advanced), background-thread progress, native file picker, "Save as New Preset"
-  + "Add to Suite Library" (stubbed — no user-preset store; suite handoff is a
-  designed-for seam, not built-in).
+- **Deferred:** real playback transport, live spectral monitor + reblend audio
+  preview (#18 Advanced), background-thread progress, native file picker, "Save
+  as New Preset" + "Add to Suite Library" persistence (stubbed — no user-preset
+  store; suite handoff is a designed-for seam, not built-in).
 
 ## GUI dependency note (read before touching the shell)
 
 `yesvox-gui` is on **eframe 0.35**, which is a **redesigned egui API** vs older
 versions: implement `App::ui(&mut self, ui, frame)` (not `update(ctx, frame)`);
-panels are the unified `egui::Panel::left/right/top/bottom(id).exact_size(n)
-.show(ui, …)` (the old `SidePanel`/`TopBottomPanel` are gone; only `CentralPanel`
-remains); theming via `ctx.set_visuals` + `ctx.all_styles_mut`. `deny.toml`
+the visual shell now paints a fixed 1920×1080 coordinate system directly from
+`Ui::max_rect()` instead of relying on stock widgets for layout; theming still
+uses `ctx.set_visuals` + `ctx.all_styles_mut`. `deny.toml`
 carries four scoped, permissive license exceptions for the egui tree
 (hexf-parse CC0, clipboard-win/error-code BSL-1.0, epaint_default_fonts
 OFL-1.1/Ubuntu-font). Visual fidelity is verified by eye; widget logic is tested

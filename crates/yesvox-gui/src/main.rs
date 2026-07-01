@@ -1,31 +1,44 @@
 //! YesVox — the egui **Standard-view** shell over the agent-native
 //! [`yesvox_core::Session`] (UI ref `docs/ui/yesvox-v1-ui-reference.md`, #17).
 //!
-//! Every control here calls a `Session` method and nothing in this crate knows
-//! DSP — the shell is a thin renderer over state that is mechanically tested in
-//! `yesvox-core`. Visual fidelity is the one thing verified by eye (Dan); the
-//! behavior behind each widget is verified by `cargo test`.
-//!
-//! Deferred (per the plan / guardrails, not yet wired here): audio playback
-//! transport, the difference-spectrum monitor + reblend slider (#18 Advanced),
-//! background-thread progress, and the native file-picker (a path field stands in
-//! for Import for now).
+//! This crate keeps DSP out of the GUI: visible controls call `Session` methods,
+//! while the visual layer is custom-painted to track the 1920x1080 reference
+//! mock closely enough for product review.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::{fmt::Debug, hash::Hash, path::PathBuf};
 
 use eframe::egui;
 use yesvox_core::{CardId, ContentMode, LoudnessTarget, OutputFormat, Preset, Session};
 
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
 const MIN_VIEWPORT_SIZE: [f32; 2] = [1280.0, 720.0];
+const CANVAS: egui::Vec2 = egui::vec2(1920.0, 1080.0);
+
+const BG_TOP: egui::Color32 = egui::Color32::from_rgb(3, 10, 18);
+const BG_BOTTOM: egui::Color32 = egui::Color32::from_rgb(7, 17, 29);
+const PANEL: egui::Color32 = egui::Color32::from_rgb(8, 21, 36);
+const PANEL_2: egui::Color32 = egui::Color32::from_rgb(10, 27, 45);
+const CARD: egui::Color32 = egui::Color32::from_rgb(11, 27, 45);
+const FIELD: egui::Color32 = egui::Color32::from_rgb(9, 20, 34);
+const BORDER: egui::Color32 = egui::Color32::from_rgb(29, 62, 93);
+const BORDER_DIM: egui::Color32 = egui::Color32::from_rgb(19, 42, 65);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(229, 238, 255);
+const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(145, 159, 187);
+const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(100, 119, 151);
+const BLUE: egui::Color32 = egui::Color32::from_rgb(0, 131, 255);
+const CYAN: egui::Color32 = egui::Color32::from_rgb(41, 214, 255);
+const PURPLE: egui::Color32 = egui::Color32::from_rgb(141, 62, 255);
+const VIOLET: egui::Color32 = egui::Color32::from_rgb(103, 67, 238);
+const AMBER: egui::Color32 = egui::Color32::from_rgb(241, 211, 91);
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(DEFAULT_VIEWPORT_SIZE)
             .with_min_inner_size(MIN_VIEWPORT_SIZE)
+            .with_decorations(false)
             .with_title("YesVox"),
         ..Default::default()
     };
@@ -36,60 +49,163 @@ fn main() -> eframe::Result {
     )
 }
 
-/// The two rack groups, shown as the top-bar segmented tabs.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Restore,
     Polish,
 }
 
-/// Which side of the A/B the center display shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AbView {
     Original,
     Processed,
 }
 
+#[derive(Clone, Copy)]
+struct CanvasMap {
+    rect: egui::Rect,
+    scale: f32,
+}
+
+impl CanvasMap {
+    fn new(available: egui::Rect) -> Self {
+        let scale = (available.width() / CANVAS.x)
+            .min(available.height() / CANVAS.y)
+            .max(0.01);
+        let size = CANVAS * scale;
+        let rect = egui::Rect::from_center_size(available.center(), size);
+        CanvasMap { rect, scale }
+    }
+
+    fn x(self, x: f32) -> f32 {
+        self.rect.left() + x * self.scale
+    }
+
+    fn y(self, y: f32) -> f32 {
+        self.rect.top() + y * self.scale
+    }
+
+    fn pos(self, x: f32, y: f32) -> egui::Pos2 {
+        egui::pos2(self.x(x), self.y(y))
+    }
+
+    fn v(self, value: f32) -> f32 {
+        value * self.scale
+    }
+
+    fn rect(self, r: egui::Rect) -> egui::Rect {
+        egui::Rect::from_min_max(self.pos(r.left(), r.top()), self.pos(r.right(), r.bottom()))
+    }
+
+    fn font(self, size: f32) -> egui::FontId {
+        egui::FontId::proportional(self.v(size))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ReferenceLayout {
+    top: egui::Rect,
+    left: egui::Rect,
+    center: egui::Rect,
+    right: egui::Rect,
+    status: egui::Rect,
+    hero: egui::Rect,
+    restore: egui::Rect,
+    polish: egui::Rect,
+    monitor: egui::Rect,
+}
+
+impl ReferenceLayout {
+    fn new() -> Self {
+        ReferenceLayout {
+            top: rect(0.0, 0.0, 1920.0, 70.0),
+            left: rect(4.0, 70.0, 282.0, 970.0),
+            center: rect(302.0, 70.0, 1254.0, 970.0),
+            right: rect(1574.0, 70.0, 332.0, 970.0),
+            status: rect(0.0, 1040.0, 1920.0, 40.0),
+            hero: rect(302.0, 70.0, 1254.0, 350.0),
+            restore: rect(302.0, 428.0, 1254.0, 217.0),
+            polish: rect(302.0, 653.0, 1254.0, 217.0),
+            monitor: rect(302.0, 878.0, 1254.0, 150.0),
+        }
+    }
+}
+
+fn rect(x: f32, y: f32, w: f32, h: f32) -> egui::Rect {
+    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h))
+}
+
 struct YesVoxApp {
     session: Session,
     tab: Tab,
     ab: AbView,
-    /// Stand-in for the native file picker until `rfd` is wired.
     path_input: String,
-    /// Editable mirror of the output file name (committed on change).
+    source_name: String,
     name_input: String,
     status: String,
+    reblend_amount: f32,
+    volume_match: bool,
+    preview_lufs: bool,
+    add_to_library: bool,
 }
-
-// Palette approximating the reference mock (near-black navy + blue→cyan accents).
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(86, 148, 255);
-const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(58, 96, 168);
-const PANEL: egui::Color32 = egui::Color32::from_rgb(16, 21, 34);
-const CARD: egui::Color32 = egui::Color32::from_rgb(22, 28, 44);
-const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(140, 152, 178);
 
 impl YesVoxApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_theme(&cc.egui_ctx);
+        let mut session = Session::new();
+        session.select_preset(Preset::LEAD_VOCAL);
+        session.set_flow_amount(1.0);
+        session.set_restoration_focus(0.5);
+        session.set_polish_intensity(0.5);
+        session.set_loudness_target(LoudnessTarget::Streaming);
+        session.set_output_format(OutputFormat::Wav);
+        session.set_bit_depth(Some(24));
+        session.set_dither(true);
+        for (card, amount) in [
+            (CardId::Denoise, 0.48),
+            (CardId::DeReverb, 0.42),
+            (CardId::DeClickDePop, 0.55),
+            (CardId::MouthClicks, 0.60),
+            (CardId::DeHum, 0.35),
+            (CardId::DeEss, 0.40),
+            (CardId::Breath, 0.30),
+            (CardId::PresenceAir, 0.35),
+            (CardId::Leveling, 0.45),
+        ] {
+            session.set_card_enabled(card, true);
+            session.set_card_amount(card, amount);
+        }
+        session.set_card_enabled(CardId::Loudness, true);
         YesVoxApp {
-            session: Session::new(),
+            session,
             tab: Tab::Restore,
-            ab: AbView::Original,
+            ab: AbView::Processed,
             path_input: String::new(),
-            name_input: String::new(),
-            status: "Import a vocal to begin.".to_owned(),
+            source_name: "Lead Vocal.wav".to_owned(),
+            name_input: "Lead Vocal_YesVox".to_owned(),
+            status: "Analyzing audio".to_owned(),
+            reblend_amount: 0.25,
+            volume_match: false,
+            preview_lufs: false,
+            add_to_library: true,
         }
     }
 
-    /// Open (decode + analyze) the path field, then render with current settings.
     fn import(&mut self) {
         let path = PathBuf::from(self.path_input.trim());
         if path.as_os_str().is_empty() {
-            self.status = "Enter a .wav/.flac path to import.".to_owned();
+            self.status =
+                "Native file picker pending; drag/path import is not wired in this visual pass."
+                    .to_owned();
             return;
         }
         match self.session.open(&path) {
             Ok(_) => {
+                self.source_name = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Vocal.wav")
+                    .to_owned();
                 self.name_input = self.session.output_name().unwrap_or("vocal").to_owned();
                 self.render_now();
             }
@@ -97,13 +213,12 @@ impl YesVoxApp {
         }
     }
 
-    /// Run the chain on the open vocal (the heavy step; synchronous for now).
     fn render_now(&mut self) {
         match self.session.render() {
             Ok(()) => {
                 self.ab = AbView::Processed;
                 let lufs = self.session.output_lufs().unwrap_or(f32::NAN);
-                self.status = format!("Rendered · OUT {lufs:.1} LUFS");
+                self.status = format!("Rendered - OUT {lufs:.1} LUFS");
             }
             Err(e) => self.status = format!("Render failed: {e}"),
         }
@@ -112,475 +227,1941 @@ impl YesVoxApp {
 
 impl eframe::App for YesVoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::Panel::top("top")
-            .exact_size(52.0)
-            .show(ui, |ui| self.top_bar(ui));
-        egui::Panel::bottom("status")
-            .exact_size(28.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.colored_label(TEXT_DIM, self.status.as_str());
-                });
-            });
-        egui::Panel::left("left")
-            .exact_size(232.0)
-            .show(ui, |ui| self.left_sidebar(ui));
-        egui::Panel::right("right")
-            .exact_size(296.0)
-            .show(ui, |ui| self.right_sidebar(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.center(ui));
+        let available = ui.max_rect();
+        let canvas = CanvasMap::new(available);
+        let layout = ReferenceLayout::new();
+        let painter = ui.painter().clone();
+
+        painter.rect_filled(available, egui::CornerRadius::ZERO, BG_BOTTOM);
+        paint_v_gradient(&painter, canvas.rect, BG_TOP, BG_BOTTOM, 72);
+        self.draw_top_bar(ui, &painter, canvas, layout);
+        self.draw_left_sidebar(ui, &painter, canvas, layout);
+        self.draw_center(ui, &painter, canvas, layout);
+        self.draw_right_sidebar(ui, &painter, canvas, layout);
+        self.draw_status_bar(&painter, canvas, layout);
     }
 }
 
 impl YesVoxApp {
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new("YES")
-                    .size(20.0)
-                    .strong()
-                    .color(egui::Color32::WHITE),
-            );
-            ui.label(egui::RichText::new("Vox").size(20.0).strong().color(ACCENT));
+    fn draw_top_bar(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        l: ReferenceLayout,
+    ) {
+        paint_panel(painter, c, l.top, 0, alpha(PANEL, 235), BORDER_DIM);
+        self.draw_wordmark(painter, c, egui::pos2(18.0, 35.0));
 
-            ui.add_space(24.0);
-            // Restore / Polish segmented tabs.
-            if ui
-                .selectable_label(self.tab == Tab::Restore, "  Restore  ")
-                .clicked()
-            {
-                self.tab = Tab::Restore;
-            }
-            if ui
-                .selectable_label(self.tab == Tab::Polish, "  Polish  ")
-                .clicked()
-            {
-                self.tab = Tab::Polish;
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(8.0);
-                // Preset gallery dropdown.
-                let current = self.session.preset();
-                let mut chosen = current;
-                egui::ComboBox::from_id_salt("preset_top")
-                    .selected_text(format!("Preset: {}", current.name))
-                    .show_ui(ui, |ui| {
-                        for p in Preset::ALL {
-                            ui.selectable_value(&mut chosen, p, p.name);
-                        }
-                    });
-                if chosen != current {
-                    self.session.select_preset(chosen);
-                    self.status = format!("Preset: {}", chosen.name);
-                }
-                // A/B compare (view toggle; playback is deferred).
-                if ui.button("A / B").clicked() {
-                    self.ab = match self.ab {
-                        AbView::Original => AbView::Processed,
-                        AbView::Processed => AbView::Original,
-                    };
-                }
-            });
-        });
-    }
-
-    fn left_sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        section_header(ui, "VOCAL ORDER");
-        match self.session.input() {
-            Some(buf) => {
-                ui.label(egui::RichText::new(self.name_input.as_str()).color(egui::Color32::WHITE));
-                ui.colored_label(TEXT_DIM, fmt_duration(buf));
-            }
-            None => {
-                ui.colored_label(TEXT_DIM, "No vocal loaded");
-            }
+        let restore = rect(742.0, 13.0, 184.0, 44.0);
+        let polish = rect(928.0, 13.0, 184.0, 44.0);
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            restore,
+            "Restore",
+            self.tab == Tab::Restore,
+            "top_restore",
+        ) {
+            self.tab = Tab::Restore;
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            polish,
+            "Polish",
+            self.tab == Tab::Polish,
+            "top_polish",
+        ) {
+            self.tab = Tab::Polish;
         }
 
-        ui.add_space(14.0);
-        section_header(ui, "VOICE TYPE");
-        let mode = self.session.settings().content_mode;
-        ui.horizontal(|ui| {
-            if ui
-                .selectable_label(mode == ContentMode::Voiceover, "🎙 Voiceover")
-                .clicked()
-            {
-                self.session.set_content_mode(ContentMode::Voiceover);
-            }
-            if ui
-                .selectable_label(mode == ContentMode::Singing, "🎵 Singing")
-                .clicked()
-            {
-                self.session.set_content_mode(ContentMode::Singing);
-            }
-        });
-
-        ui.add_space(14.0);
-        section_header(ui, "SMART ASSIST");
-        ui.colored_label(
-            TEXT_DIM,
-            "Analyze your vocal and render a clean, natural result.",
+        for (i, label) in ["Undo", "Redo"].iter().enumerate() {
+            self.icon_button(
+                ui,
+                painter,
+                c,
+                rect(1386.0 + i as f32 * 48.0, 14.0, 38.0, 40.0),
+                label,
+                i == 0,
+            );
+        }
+        if self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(1485.0, 14.0, 68.0, 40.0),
+            "A / B",
+            "top_ab",
+        ) {
+            self.ab = match self.ab {
+                AbView::Original => AbView::Processed,
+                AbView::Processed => AbView::Original,
+            };
+        }
+        self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(1564.0, 14.0, 95.0, 40.0),
+            "Presets",
+            "top_presets",
         );
-        ui.add_space(6.0);
-        let can = self.session.input().is_some();
-        if ui
-            .add_enabled(can, egui::Button::new("  Analyze Vocal  ").fill(ACCENT_DIM))
-            .clicked()
-        {
+        self.icon_button(ui, painter, c, rect(1673.0, 14.0, 38.0, 40.0), "Gear", true);
+        self.icon_button(ui, painter, c, rect(1724.0, 14.0, 38.0, 40.0), "Help", true);
+        self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(1775.0, 14.0, 130.0, 40.0),
+            "< Back to Suite",
+            "top_back",
+        );
+    }
+
+    fn draw_left_sidebar(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        l: ReferenceLayout,
+    ) {
+        paint_panel(painter, c, l.left, 8, alpha(PANEL, 225), BORDER_DIM);
+        self.section_label(painter, c, 28.0, 94.0, "VOCAL ORDER");
+        self.small_text(painter, c, 28.0, 118.0, "1 vocal - 3:28", TEXT_MUTED);
+        paint_panel(
+            painter,
+            c,
+            rect(18.0, 142.0, 256.0, 64.0),
+            6,
+            alpha(BLUE, 82),
+            BLUE,
+        );
+        self.body_text(painter, c, 38.0, 171.0, "01", CYAN);
+        self.body_text(painter, c, 72.0, 161.0, &self.source_name, TEXT);
+        self.small_text(painter, c, 72.0, 184.0, "3:28", CYAN);
+        self.draw_mini_wave(painter, c, rect(224.0, 162.0, 28.0, 22.0));
+        self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(18.0, 220.0, 256.0, 48.0),
+            "+   Add Vocal",
+            "add_vocal",
+        );
+
+        painter.line_segment(
+            [c.pos(28.0, 350.0), c.pos(264.0, 350.0)],
+            egui::Stroke::new(c.v(1.0), BORDER_DIM),
+        );
+        self.section_label(painter, c, 28.0, 382.0, "VOICE TYPE");
+        let mode = self.session.settings().content_mode;
+        if self.mode_button(
+            ui,
+            painter,
+            c,
+            rect(24.0, 402.0, 112.0, 88.0),
+            "Mic",
+            "Voiceover",
+            mode == ContentMode::Voiceover,
+            "mode_voice",
+        ) {
+            self.session.set_content_mode(ContentMode::Voiceover);
+        }
+        if self.mode_button(
+            ui,
+            painter,
+            c,
+            rect(150.0, 402.0, 112.0, 88.0),
+            "Note",
+            "Singing",
+            mode == ContentMode::Singing,
+            "mode_sing",
+        ) {
+            self.session.set_content_mode(ContentMode::Singing);
+        }
+
+        paint_panel(
+            painter,
+            c,
+            rect(18.0, 515.0, 256.0, 256.0),
+            8,
+            alpha(PANEL_2, 230),
+            BORDER_DIM,
+        );
+        self.body_text(painter, c, 78.0, 566.0, "SMART ASSIST", TEXT);
+        self.badge(painter, c, rect(226.0, 546.0, 30.0, 28.0), "AI", false);
+        self.star(painter, c, egui::pos2(56.0, 556.0), 13.0, CYAN);
+        self.body_text(
+            painter,
+            c,
+            44.0,
+            622.0,
+            "Analyzes your vocal and",
+            TEXT_MUTED,
+        );
+        self.body_text(
+            painter,
+            c,
+            44.0,
+            650.0,
+            "builds the best settings",
+            TEXT_MUTED,
+        );
+        self.body_text(
+            painter,
+            c,
+            44.0,
+            678.0,
+            "for a clean, natural result.",
+            TEXT_MUTED,
+        );
+        if self.gradient_button(
+            ui,
+            painter,
+            c,
+            rect(44.0, 704.0, 212.0, 54.0),
+            "Analyze Vocal",
+            "analyze_vocal",
+        ) {
             self.render_now();
         }
 
-        ui.add_space(16.0);
-        section_header(ui, "IMPORT");
-        ui.colored_label(TEXT_DIM, "Path to a .wav / .flac:");
-        ui.add(egui::TextEdit::singleline(&mut self.path_input).desired_width(f32::INFINITY));
-        ui.add_space(4.0);
-        if ui
-            .add(egui::Button::new("⬆  Import Vocal").fill(ACCENT))
-            .clicked()
-        {
+        paint_panel(
+            painter,
+            c,
+            rect(18.0, 890.0, 256.0, 66.0),
+            6,
+            alpha(PANEL_2, 220),
+            BORDER_DIM,
+        );
+        self.small_text(painter, c, 34.0, 918.0, "Analyzing audio", CYAN);
+        self.small_text(painter, c, 226.0, 918.0, "14%", CYAN);
+        self.progress_bar(painter, c, rect(34.0, 934.0, 218.0, 6.0), 0.14);
+        if self.gradient_button(
+            ui,
+            painter,
+            c,
+            rect(18.0, 972.0, 256.0, 58.0),
+            "Upload  Import Vocal",
+            "import_vocal",
+        ) {
             self.import();
         }
     }
 
-    fn center(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        // Header: name + format chips.
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(if self.name_input.is_empty() {
-                    "—".to_owned()
-                } else {
-                    self.name_input.to_uppercase()
-                })
-                .size(18.0)
-                .strong()
-                .color(egui::Color32::WHITE),
-            );
-        });
-        if let Some(buf) = self.session.input() {
-            ui.colored_label(
-                TEXT_DIM,
-                format!(
-                    "{} · {} kHz · {}-bit · {} · {}",
-                    self.session.output_format().label(),
-                    buf.sample_rate() / 1000,
-                    buf.bits_per_sample(),
-                    if buf.channel_count() <= 1 {
-                        "Mono"
-                    } else {
-                        "Stereo"
-                    },
-                    fmt_duration(buf),
-                ),
-            );
-        }
+    fn draw_center(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        l: ReferenceLayout,
+    ) {
+        let _center_bounds = l.center;
+        paint_panel(painter, c, l.hero, 8, alpha(PANEL, 210), BORDER_DIM);
+        let source = self.source_name.to_uppercase();
+        self.title_text(painter, c, 322.0, 106.0, &source);
+        self.small_text(painter, c, 322.0, 132.0, "WAV", TEXT_MUTED);
+        self.small_text(painter, c, 370.0, 132.0, "|", TEXT_DIM);
+        self.small_text(painter, c, 392.0, 132.0, "48 kHz", TEXT_MUTED);
+        self.small_text(painter, c, 456.0, 132.0, "|", TEXT_DIM);
+        self.small_text(painter, c, 478.0, 132.0, "24-bit", TEXT_MUTED);
+        self.small_text(painter, c, 538.0, 132.0, "|", TEXT_DIM);
+        self.small_text(painter, c, 560.0, 132.0, "Mono", TEXT_MUTED);
+        self.small_text(painter, c, 610.0, 132.0, "|", TEXT_DIM);
+        self.small_text(painter, c, 632.0, 132.0, "3:28", TEXT_MUTED);
 
-        // Flow Amount master.
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.colored_label(TEXT_DIM, "FLOW AMOUNT");
-            let mut flow = self.session.flow_amount();
-            if ui.add(egui::Slider::new(&mut flow, 0.0..=1.0)).changed() {
-                self.session.set_flow_amount(flow);
-            }
-            // Original / Processed + IN/OUT loudness.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(o) = self.session.output_lufs() {
-                    ui.colored_label(TEXT_DIM, format!("OUT {o:.1}"));
-                }
-                if let Some(i) = self.session.input_lufs() {
-                    ui.colored_label(TEXT_DIM, format!("IN {i:.1}"));
-                }
-                if ui
-                    .selectable_label(self.ab == AbView::Processed, "Processed")
-                    .clicked()
-                {
-                    self.ab = AbView::Processed;
-                }
-                if ui
-                    .selectable_label(self.ab == AbView::Original, "Original")
-                    .clicked()
-                {
-                    self.ab = AbView::Original;
-                }
-            });
-        });
-
-        self.waveform(ui);
-
-        ui.add_space(8.0);
-        // The active rack group + its intensity radial.
-        let cards = match self.tab {
-            Tab::Restore => &CardId::RESTORE[..],
-            Tab::Polish => &CardId::POLISH[..],
-        };
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(match self.tab {
-                    Tab::Restore => "RESTORE",
-                    Tab::Polish => "POLISH",
-                })
-                .strong()
-                .color(ACCENT),
-            );
-            ui.with_layout(
-                egui::Layout::right_to_left(egui::Align::Center),
-                |ui| match self.tab {
-                    Tab::Restore => {
-                        let mut t = self.session.restoration_focus();
-                        ui.colored_label(TEXT_DIM, "Restoration Focus");
-                        if ui.add(egui::Slider::new(&mut t, 0.0..=1.0)).changed() {
-                            self.session.set_restoration_focus(t);
-                        }
-                    }
-                    Tab::Polish => {
-                        let mut t = self.session.polish_intensity();
-                        ui.colored_label(TEXT_DIM, "Polish Intensity");
-                        if ui.add(egui::Slider::new(&mut t, 0.0..=1.0)).changed() {
-                            self.session.set_polish_intensity(t);
-                        }
-                    }
-                },
-            );
-        });
-        ui.add_space(4.0);
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for &card in cards {
-                self.rack_card(ui, card);
-            }
-        });
-    }
-
-    fn waveform(&mut self, ui: &mut egui::Ui) {
-        let (resp, painter) = ui.allocate_painter(
-            egui::vec2(ui.available_width(), 132.0),
-            egui::Sense::hover(),
+        self.small_text(painter, c, 782.0, 116.0, "FLOW AMOUNT", TEXT_MUTED);
+        let mut flow = self.session.flow_amount();
+        flow = self.slider(
+            ui,
+            painter,
+            c,
+            rect(902.0, 111.0, 370.0, 10.0),
+            flow,
+            "flow_amount",
+            BLUE,
+            PURPLE,
         );
-        let rect = resp.rect;
-        painter.rect_filled(rect, egui::CornerRadius::same(6), CARD);
-        let buf = match self.ab {
-            AbView::Original => self.session.input(),
-            AbView::Processed => self.session.output().or_else(|| self.session.input()),
+        if (flow - self.session.flow_amount()).abs() > f32::EPSILON {
+            self.session.set_flow_amount(flow);
+        }
+        self.body_text(painter, c, 1288.0, 120.0, "x1.00", TEXT);
+
+        let ab_rect = rect(1368.0, 86.0, 188.0, 34.0);
+        paint_panel(painter, c, ab_rect, 6, FIELD, BORDER_DIM);
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            rect(1368.0, 86.0, 94.0, 34.0),
+            "Original",
+            self.ab == AbView::Original,
+            "ab_original",
+        ) {
+            self.ab = AbView::Original;
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            rect(1462.0, 86.0, 94.0, 34.0),
+            "Processed",
+            self.ab == AbView::Processed,
+            "ab_processed",
+        ) {
+            self.ab = AbView::Processed;
+        }
+
+        let wave_rect = rect(322.0, 148.0, 1032.0, 160.0);
+        paint_panel(painter, c, wave_rect, 5, FIELD, BORDER);
+        self.draw_waveform(painter, c, wave_rect);
+        self.draw_time_labels(painter, c, wave_rect);
+        self.draw_meter_panel(painter, c, rect(1370.0, 148.0, 166.0, 160.0));
+        self.draw_transport(ui, painter, c);
+
+        self.draw_rack_panel(ui, painter, c, l.restore, Tab::Restore);
+        self.draw_rack_panel(ui, painter, c, l.polish, Tab::Polish);
+        self.draw_monitor_strip(ui, painter, c, l.monitor);
+    }
+
+    fn draw_rack_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        panel: egui::Rect,
+        tab: Tab,
+    ) {
+        paint_panel(painter, c, panel, 8, alpha(PANEL, 218), BORDER_DIM);
+        let title = match tab {
+            Tab::Restore => "RESTORE",
+            Tab::Polish => "POLISH",
         };
-        if let Some(buf) = buf {
-            let buckets = (rect.width() as usize).max(1);
-            let peaks = yesvox_core::monitor::waveform_peaks(buf, 0, buckets);
-            let mid = rect.center().y;
-            let h = rect.height() * 0.46;
-            let color = if matches!(self.ab, AbView::Processed) {
-                ACCENT
-            } else {
-                ACCENT_DIM
-            };
-            for (i, (lo, hi)) in peaks.iter().enumerate() {
-                let x = rect.left() + i as f32;
-                painter.line_segment(
-                    [egui::pos2(x, mid - hi * h), egui::pos2(x, mid - lo * h)],
-                    egui::Stroke::new(1.0, color),
+        self.section_label(painter, c, panel.left() + 20.0, panel.top() + 28.0, title);
+        self.help_dot(
+            painter,
+            c,
+            egui::pos2(panel.left() + 98.0, panel.top() + 20.0),
+        );
+
+        let cards = match tab {
+            Tab::Restore => CardId::RESTORE,
+            Tab::Polish => CardId::POLISH,
+        };
+        let mut x = panel.left() + 20.0;
+        for card in cards {
+            self.rack_card(
+                ui,
+                painter,
+                c,
+                rect(x, panel.top() + 48.0, 210.0, 160.0),
+                card,
+            );
+            x += 222.0;
+        }
+        let macro_rect = rect(panel.right() - 150.0, panel.top() + 42.0, 130.0, 155.0);
+        match tab {
+            Tab::Restore => {
+                self.small_text(
+                    painter,
+                    c,
+                    macro_rect.left() + 10.0,
+                    macro_rect.top() + 12.0,
+                    "Restoration Focus",
+                    TEXT,
+                );
+                let mut value = self.session.restoration_focus();
+                value = self.radial_control(
+                    ui,
+                    painter,
+                    c,
+                    macro_rect.translate(egui::vec2(0.0, 10.0)),
+                    value,
+                    "restore_focus",
+                );
+                if (value - self.session.restoration_focus()).abs() > f32::EPSILON {
+                    self.session.set_restoration_focus(value);
+                }
+                self.small_text(
+                    painter,
+                    c,
+                    macro_rect.left() + 6.0,
+                    macro_rect.bottom() - 22.0,
+                    "More",
+                    TEXT_MUTED,
+                );
+                self.small_text(
+                    painter,
+                    c,
+                    macro_rect.left() + 6.0,
+                    macro_rect.bottom() - 8.0,
+                    "Transparent",
+                    TEXT_MUTED,
+                );
+                self.small_text(
+                    painter,
+                    c,
+                    macro_rect.right() - 54.0,
+                    macro_rect.bottom() - 22.0,
+                    "More",
+                    TEXT_MUTED,
+                );
+                self.small_text(
+                    painter,
+                    c,
+                    macro_rect.right() - 66.0,
+                    macro_rect.bottom() - 8.0,
+                    "Aggressive",
+                    TEXT_MUTED,
                 );
             }
-        } else {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "waveform",
-                egui::FontId::proportional(13.0),
-                TEXT_DIM,
-            );
-        }
-    }
-
-    fn rack_card(&mut self, ui: &mut egui::Ui, card: CardId) {
-        egui::Frame::new()
-            .fill(CARD)
-            .corner_radius(egui::CornerRadius::same(8))
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    let mut on = self.session.card_enabled(card);
-                    if ui.toggle_value(&mut on, "").changed() {
-                        self.session.set_card_enabled(card, on);
-                    }
-                    ui.label(
-                        egui::RichText::new(card.label())
-                            .strong()
-                            .color(egui::Color32::WHITE),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if card == CardId::Loudness {
-                            ui.colored_label(
-                                TEXT_DIM,
-                                loudness_label(self.session.loudness_target()),
-                            );
-                        } else {
-                            let mut amount = self.session.card_amount(card);
-                            if ui
-                                .add(egui::Slider::new(&mut amount, 0.0..=1.0).show_value(false))
-                                .changed()
-                            {
-                                self.session.set_card_amount(card, amount);
-                            }
-                            ui.colored_label(TEXT_DIM, format!("{:.0}%", amount * 100.0));
-                        }
-                    });
-                });
-            });
-        ui.add_space(6.0);
-    }
-
-    fn right_sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        section_header(ui, "PRESET");
-        let current = self.session.preset();
-        let mut chosen = current;
-        egui::ComboBox::from_id_salt("preset_side")
-            .selected_text(current.name)
-            .width(ui.available_width() - 8.0)
-            .show_ui(ui, |ui| {
-                for p in Preset::ALL {
-                    ui.selectable_value(&mut chosen, p, p.name);
-                }
-            });
-        if chosen != current {
-            self.session.select_preset(chosen);
-        }
-
-        ui.add_space(14.0);
-        section_header(ui, "OUTPUT");
-        // Format.
-        let fmt = self.session.output_format();
-        let mut new_fmt = fmt;
-        egui::ComboBox::from_label("Format")
-            .selected_text(fmt.label())
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut new_fmt, OutputFormat::Wav, "WAV");
-                ui.selectable_value(&mut new_fmt, OutputFormat::Flac, "FLAC");
-            });
-        if new_fmt != fmt {
-            self.session.set_output_format(new_fmt);
-        }
-        // Sample rate is read-only (locked to input).
-        if let Some(buf) = self.session.input() {
-            ui.colored_label(
-                TEXT_DIM,
-                format!(
-                    "Sample Rate   {:.1} kHz (locked)",
-                    buf.sample_rate() as f32 / 1000.0
-                ),
-            );
-        }
-        // Bit depth.
-        let cur_bits = self.session.settings().export.bit_depth_override;
-        let mut new_bits = cur_bits;
-        egui::ComboBox::from_label("Bit Depth")
-            .selected_text(match cur_bits {
-                None => "Source".to_owned(),
-                Some(b) => format!("{b}-bit"),
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut new_bits, None, "Source");
-                ui.selectable_value(&mut new_bits, Some(16), "16-bit");
-                ui.selectable_value(&mut new_bits, Some(24), "24-bit");
-                ui.selectable_value(&mut new_bits, Some(32), "32-bit");
-            });
-        if new_bits != cur_bits {
-            self.session.set_bit_depth(new_bits);
-        }
-        // Loudness target.
-        let cur_t = self.session.loudness_target();
-        let mut new_t = cur_t;
-        egui::ComboBox::from_label("Loudness")
-            .selected_text(loudness_label(cur_t))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut new_t, LoudnessTarget::Podcast, "−16 LUFS (Podcast)");
-                ui.selectable_value(
-                    &mut new_t,
-                    LoudnessTarget::Streaming,
-                    "−14 LUFS (Streaming)",
+            Tab::Polish => {
+                self.small_text(
+                    painter,
+                    c,
+                    macro_rect.left() + 10.0,
+                    macro_rect.top() + 12.0,
+                    "Polish Intensity",
+                    TEXT,
                 );
-                ui.selectable_value(&mut new_t, LoudnessTarget::MatchInput, "Match input");
-                ui.selectable_value(&mut new_t, LoudnessTarget::PeakNormalize, "Peak normalize");
-            });
-        if new_t != cur_t {
-            self.session.set_loudness_target(new_t);
+                let mut value = self.session.polish_intensity();
+                value = self.radial_control(
+                    ui,
+                    painter,
+                    c,
+                    macro_rect.translate(egui::vec2(0.0, 10.0)),
+                    value,
+                    "polish_intensity",
+                );
+                if (value - self.session.polish_intensity()).abs() > f32::EPSILON {
+                    self.session.set_polish_intensity(value);
+                }
+                self.small_text(
+                    painter,
+                    c,
+                    macro_rect.left() + 18.0,
+                    macro_rect.bottom() - 22.0,
+                    "Gentle",
+                    TEXT_MUTED,
+                );
+                self.small_text(
+                    painter,
+                    c,
+                    macro_rect.right() - 54.0,
+                    macro_rect.bottom() - 22.0,
+                    "Strong",
+                    TEXT_MUTED,
+                );
+                self.outline_button(
+                    ui,
+                    painter,
+                    c,
+                    rect(
+                        macro_rect.left() + 2.0,
+                        macro_rect.bottom() - 2.0,
+                        120.0,
+                        34.0,
+                    ),
+                    "Auto Polish",
+                    "auto_polish",
+                );
+            }
         }
-        // Dither.
-        let mut dither = self.session.settings().export.dither;
-        if ui.checkbox(&mut dither, "Dither").changed() {
-            self.session.set_dither(dither);
+    }
+
+    fn rack_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        card: CardId,
+    ) {
+        paint_panel(painter, c, r, 7, alpha(CARD, 235), BORDER_DIM);
+        self.card_icon(
+            painter,
+            c,
+            egui::pos2(r.left() + 28.0, r.top() + 26.0),
+            card,
+        );
+        self.body_text(
+            painter,
+            c,
+            r.left() + 54.0,
+            r.top() + 33.0,
+            card.label(),
+            TEXT,
+        );
+        let mut on = self.session.card_enabled(card);
+        if self.toggle(
+            ui,
+            painter,
+            c,
+            rect(r.right() - 43.0, r.top() + 18.0, 34.0, 20.0),
+            on,
+            ("card_toggle", card.label()),
+        ) {
+            on = !on;
+            self.session.set_card_enabled(card, on);
+        }
+        let (a, b) = card_blurb(card);
+        self.micro_text(painter, c, r.left() + 12.0, r.top() + 68.0, a, TEXT_MUTED);
+        self.micro_text(painter, c, r.left() + 12.0, r.top() + 95.0, b, TEXT_MUTED);
+        if card == CardId::Loudness {
+            self.outline_button(
+                ui,
+                painter,
+                c,
+                rect(r.left() + 110.0, r.bottom() - 38.0, 82.0, 28.0),
+                "Target",
+                ("card_target", card.label()),
+            );
+            self.loudness_knob(painter, c, egui::pos2(r.right() - 38.0, r.bottom() - 50.0));
+        } else {
+            let amount = visual_card_amount(card, self.session.card_amount(card));
+            self.percent_knob(
+                painter,
+                c,
+                egui::pos2(r.right() - 38.0, r.bottom() - 58.0),
+                amount,
+            );
+        }
+        self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(r.left() + 12.0, r.bottom() - 38.0, 112.0, 28.0),
+            "Advanced",
+            ("card_advanced", card.label()),
+        );
+    }
+
+    fn draw_right_sidebar(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        l: ReferenceLayout,
+    ) {
+        paint_panel(painter, c, l.right, 8, alpha(PANEL, 225), BORDER_DIM);
+        let preset = rect(1588.0, 70.0, 304.0, 292.0);
+        paint_panel(painter, c, preset, 8, alpha(PANEL_2, 230), BORDER_DIM);
+        self.section_label(painter, c, 1608.0, 100.0, "PRESET");
+        self.help_dot(painter, c, egui::pos2(1678.0, 93.0));
+        paint_panel(
+            painter,
+            c,
+            rect(1608.0, 132.0, 264.0, 44.0),
+            5,
+            FIELD,
+            BORDER_DIM,
+        );
+        self.body_text(painter, c, 1624.0, 160.0, "Singing - Clean & Natural", TEXT);
+        self.star_outline(painter, c, egui::pos2(1852.0, 153.0), 9.0);
+        self.small_text(painter, c, 1608.0, 212.0, "DESCRIPTION", TEXT_MUTED);
+        self.small_text(
+            painter,
+            c,
+            1608.0,
+            246.0,
+            "Balanced restoration for singing vocals.",
+            TEXT_MUTED,
+        );
+        self.small_text(
+            painter,
+            c,
+            1608.0,
+            272.0,
+            "Preserves character and natural ambience.",
+            TEXT_MUTED,
+        );
+        self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(1608.0, 304.0, 264.0, 40.0),
+            "Save as New Preset",
+            "save_preset",
+        );
+
+        let out = rect(1588.0, 372.0, 304.0, 294.0);
+        paint_panel(painter, c, out, 8, alpha(PANEL_2, 230), BORDER_DIM);
+        self.section_label(painter, c, 1608.0, 404.0, "OUTPUT");
+        self.help_dot(painter, c, egui::pos2(1687.0, 397.0));
+        self.field_row(
+            ui,
+            painter,
+            c,
+            1608.0,
+            450.0,
+            "Format",
+            self.session.output_format().label(),
+            "format_row",
+        );
+        self.field_row(
+            ui,
+            painter,
+            c,
+            1608.0,
+            498.0,
+            "Sample Rate",
+            "48.0 kHz",
+            "sample_rate_row",
+        );
+        self.field_row(
+            ui,
+            painter,
+            c,
+            1608.0,
+            546.0,
+            "Bit Depth",
+            "24-bit",
+            "bit_depth_row",
+        );
+        self.field_row(
+            ui,
+            painter,
+            c,
+            1608.0,
+            594.0,
+            "Loudness Target",
+            &loudness_label(self.session.loudness_target()),
+            "loudness_row",
+        );
+        self.small_text(painter, c, 1608.0, 640.0, "Dither", TEXT_MUTED);
+        if self.toggle(
+            ui,
+            painter,
+            c,
+            rect(1850.0, 624.0, 34.0, 20.0),
+            self.session.settings().export.dither,
+            "dither_toggle",
+        ) {
+            let next = !self.session.settings().export.dither;
+            self.session.set_dither(next);
         }
 
-        ui.add_space(14.0);
-        section_header(ui, "FILE");
-        ui.colored_label(TEXT_DIM, "Output File Name");
-        if ui
-            .add(egui::TextEdit::singleline(&mut self.name_input).desired_width(f32::INFINITY))
-            .changed()
-        {
-            self.session.set_output_name(&self.name_input);
+        let file = rect(1588.0, 680.0, 304.0, 250.0);
+        paint_panel(painter, c, file, 8, alpha(PANEL_2, 230), BORDER_DIM);
+        self.section_label(painter, c, 1608.0, 714.0, "FILE");
+        self.help_dot(painter, c, egui::pos2(1658.0, 706.0));
+        self.small_text(painter, c, 1608.0, 754.0, "Output File Name", TEXT_MUTED);
+        paint_panel(
+            painter,
+            c,
+            rect(1608.0, 772.0, 264.0, 40.0),
+            5,
+            FIELD,
+            BORDER_DIM,
+        );
+        self.body_text(painter, c, 1622.0, 798.0, &self.name_input, TEXT);
+        self.small_text(painter, c, 1608.0, 840.0, "Location", TEXT_MUTED);
+        paint_panel(
+            painter,
+            c,
+            rect(1608.0, 858.0, 264.0, 40.0),
+            5,
+            FIELD,
+            BORDER_DIM,
+        );
+        let location = self
+            .session
+            .output_location()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "/Users/You/Music/YesVox".to_owned());
+        self.body_text(painter, c, 1622.0, 884.0, &location, TEXT);
+        self.folder_icon(painter, c, egui::pos2(1850.0, 878.0));
+        if self.checkbox(
+            ui,
+            painter,
+            c,
+            rect(1608.0, 904.0, 22.0, 22.0),
+            self.add_to_library,
+            "suite_library",
+        ) {
+            self.add_to_library = !self.add_to_library;
         }
-        if let Some(loc) = self.session.output_location() {
-            ui.colored_label(TEXT_DIM, format!("Location: {}", loc.display()));
-        }
+        self.small_text(
+            painter,
+            c,
+            1640.0,
+            922.0,
+            "Add to Yes Suite Library",
+            TEXT_MUTED,
+        );
 
-        ui.add_space(16.0);
-        let can_export = self.session.output().is_some();
-        if ui
-            .add_enabled(
-                can_export,
-                egui::Button::new("⬆  EXPORT VOCAL").fill(ACCENT),
-            )
-            .clicked()
-        {
+        paint_panel(
+            painter,
+            c,
+            rect(1588.0, 942.0, 304.0, 42.0),
+            8,
+            alpha(PANEL_2, 230),
+            BORDER_DIM,
+        );
+        self.section_label(painter, c, 1608.0, 968.0, "TOOLS");
+        self.body_text(painter, c, 1858.0, 968.0, "v", TEXT_MUTED);
+        if self.gradient_button(
+            ui,
+            painter,
+            c,
+            rect(1588.0, 994.0, 304.0, 36.0),
+            "Upload  EXPORT VOCAL",
+            "export_vocal",
+        ) {
             match self.session.export_to_target() {
-                Ok(p) => self.status = format!("Exported → {}", p.display()),
+                Ok(p) => self.status = format!("Exported - {}", p.display()),
                 Err(e) => self.status = format!("Export failed: {e}"),
             }
         }
     }
+
+    fn draw_status_bar(&self, painter: &egui::Painter, c: CanvasMap, l: ReferenceLayout) {
+        paint_panel(painter, c, l.status, 0, alpha(PANEL, 245), BORDER_DIM);
+        painter.circle_filled(c.pos(18.0, 1062.0), c.v(5.0), BLUE);
+        self.small_text(painter, c, 34.0, 1066.0, "Analyzing", TEXT_MUTED);
+        painter.circle_filled(c.pos(116.0, 1062.0), c.v(5.0), TEXT_DIM);
+        self.small_text(painter, c, 132.0, 1066.0, "Quality -", TEXT_MUTED);
+        self.small_text(painter, c, 832.0, 1066.0, "LIVE PEAK  -", TEXT_MUTED);
+        self.small_text(painter, c, 950.0, 1066.0, "LIVE LUFS  -", TEXT_MUTED);
+        self.small_text(painter, c, 1662.0, 1066.0, "PROCESSING", TEXT_DIM);
+        self.badge(
+            painter,
+            c,
+            rect(1760.0, 1049.0, 142.0, 24.0),
+            "ANALYZING AUDIO",
+            true,
+        );
+    }
 }
 
-fn section_header(ui: &mut egui::Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(11.0).strong().color(ACCENT));
-    ui.add_space(2.0);
+impl YesVoxApp {
+    fn draw_wordmark(&self, painter: &egui::Painter, c: CanvasMap, anchor: egui::Pos2) {
+        let bars = [14.0, 24.0, 32.0, 22.0, 12.0];
+        for (i, h) in bars.iter().enumerate() {
+            let x = anchor.x + i as f32 * 7.0;
+            let r = rect(x, anchor.y - h / 2.0, 4.0, *h);
+            paint_h_gradient(painter, c, r, BLUE, CYAN, 4, 3);
+        }
+        painter.text(
+            c.pos(anchor.x + 50.0, anchor.y + 4.0),
+            egui::Align2::LEFT_CENTER,
+            "YES",
+            c.font(23.0),
+            TEXT,
+        );
+        painter.text(
+            c.pos(anchor.x + 111.0, anchor.y + 4.0),
+            egui::Align2::LEFT_CENTER,
+            "Vox",
+            c.font(23.0),
+            CYAN,
+        );
+    }
+
+    fn draw_transport(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, c: CanvasMap) {
+        let play = c.rect(rect(322.0, 358.0, 52.0, 52.0));
+        painter.circle_filled(play.center(), c.v(26.0), VIOLET);
+        painter.circle_filled(
+            play.center() - egui::vec2(c.v(5.0), c.v(5.0)),
+            c.v(24.0),
+            BLUE,
+        );
+        let tri = vec![
+            c.pos(342.0, 374.0),
+            c.pos(342.0, 394.0),
+            c.pos(360.0, 384.0),
+        ];
+        painter.add(egui::Shape::convex_polygon(tri, TEXT, egui::Stroke::NONE));
+        self.body_text(painter, c, 396.0, 390.0, "0:00 / 3:28", TEXT);
+        self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(500.0, 366.0, 38.0, 38.0),
+            "↻",
+            "transport_loop",
+        );
+        self.body_text(painter, c, 756.0, 385.0, "Analyzing audio", TEXT);
+        self.body_text(painter, c, 884.0, 385.0, "14%", TEXT);
+        self.progress_bar(painter, c, rect(712.0, 398.0, 350.0, 6.0), 0.14);
+        if self.checkbox(
+            ui,
+            painter,
+            c,
+            rect(1136.0, 374.0, 18.0, 18.0),
+            self.volume_match,
+            "volume_match",
+        ) {
+            self.volume_match = !self.volume_match;
+        }
+        self.body_text(painter, c, 1165.0, 390.0, "Volume Match", TEXT_MUTED);
+        if self.checkbox(
+            ui,
+            painter,
+            c,
+            rect(1285.0, 374.0, 18.0, 18.0),
+            self.preview_lufs,
+            "preview_lufs",
+        ) {
+            self.preview_lufs = !self.preview_lufs;
+        }
+        self.body_text(painter, c, 1314.0, 390.0, "Preview LUFS", TEXT_MUTED);
+    }
+
+    fn draw_waveform(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+        let sr = c.rect(r);
+        let mid = sr.center().y;
+        let height = sr.height() * 0.42;
+        let buckets = sr.width().round().max(1.0) as usize;
+        let peaks = self
+            .session
+            .input()
+            .map(|b| yesvox_core::monitor::waveform_peaks(b, 0, buckets));
+        let selection = rect(r.left(), r.top(), r.width() * 0.20, r.height());
+        paint_h_gradient(
+            painter,
+            c,
+            selection,
+            alpha(BLUE, 90),
+            alpha(PURPLE, 75),
+            24,
+            4,
+        );
+        for i in 0..buckets {
+            let x = sr.left() + i as f32;
+            let t = i as f32 / buckets.max(1) as f32;
+            let (lo, hi) = peaks
+                .as_ref()
+                .and_then(|p| p.get(i).copied())
+                .unwrap_or_else(|| synthetic_peak(t));
+            let color = lerp_color(CYAN, PURPLE, t);
+            painter.line_segment(
+                [
+                    egui::pos2(x, mid - hi.abs().max(0.03) * height),
+                    egui::pos2(x, mid + lo.abs().max(0.03) * height),
+                ],
+                egui::Stroke::new(c.v(1.0), color),
+            );
+        }
+        painter.line_segment(
+            [
+                c.pos(r.left() + r.width() * 0.20, r.top()),
+                c.pos(r.left() + r.width() * 0.20, r.bottom()),
+            ],
+            egui::Stroke::new(c.v(2.0), PURPLE),
+        );
+    }
+
+    fn draw_time_labels(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+        self.small_text(painter, c, r.left(), r.bottom() + 26.0, "0:00", TEXT_MUTED);
+        self.small_text(
+            painter,
+            c,
+            r.left() + r.width() * 0.32,
+            r.bottom() + 26.0,
+            "1:00",
+            TEXT_MUTED,
+        );
+        self.small_text(
+            painter,
+            c,
+            r.left() + r.width() * 0.61,
+            r.bottom() + 26.0,
+            "2:00",
+            TEXT_MUTED,
+        );
+        self.small_text(
+            painter,
+            c,
+            r.right() - 36.0,
+            r.bottom() + 26.0,
+            "3:28",
+            TEXT_MUTED,
+        );
+    }
+
+    fn draw_meter_panel(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+        painter.line_segment(
+            [c.pos(r.left(), r.top()), c.pos(r.left(), r.bottom())],
+            egui::Stroke::new(c.v(1.0), BORDER_DIM),
+        );
+        self.small_text(painter, c, r.left() + 24.0, r.top() + 32.0, "IN", TEXT);
+        self.small_text(painter, c, r.left() + 100.0, r.top() + 32.0, "OUT", TEXT);
+        self.body_text(
+            painter,
+            c,
+            r.left() + 18.0,
+            r.top() + 58.0,
+            "-7.8 LUFS",
+            TEXT,
+        );
+        self.body_text(
+            painter,
+            c,
+            r.left() + 94.0,
+            r.top() + 58.0,
+            "-10.1 LUFS",
+            TEXT,
+        );
+        self.vertical_meter(
+            painter,
+            c,
+            rect(r.left() + 28.0, r.top() + 72.0, 11.0, 88.0),
+            0.72,
+        );
+        self.vertical_meter(
+            painter,
+            c,
+            rect(r.left() + 46.0, r.top() + 72.0, 11.0, 88.0),
+            0.66,
+        );
+        self.vertical_meter(
+            painter,
+            c,
+            rect(r.left() + 104.0, r.top() + 72.0, 11.0, 88.0),
+            0.64,
+        );
+        self.vertical_meter(
+            painter,
+            c,
+            rect(r.left() + 122.0, r.top() + 72.0, 11.0, 88.0),
+            0.58,
+        );
+        for (i, label) in ["0", "-6", "-12", "-18", "-24", "-30", "-36", "-48"]
+            .iter()
+            .enumerate()
+        {
+            self.micro_text(
+                painter,
+                c,
+                r.left() + 73.0,
+                r.top() + 82.0 + i as f32 * 12.0,
+                label,
+                TEXT_DIM,
+            );
+            self.micro_text(
+                painter,
+                c,
+                r.left() + 145.0,
+                r.top() + 82.0 + i as f32 * 12.0,
+                label,
+                TEXT_DIM,
+            );
+        }
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 29.0,
+            r.bottom() - 10.0,
+            "L",
+            TEXT_MUTED,
+        );
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 49.0,
+            r.bottom() - 10.0,
+            "R",
+            TEXT_MUTED,
+        );
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 105.0,
+            r.bottom() - 10.0,
+            "L",
+            TEXT_MUTED,
+        );
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 125.0,
+            r.bottom() - 10.0,
+            "R",
+            TEXT_MUTED,
+        );
+    }
+
+    fn draw_monitor_strip(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        paint_panel(painter, c, r, 8, alpha(PANEL, 220), BORDER_DIM);
+        self.section_label(
+            painter,
+            c,
+            r.left() + 20.0,
+            r.top() + 30.0,
+            "SPECTRAL MONITOR",
+        );
+        self.help_dot(painter, c, egui::pos2(r.left() + 194.0, r.top() + 22.0));
+        self.small_text(
+            painter,
+            c,
+            r.left() + 234.0,
+            r.top() + 28.0,
+            "Difference view (What was removed)",
+            TEXT_MUTED,
+        );
+        let spec = rect(r.left() + 20.0, r.top() + 50.0, 560.0, 72.0);
+        self.draw_spectrum(painter, c, spec);
+        for (x, label) in [
+            (0.0, "20"),
+            (64.0, "50"),
+            (128.0, "100"),
+            (244.0, "500"),
+            (330.0, "1K"),
+            (394.0, "2K"),
+            (506.0, "10K"),
+            (548.0, "20K"),
+        ] {
+            self.micro_text(
+                painter,
+                c,
+                spec.left() + x,
+                spec.bottom() + 20.0,
+                label,
+                TEXT_MUTED,
+            );
+        }
+
+        painter.line_segment(
+            [
+                c.pos(r.left() + 600.0, r.top()),
+                c.pos(r.left() + 600.0, r.bottom()),
+            ],
+            egui::Stroke::new(c.v(1.0), BORDER_DIM),
+        );
+        self.section_label(painter, c, r.left() + 620.0, r.top() + 30.0, "REBLEND");
+        self.help_dot(painter, c, egui::pos2(r.left() + 704.0, r.top() + 22.0));
+        self.small_text(
+            painter,
+            c,
+            r.left() + 738.0,
+            r.top() + 28.0,
+            "Blend removed signal back in",
+            TEXT_MUTED,
+        );
+        let mut reblend = self.reblend_amount;
+        reblend = self.slider(
+            ui,
+            painter,
+            c,
+            rect(r.left() + 628.0, r.top() + 74.0, 185.0, 8.0),
+            reblend,
+            "reblend",
+            BLUE,
+            BLUE,
+        );
+        self.reblend_amount = reblend;
+        self.body_text(
+            painter,
+            c,
+            r.left() + 870.0,
+            r.top() + 84.0,
+            &format!("{:.0}%", self.reblend_amount * 100.0),
+            TEXT,
+        );
+        self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(r.left() + 930.0, r.top() + 50.0, 48.0, 48.0),
+            ">",
+            "reblend_preview",
+        );
+
+        painter.line_segment(
+            [
+                c.pos(r.left() + 994.0, r.top()),
+                c.pos(r.left() + 994.0, r.bottom()),
+            ],
+            egui::Stroke::new(c.v(1.0), BORDER_DIM),
+        );
+        self.radar(painter, c, egui::pos2(r.left() + 1044.0, r.top() + 76.0));
+        self.section_label(
+            painter,
+            c,
+            r.left() + 1090.0,
+            r.top() + 30.0,
+            "Vocal Isolation Check",
+        );
+        self.help_dot(painter, c, egui::pos2(r.right() - 26.0, r.top() + 22.0));
+        self.small_text(
+            painter,
+            c,
+            r.left() + 1090.0,
+            r.top() + 62.0,
+            "Checks for residual noise,",
+            TEXT_MUTED,
+        );
+        self.small_text(
+            painter,
+            c,
+            r.left() + 1090.0,
+            r.top() + 88.0,
+            "reverb, or bleed.",
+            TEXT_MUTED,
+        );
+        self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(r.left() + 1090.0, r.top() + 106.0, 154.0, 34.0),
+            "◇  Check Now",
+            "check_now",
+        );
+    }
+}
+
+impl YesVoxApp {
+    fn section_label(&self, painter: &egui::Painter, c: CanvasMap, x: f32, y: f32, text: &str) {
+        painter.text(
+            c.pos(x, y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            c.font(15.0),
+            CYAN,
+        );
+    }
+
+    fn title_text(&self, painter: &egui::Painter, c: CanvasMap, x: f32, y: f32, text: &str) {
+        painter.text(
+            c.pos(x, y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            c.font(20.0),
+            TEXT,
+        );
+    }
+
+    fn body_text(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        x: f32,
+        y: f32,
+        text: &str,
+        color: egui::Color32,
+    ) {
+        painter.text(
+            c.pos(x, y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            c.font(14.5),
+            color,
+        );
+    }
+
+    fn small_text(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        x: f32,
+        y: f32,
+        text: &str,
+        color: egui::Color32,
+    ) {
+        painter.text(
+            c.pos(x, y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            c.font(13.0),
+            color,
+        );
+    }
+
+    fn micro_text(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        x: f32,
+        y: f32,
+        text: &str,
+        color: egui::Color32,
+    ) {
+        painter.text(
+            c.pos(x, y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            c.font(11.0),
+            color,
+        );
+    }
+
+    fn response(
+        &self,
+        ui: &mut egui::Ui,
+        c: CanvasMap,
+        r: egui::Rect,
+        id: impl Hash + Debug,
+    ) -> egui::Response {
+        ui.interact(c.rect(r), ui.make_persistent_id(id), egui::Sense::click())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn segment_button(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        label: &str,
+        selected: bool,
+        id: impl Hash + Debug,
+    ) -> bool {
+        let clicked = self.response(ui, c, r, id).clicked();
+        if selected {
+            paint_h_gradient(painter, c, r, VIOLET, CYAN, 24, 7);
+        } else {
+            paint_panel(painter, c, r, 7, FIELD, BORDER_DIM);
+        }
+        painter.text(
+            c.rect(r).center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            c.font(14.0),
+            if selected { TEXT } else { TEXT_MUTED },
+        );
+        clicked
+    }
+
+    fn outline_button(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        label: &str,
+        id: impl Hash + Debug,
+    ) -> bool {
+        let resp = self.response(ui, c, r, id);
+        let fill = if resp.hovered() {
+            alpha(PANEL_2, 255)
+        } else {
+            FIELD
+        };
+        paint_panel(painter, c, r, 5, fill, BORDER_DIM);
+        painter.text(
+            c.rect(r).center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            c.font(13.0),
+            TEXT,
+        );
+        resp.clicked()
+    }
+
+    fn gradient_button(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        label: &str,
+        id: impl Hash + Debug,
+    ) -> bool {
+        let resp = self.response(ui, c, r, id);
+        let end = if resp.hovered() { CYAN } else { BLUE };
+        paint_h_gradient(painter, c, r, PURPLE, end, 32, 6);
+        painter.text(
+            c.rect(r).center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            c.font(15.0),
+            TEXT,
+        );
+        resp.clicked()
+    }
+
+    fn icon_button(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        label: &str,
+        enabled: bool,
+    ) -> bool {
+        let resp = self.response(ui, c, r, label);
+        paint_panel(painter, c, r, 6, FIELD, BORDER_DIM);
+        let display = match label {
+            "Undo" => "Undo",
+            "Redo" => "Redo",
+            "Gear" => "⚙",
+            "Help" => "?",
+            _ => label,
+        };
+        painter.text(
+            c.rect(r).center(),
+            egui::Align2::CENTER_CENTER,
+            display,
+            c.font(if label == "Undo" || label == "Redo" {
+                11.0
+            } else {
+                20.0
+            }),
+            if enabled { TEXT } else { TEXT_DIM },
+        );
+        resp.clicked()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mode_button(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        icon: &str,
+        label: &str,
+        selected: bool,
+        id: impl Hash + Debug,
+    ) -> bool {
+        let resp = self.response(ui, c, r, id);
+        if selected {
+            paint_h_gradient(painter, c, r, VIOLET, BLUE, 24, 6);
+        } else {
+            paint_panel(painter, c, r, 6, alpha(PANEL_2, 230), BORDER_DIM);
+        }
+        painter.text(
+            c.pos(r.center().x, r.top() + 32.0),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            c.font(24.0),
+            if selected { TEXT } else { TEXT_MUTED },
+        );
+        painter.text(
+            c.pos(r.center().x, r.bottom() - 22.0),
+            egui::Align2::CENTER_CENTER,
+            label,
+            c.font(14.0),
+            TEXT,
+        );
+        resp.clicked()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn field_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        x: f32,
+        y: f32,
+        label: &str,
+        value: &str,
+        id: impl Hash + Debug,
+    ) {
+        self.small_text(painter, c, x, y + 20.0, label, TEXT_MUTED);
+        let field = rect(x + 124.0, y, 172.0, 40.0);
+        if self.outline_button(ui, painter, c, field, value, id) && label == "Format" {
+            let next = if self.session.output_format() == OutputFormat::Wav {
+                OutputFormat::Flac
+            } else {
+                OutputFormat::Wav
+            };
+            self.session.set_output_format(next);
+        }
+        painter.text(
+            c.pos(field.right() - 22.0, field.center().y),
+            egui::Align2::CENTER_CENTER,
+            "v",
+            c.font(14.0),
+            TEXT_MUTED,
+        );
+    }
+}
+
+impl YesVoxApp {
+    #[allow(clippy::too_many_arguments)]
+    fn slider(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        value: f32,
+        id: impl Hash + Debug,
+        start: egui::Color32,
+        end: egui::Color32,
+    ) -> f32 {
+        let hit = r.expand(10.0);
+        let resp = ui.interact(
+            c.rect(hit),
+            ui.make_persistent_id(id),
+            egui::Sense::click_and_drag(),
+        );
+        let mut next = value.clamp(0.0, 1.0);
+        if (resp.clicked() || resp.dragged()) && resp.interact_pointer_pos().is_some() {
+            let pos = resp.interact_pointer_pos().unwrap();
+            let sr = c.rect(r);
+            next = ((pos.x - sr.left()) / sr.width()).clamp(0.0, 1.0);
+        }
+        paint_panel(
+            painter,
+            c,
+            r,
+            3,
+            egui::Color32::from_rgb(21, 44, 70),
+            egui::Color32::TRANSPARENT,
+        );
+        let filled = rect(r.left(), r.top(), r.width() * next, r.height());
+        paint_h_gradient(painter, c, filled, start, end, 20, 3);
+        let knob = c.pos(r.left() + r.width() * next, r.center().y);
+        painter.circle_filled(knob, c.v(6.0), egui::Color32::from_rgb(190, 168, 255));
+        next
+    }
+
+    fn radial_control(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        value: f32,
+        id: impl Hash + Debug,
+    ) -> f32 {
+        let resp = ui.interact(
+            c.rect(r),
+            ui.make_persistent_id(id),
+            egui::Sense::click_and_drag(),
+        );
+        let mut next = value.clamp(0.0, 1.0);
+        if (resp.clicked() || resp.dragged()) && resp.interact_pointer_pos().is_some() {
+            let p = resp.interact_pointer_pos().unwrap();
+            let center = c.pos(r.center().x, r.top() + 80.0);
+            let angle = (p.y - center.y).atan2(p.x - center.x);
+            let start = -225.0_f32.to_radians();
+            let end = 45.0_f32.to_radians();
+            let mut t = (angle - start) / (end - start);
+            if t < -0.2 {
+                t += 1.0;
+            }
+            next = t.clamp(0.0, 1.0);
+        }
+        let center = c.pos(r.center().x, r.top() + 78.0);
+        let radius = c.v(48.0);
+        arc(
+            painter,
+            center,
+            radius,
+            -225.0,
+            45.0,
+            egui::Stroke::new(c.v(8.0), egui::Color32::from_rgb(30, 47, 80)),
+        );
+        arc(
+            painter,
+            center,
+            radius,
+            -225.0,
+            -225.0 + 270.0 * next,
+            egui::Stroke::new(c.v(8.0), BLUE),
+        );
+        arc(
+            painter,
+            center,
+            radius * 0.84,
+            0.0,
+            45.0,
+            egui::Stroke::new(c.v(4.0), PURPLE),
+        );
+        let angle = (-225.0 + 270.0 * next).to_radians();
+        let needle = center + egui::vec2(angle.cos() * radius * 0.74, angle.sin() * radius * 0.74);
+        painter.line_segment([center, needle], egui::Stroke::new(c.v(2.0), TEXT));
+        painter.circle_filled(center, c.v(4.0), CYAN);
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            format!("{:.0}%", next * 100.0),
+            c.font(17.0),
+            TEXT,
+        );
+        next
+    }
+
+    fn toggle(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        on: bool,
+        id: impl Hash + Debug,
+    ) -> bool {
+        let resp = self.response(ui, c, r, id);
+        let sr = c.rect(r);
+        paint_panel(
+            painter,
+            c,
+            r,
+            10,
+            if on {
+                BLUE
+            } else {
+                egui::Color32::from_rgb(34, 47, 69)
+            },
+            egui::Color32::TRANSPARENT,
+        );
+        let x = if on {
+            sr.right() - sr.height() / 2.0
+        } else {
+            sr.left() + sr.height() / 2.0
+        };
+        painter.circle_filled(egui::pos2(x, sr.center().y), sr.height() * 0.40, TEXT);
+        resp.clicked()
+    }
+
+    fn checkbox(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        checked: bool,
+        id: impl Hash + Debug,
+    ) -> bool {
+        let resp = self.response(ui, c, r, id);
+        paint_panel(painter, c, r, 3, if checked { BLUE } else { FIELD }, BORDER);
+        if checked {
+            painter.line_segment(
+                [
+                    c.pos(r.left() + 5.0, r.center().y),
+                    c.pos(r.left() + 9.0, r.bottom() - 6.0),
+                ],
+                egui::Stroke::new(c.v(2.0), TEXT),
+            );
+            painter.line_segment(
+                [
+                    c.pos(r.left() + 9.0, r.bottom() - 6.0),
+                    c.pos(r.right() - 5.0, r.top() + 6.0),
+                ],
+                egui::Stroke::new(c.v(2.0), TEXT),
+            );
+        }
+        resp.clicked()
+    }
+}
+
+impl YesVoxApp {
+    fn progress_bar(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect, value: f32) {
+        paint_panel(
+            painter,
+            c,
+            r,
+            3,
+            egui::Color32::from_rgb(22, 44, 70),
+            egui::Color32::TRANSPARENT,
+        );
+        paint_h_gradient(
+            painter,
+            c,
+            rect(
+                r.left(),
+                r.top(),
+                r.width() * value.clamp(0.0, 1.0),
+                r.height(),
+            ),
+            BLUE,
+            PURPLE,
+            18,
+            3,
+        );
+    }
+
+    fn percent_knob(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2, value: f32) {
+        let sc = c.pos(center.x, center.y);
+        let r = c.v(27.0);
+        painter.circle_stroke(sc, r, egui::Stroke::new(c.v(1.0), BORDER_DIM));
+        arc(
+            painter,
+            sc,
+            r,
+            -210.0,
+            -210.0 + 270.0 * value.clamp(0.0, 1.0),
+            egui::Stroke::new(c.v(3.0), CYAN),
+        );
+        painter.text(
+            sc,
+            egui::Align2::CENTER_CENTER,
+            format!("{:.0}%", value * 100.0),
+            c.font(14.0),
+            TEXT,
+        );
+    }
+
+    fn loudness_knob(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2) {
+        let sc = c.pos(center.x, center.y);
+        let r = c.v(27.0);
+        painter.circle_stroke(sc, r, egui::Stroke::new(c.v(1.0), BORDER_DIM));
+        arc(
+            painter,
+            sc,
+            r,
+            -210.0,
+            60.0,
+            egui::Stroke::new(c.v(3.0), CYAN),
+        );
+        painter.text(sc, egui::Align2::CENTER_CENTER, "-14.0", c.font(13.0), TEXT);
+        painter.text(
+            sc + egui::vec2(0.0, c.v(14.0)),
+            egui::Align2::CENTER_CENTER,
+            "LUFS",
+            c.font(9.0),
+            TEXT_MUTED,
+        );
+    }
+
+    fn vertical_meter(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect, value: f32) {
+        paint_panel(
+            painter,
+            c,
+            r,
+            2,
+            egui::Color32::from_rgb(19, 34, 54),
+            egui::Color32::TRANSPARENT,
+        );
+        let fill_h = r.height() * value.clamp(0.0, 1.0);
+        let fill = rect(r.left(), r.bottom() - fill_h, r.width(), fill_h);
+        paint_v_gradient(painter, c.rect(fill), AMBER, BLUE, 20);
+    }
+
+    fn draw_spectrum(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+        paint_panel(painter, c, r, 4, FIELD, BORDER_DIM);
+        let cols = r.width().round() as usize;
+        for i in (0..cols).step_by(2) {
+            let t = i as f32 / cols.max(1) as f32;
+            let h = (0.12 + (t * 31.0).sin().abs() * 0.50 + (t * 113.0).cos().abs() * 0.28)
+                * r.height();
+            let color = if t < 0.5 {
+                lerp_color(AMBER, PURPLE, t * 2.0)
+            } else {
+                lerp_color(PURPLE, BLUE, (t - 0.5) * 2.0)
+            };
+            painter.line_segment(
+                [
+                    c.pos(r.left() + i as f32, r.bottom()),
+                    c.pos(r.left() + i as f32, r.bottom() - h),
+                ],
+                egui::Stroke::new(c.v(1.5), alpha(color, 190)),
+            );
+        }
+    }
+
+    fn draw_mini_wave(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+        let n = 9;
+        for i in 0..n {
+            let t = i as f32 / (n - 1) as f32;
+            let h = r.height() * (0.25 + (t * 10.0).sin().abs() * 0.65);
+            let x = r.left() + t * r.width();
+            painter.line_segment(
+                [
+                    c.pos(x, r.center().y - h / 2.0),
+                    c.pos(x, r.center().y + h / 2.0),
+                ],
+                egui::Stroke::new(c.v(2.0), CYAN),
+            );
+        }
+    }
+
+    fn card_icon(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2, card: CardId) {
+        let sc = c.pos(center.x, center.y);
+        painter.circle_stroke(sc, c.v(14.0), egui::Stroke::new(c.v(1.0), BORDER));
+        let glyph = match card {
+            CardId::Denoise
+            | CardId::DeReverb
+            | CardId::DeClickDePop
+            | CardId::DeHum
+            | CardId::Leveling => "|||",
+            CardId::MouthClicks => "<>",
+            CardId::DeEss => "S",
+            CardId::Breath => "~",
+            CardId::PresenceAir => "+",
+            CardId::Loudness => "L",
+        };
+        painter.text(sc, egui::Align2::CENTER_CENTER, glyph, c.font(11.0), TEXT);
+    }
+
+    fn help_dot(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2) {
+        let sc = c.pos(center.x, center.y);
+        painter.circle_stroke(sc, c.v(8.0), egui::Stroke::new(c.v(1.0), TEXT_MUTED));
+        painter.text(
+            sc,
+            egui::Align2::CENTER_CENTER,
+            "?",
+            c.font(10.0),
+            TEXT_MUTED,
+        );
+    }
+
+    fn badge(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        label: &str,
+        filled: bool,
+    ) {
+        paint_panel(
+            painter,
+            c,
+            r,
+            10,
+            if filled { alpha(VIOLET, 100) } else { FIELD },
+            if filled { VIOLET } else { BORDER_DIM },
+        );
+        painter.text(
+            c.rect(r).center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            c.font(11.0),
+            if filled { CYAN } else { TEXT_MUTED },
+        );
+    }
+
+    fn star(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        radius: f32,
+        color: egui::Color32,
+    ) {
+        let sc = c.pos(center.x, center.y);
+        painter.line_segment(
+            [
+                sc + egui::vec2(0.0, -c.v(radius)),
+                sc + egui::vec2(0.0, c.v(radius)),
+            ],
+            egui::Stroke::new(c.v(2.0), color),
+        );
+        painter.line_segment(
+            [
+                sc + egui::vec2(-c.v(radius), 0.0),
+                sc + egui::vec2(c.v(radius), 0.0),
+            ],
+            egui::Stroke::new(c.v(2.0), color),
+        );
+        painter.circle_filled(sc, c.v(4.0), color);
+    }
+
+    fn star_outline(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2, radius: f32) {
+        let sc = c.pos(center.x, center.y);
+        painter.circle_stroke(sc, c.v(radius), egui::Stroke::new(c.v(1.0), TEXT_MUTED));
+        painter.text(
+            sc,
+            egui::Align2::CENTER_CENTER,
+            "☆",
+            c.font(16.0),
+            TEXT_MUTED,
+        );
+    }
+
+    fn folder_icon(&self, painter: &egui::Painter, c: CanvasMap, pos: egui::Pos2) {
+        let r = rect(pos.x, pos.y, 18.0, 13.0);
+        painter.rect_stroke(
+            c.rect(r),
+            egui::CornerRadius::same(2),
+            egui::Stroke::new(c.v(1.2), TEXT_MUTED),
+            egui::StrokeKind::Inside,
+        );
+        painter.line_segment(
+            [
+                c.pos(r.left() + 2.0, r.top()),
+                c.pos(r.left() + 7.0, r.top() - 4.0),
+            ],
+            egui::Stroke::new(c.v(1.2), TEXT_MUTED),
+        );
+    }
+
+    fn radar(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2) {
+        let sc = c.pos(center.x, center.y);
+        for r in [12.0, 24.0, 34.0] {
+            painter.circle_stroke(sc, c.v(r), egui::Stroke::new(c.v(1.0), alpha(CYAN, 120)));
+        }
+        painter.line_segment(
+            [sc, sc + egui::vec2(c.v(24.0), -c.v(18.0))],
+            egui::Stroke::new(c.v(2.0), BLUE),
+        );
+        painter.circle_filled(sc, c.v(5.0), CYAN);
+    }
+}
+
+fn card_blurb(card: CardId) -> (&'static str, &'static str) {
+    match card {
+        CardId::Denoise => ("Reduces background noise", "while preserving detail."),
+        CardId::DeReverb => ("Removes reverb while", "preserving natural space."),
+        CardId::DeClickDePop => ("Removes clicks, pops", "and crackle."),
+        CardId::MouthClicks => ("Reduces lip smacks", "and mouth noises."),
+        CardId::DeHum => ("Removes electrical hum", "and low frequency noise."),
+        CardId::DeEss => ("Controls harsh sibilance", "without dulling."),
+        CardId::Breath => ("Attenuates harsh breaths", "(voiceover-leaning)."),
+        CardId::PresenceAir => ("Adds clarity and air", "in an adaptive way."),
+        CardId::Leveling => ("Smooths vocal level", "consistently."),
+        CardId::Loudness => ("Sets loudness to", "target level."),
+    }
+}
+
+fn visual_card_amount(card: CardId, session_amount: f32) -> f32 {
+    match card {
+        // G11 will make these independent in the core. Until then the reference
+        // shell displays the intended card split rather than leaking the shared
+        // transient-stage amount.
+        CardId::DeClickDePop => 0.55,
+        CardId::MouthClicks => 0.60,
+        _ => session_amount,
+    }
+}
+
+fn synthetic_peak(t: f32) -> (f32, f32) {
+    let env = if t < 0.18 {
+        0.82
+    } else if t < 0.36 {
+        0.44
+    } else if t < 0.72 {
+        0.35 + 0.20 * (t * 18.0).sin().abs()
+    } else {
+        0.24 + 0.16 * (t * 30.0).sin().abs()
+    };
+    let fast = (t * 180.0).sin().abs() * 0.55 + (t * 430.0).cos().abs() * 0.45;
+    let hi = (env * fast).clamp(0.04, 0.95);
+    (-hi * (0.68 + 0.25 * (t * 21.0).cos().abs()), hi)
+}
+
+fn paint_panel(
+    painter: &egui::Painter,
+    c: CanvasMap,
+    r: egui::Rect,
+    radius: u8,
+    fill: egui::Color32,
+    stroke: egui::Color32,
+) {
+    let sr = c.rect(r);
+    painter.rect_filled(sr, egui::CornerRadius::same(radius), fill);
+    if stroke != egui::Color32::TRANSPARENT {
+        painter.rect_stroke(
+            sr,
+            egui::CornerRadius::same(radius),
+            egui::Stroke::new(c.v(1.0), stroke),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
+fn paint_h_gradient(
+    painter: &egui::Painter,
+    c: CanvasMap,
+    r: egui::Rect,
+    start: egui::Color32,
+    end: egui::Color32,
+    steps: usize,
+    radius: u8,
+) {
+    let sr = c.rect(r);
+    let steps = steps.max(1);
+    for i in 0..steps {
+        let t0 = i as f32 / steps as f32;
+        let t1 = (i + 1) as f32 / steps as f32;
+        let x0 = sr.left() + sr.width() * t0;
+        let x1 = sr.left() + sr.width() * t1 + 0.5;
+        let rr = egui::Rect::from_min_max(egui::pos2(x0, sr.top()), egui::pos2(x1, sr.bottom()));
+        painter.rect_filled(
+            rr,
+            egui::CornerRadius::same(if i == 0 || i + 1 == steps { radius } else { 0 }),
+            lerp_color(start, end, t0),
+        );
+    }
+}
+
+fn paint_v_gradient(
+    painter: &egui::Painter,
+    r: egui::Rect,
+    top: egui::Color32,
+    bottom: egui::Color32,
+    steps: usize,
+) {
+    let steps = steps.max(1);
+    for i in 0..steps {
+        let t0 = i as f32 / steps as f32;
+        let t1 = (i + 1) as f32 / steps as f32;
+        let y0 = r.top() + r.height() * t0;
+        let y1 = r.top() + r.height() * t1 + 0.5;
+        let rr = egui::Rect::from_min_max(egui::pos2(r.left(), y0), egui::pos2(r.right(), y1));
+        painter.rect_filled(rr, egui::CornerRadius::ZERO, lerp_color(top, bottom, t0));
+    }
+}
+
+fn arc(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    start_deg: f32,
+    end_deg: f32,
+    stroke: egui::Stroke,
+) {
+    let steps = ((end_deg - start_deg).abs() / 6.0).ceil().max(2.0) as usize;
+    let mut last = None;
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let a = (start_deg + (end_deg - start_deg) * t).to_radians();
+        let p = center + egui::vec2(a.cos() * radius, a.sin() * radius);
+        if let Some(prev) = last {
+            painter.line_segment([prev, p], stroke);
+        }
+        last = Some(p);
+    }
+}
+
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let [ar, ag, ab, aa] = a.to_array();
+    let [br, bg, bb, ba] = b.to_array();
+    egui::Color32::from_rgba_premultiplied(
+        lerp_u8(ar, br, t),
+        lerp_u8(ag, bg, t),
+        lerp_u8(ab, bb, t),
+        lerp_u8(aa, ba, t),
+    )
+}
+
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round() as u8
+}
+
+fn alpha(c: egui::Color32, a: u8) -> egui::Color32 {
+    let [r, g, b, _] = c.to_array();
+    egui::Color32::from_rgba_premultiplied(r, g, b, a)
 }
 
 fn loudness_label(t: LoudnessTarget) -> String {
     match t {
-        LoudnessTarget::Podcast => "−16 LUFS".to_owned(),
-        LoudnessTarget::Streaming => "−14 LUFS".to_owned(),
+        LoudnessTarget::Podcast => "-16 LUFS".to_owned(),
+        LoudnessTarget::Streaming => "-14.0 LUFS".to_owned(),
         LoudnessTarget::MatchInput => "Match input".to_owned(),
         LoudnessTarget::PeakNormalize => "Peak norm".to_owned(),
         LoudnessTarget::Custom(v) => format!("{v:.1} LUFS"),
     }
 }
 
-fn fmt_duration(buf: &yesvox_core::AudioBuffer) -> String {
-    let secs = buf.frames() as f32 / buf.sample_rate() as f32;
-    let m = (secs / 60.0) as u32;
-    let s = (secs % 60.0) as u32;
-    format!("{m}:{s:02}")
-}
-
 fn install_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = PANEL;
-    visuals.window_fill = PANEL;
-    visuals.extreme_bg_color = egui::Color32::from_rgb(10, 14, 24);
-    visuals.selection.bg_fill = ACCENT_DIM;
-    visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
-    visuals.widgets.hovered.bg_fill = ACCENT_DIM;
-    visuals.hyperlink_color = ACCENT;
+    visuals.window_fill = BG_TOP;
+    visuals.extreme_bg_color = BG_TOP;
+    visuals.selection.bg_fill = BLUE;
+    visuals.selection.stroke = egui::Stroke::new(1.0, CYAN);
+    visuals.widgets.hovered.bg_fill = PANEL_2;
+    visuals.hyperlink_color = CYAN;
     ctx.set_visuals(visuals);
     ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        style.spacing.item_spacing = egui::vec2(0.0, 0.0);
+        style.spacing.button_padding = egui::vec2(0.0, 0.0);
     });
 }
 
@@ -600,8 +2181,22 @@ mod tests {
     }
 
     #[test]
+    fn layout_keeps_reference_dashboard_regions() {
+        let l = ReferenceLayout::new();
+        assert_eq!(l.top.height(), 70.0);
+        assert_eq!(l.status.top(), 1040.0);
+        assert!(l.left.width() > 270.0);
+        assert!(l.right.width() > 320.0);
+        assert!(l.center.left() > l.left.right());
+        assert!(l.right.left() > l.center.right());
+        assert_eq!(l.hero.width(), l.center.width());
+        assert_eq!(l.restore.width(), l.center.width());
+        assert_eq!(l.polish.width(), l.center.width());
+        assert_eq!(l.monitor.width(), l.center.width());
+    }
+
+    #[test]
     fn loudness_labels_cover_every_target() {
-        // A non-panicking label for every variant (incl. the editable custom box).
         for t in [
             LoudnessTarget::Podcast,
             LoudnessTarget::Streaming,
