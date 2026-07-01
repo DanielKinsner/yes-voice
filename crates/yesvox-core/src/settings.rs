@@ -4,7 +4,7 @@
 //! subtree. **Singing is a first-class content mode**, selectable via the
 //! Voiceover/Singing toggle; its quality is validated by the *mechanical* singing
 //! gate (the [`crate::singing`] preservation metrics + the synthetic-fixture
-//! gate, plan §6.2) rather than a blind-listening release gate. The toggle is
+//! gate, plan §6.2) rather than the former blind-listening release plan. The toggle is
 //! the safety net — a voiceover user never has to touch singing — so singing
 //! ships on alongside it. Unknown future fields decode via `#[serde(default)]`,
 //! so an older build can still read a newer file's shared fields.
@@ -37,7 +37,7 @@ pub enum ContentMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SingingSettings {
     /// Whether singing mode is available in the toggle. `true` by default — the
-    /// mechanical singing gate replaces the old listening release gate. (Kept as
+    /// mechanical singing gate replaces the old listening release plan. (Kept as
     /// a field so a future build could still hard-disable it without a schema
     /// break.)
     #[serde(default = "default_true")]

@@ -1,5 +1,5 @@
 //! The mechanical singing-quality gate (plan §6.2) — the objective replacement
-//! for the #16 blind-listening release gate.
+//! for the former #16 blind-listening release plan.
 //!
 //! Generate synthetic sung fixtures with *known* ground truth (a vibrato note
 //! that decays to a tail), run them through the real singing presets, and assert

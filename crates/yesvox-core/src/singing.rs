@@ -1,5 +1,5 @@
 //! Mechanical singing-quality metrics (plan §6.2) — the objective, code-only
-//! replacement for the blind-listening release gate.
+//! replacement for the former blind-listening release plan.
 //!
 //! The §6 gate originally required human ears on isolated singing clips. Instead,
 //! YesVox validates sung-vocal **character preservation** with metrics that need
