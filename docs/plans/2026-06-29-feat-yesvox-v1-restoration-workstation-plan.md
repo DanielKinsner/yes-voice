@@ -33,7 +33,7 @@ pub trait VocalProcessor: Send {
 
 - `prepare` is the only allocating call; `process` is **alloc-free, lock-free, syscall-free** even though v1 never hits the audio thread - the discipline keeps the door open for preview.
 - `AudioIo` is **planar `&mut [&mut [f32]]`** (1 or 2 channels), not interleaved; same buffer in/out is allowed (the limiter and any look-ahead module own their internal delay lines).
-- `ParamTree` is versioned (`schema_version: u32`) and reserves the Singing-mode subtree on day one (see §6 release-gate fallback) so the settings file format never breaks.
+- `ParamTree` is versioned (`schema_version: u32`) and reserves the Singing-mode subtree on day one (see §6 mechanical singing gate) so the settings file format never breaks.
 - `ProcessReport` carries the analysis pane payload (integrated LUFS, true peak, noise floor, clip count, click rate/s, hum F0+harmonics, RT60 estimate, content-type confidence, plus a per-stage `engine_class: {Deterministic, Generative, Mixed}` flag) so the shell never re-measures and so the generative-reconstruction badge (§5.4) has authoritative state.
 
 ### 1.2 Internal data contract
@@ -470,7 +470,7 @@ A phase merges to `main` only when the relevant mechanical buckets pass: (1) >=1
 
 Core weights ship inside the installer - the only true offline guarantee from first launch. Network reserved for one-time activation and explicit-click model-pack downloads.
 
-- **Bundle (installed; ceiling 2.0 GB):** DFN3 (tract, FP32 ~6 MB), MossFormer2_SE_48K (ONNX, FP16 with FP32 fallback as on-demand pack, ~280-350 MB), deterministic VAD/content/hum-F0/breath features (binary-embedded JSON, negligible). **Singing manifest slot reserved** but no weights bundled (singing centerpiece SRS is deferred to v1.x per §8.3 - the v1 singing path, if §6 gate passes, runs on MossFormer2 already in the bundle).
+- **Bundle (installed; ceiling 2.0 GB):** DFN3 (tract, FP32 ~6 MB), MossFormer2_SE_48K (ONNX, FP16 with FP32 fallback as on-demand pack, ~280-350 MB), deterministic VAD/content/hum-F0/breath features (binary-embedded JSON, negligible). **Singing manifest slot reserved** but no weights bundled (singing centerpiece SRS is deferred to v1.x per §8.3 - the v1 singing path runs on MossFormer2 already in the bundle and is protected by the §6 mechanical gate).
 - **Optional packs (in-app download, v1):** `pack.mossformer2-fp32` (for users whose hardware fails the §2.3 fp16 numerics gate). Drop under `~/Library/Application Support/YesVox/Models/` (macOS) or `%LOCALAPPDATA%\YesVox\Models\` (Windows), never inside the app bundle.
 - **Reserved-for-v1.x manifest slots (NOT downloadable in v1):** `pack.srs-singing` (Smule Renaissance Small, MIT, singing centerpiece, v1.x ship target), `pack.ap-bwe` (bandwidth extension - explicitly out of v1 scope). Manifest entries are visible to the build-system / licensing audit; the v1 binary literally cannot fetch them.
 - **On-disk format:** ONNX external-data with page-aligned tensor offsets (4 KiB x86_64 / 16 KiB Apple Silicon) so `ort` can `mmap` weights. Larger models may ship as ORT-format (pre-optimized) when the EP supports it; both paths must round-trip the null test.
@@ -641,7 +641,7 @@ These are scope guards, not delayed features. They are out forever because they 
 | (2) Non-destructive - input bytes | SHA-256 of input bytes before vs after open+process+export | identical |
 | (2) Non-destructive - same length | Output sample count vs input sample count, per channel | bit-equal (export SR == input SR) |
 | (3) Non-engineer <=60 s, named hardware | 30 s reference clip on M2 Air 8GB/256/macOS 14 + Dell XPS 13 9340 Ultra 7 155H/16/512/Win 11 23H2, drop-to-export | total <=60 s (detect <=5 / render <=45 / UI <=10) |
-| (3) Non-engineer quality | Blinded 5-clip panel, loudness-matched -23 LUFS-S, >=3 ears, mixed VO + singing if gate passed else VO-only | >=66% prefer processed over input |
+| (3) Non-engineer quality | Optional blinded 5-clip panel, loudness-matched -23 LUFS-S, >=3 ears, mixed VO + singing | >=66% prefer processed over input; non-blocking calibration input |
 | (3) Slow-hardware grace | Natural downshifts to DFN3 + visible "Fast mode" badge | badge shown when preflight projects render > 1.5 × 45 s on detected SKU class |
 | (4) Yes-suite fit - stem handoff | YesStems -> YesVox -> yes-master round-trip preserves SR / bit-depth / channels / provenance metadata | bit-exact SR+channels; bext/iXML/WAV INFO carried |
 | Offline | Network syscalls during processing (CI w/ network blocked) | 0 |
@@ -715,6 +715,6 @@ From product.md §12 and the brainstorm Open Questions:
 
 ## Sources & References
 
-- Origin brainstorm: `docs/brainstorms/2026-06-29-yesvox-product-definition-brainstorm.md` - carried-forward decisions: (1) two-surface (Standard + Advanced) over one engine, mirroring yes-master; (2) explicit Voiceover/Singing toggle with user authority + smart pre-selection; (3) singing-as-a-release-gate strategy with voiceover-first fallback path and reserved schema slot; (4) host-agnostic core lib + two extensibility seams (VocalSourceProvider + stem-handoff contract) so v1 standalone reuses verbatim in future plugin/separator scenarios.
+- Origin brainstorm: `docs/brainstorms/2026-06-29-yesvox-product-definition-brainstorm.md` - carried-forward decisions: (1) two-surface (Standard + Advanced) over one engine, mirroring yes-master; (2) explicit Voiceover/Singing toggle with user authority + smart pre-selection; (3) singing as a first-class v1 mode protected by the mechanical CI gate, with the settings schema slot reserved from day one; (4) host-agnostic core lib + two extensibility seams (VocalSourceProvider + stem-handoff contract) so v1 standalone reuses verbatim in future plugin/separator scenarios.
 - Product north-star: `docs/product.md` (identity, non-goals, success criteria, deferred list, open questions).
 - Master technical brief: `docs/research/consolidated-voice-restoration-research.md` (DSP math in §7, model tables in §4-§5, licensing audit in §6/§14, phase plan in §12).
