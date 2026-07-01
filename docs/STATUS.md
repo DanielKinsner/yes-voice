@@ -47,9 +47,10 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **G3** | **Restoration Focus** radial → quantized onto `QualityMode`. |
 | **G4** | **Polish Intensity** radial → scales the polish group (de-ess+breath; default = nominal). |
 | **G5** | **Loudness target** settable on the Session (+`LoudnessTarget::Custom(f32)`). |
-| **G6** | **Independent finish-card enables** — Presence/Air, Leveling, and Loudness no longer toggle the whole `FinishStage`; Leveling is tracked but audio-neutral until G9. |
+| **G6** | **Independent finish-card enables** — Presence/Air, Leveling, and Loudness no longer toggle the whole `FinishStage`. |
 | **G7** | **Smart Assist** — deterministic analysis-report → Standard-card amounts/enables + Restoration Focus/Polish Intensity, with singing-conservative de-reverb/breath behavior and no hidden content-toggle flip. |
 | **G8** | **Vocal Isolation Check** — re-analyzes the rendered output and reports deterministic residual noise/reverb/bleed verdicts for the Standard bottom strip. |
+| **G9** | **Program Leveler** — the Leveling card now drives a deterministic finish-stage gain rider, with amount/enabled tests proving rendered dynamics change while length and loudness guarantees stay intact. |
 | **G10** | **Presence/Air amount** — Session + `FinishStage` expose the EQ amount, and the GUI card slider drives it without changing loudness/leveling. |
 | **G11** | **Independent transient-card controls** — De-click / De-pop now drives short click/crackle + DePop, while Mouth Clicks independently drives the mouth-click/lip-smack sub-path, with state and render tests proving the split. |
 | **G12/13** | **OUTPUT + FILE** panels — `OutputFormat`, bit-depth/dither, name/location, `export_target()`/`export_to_target()`. |
@@ -61,9 +62,7 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 
 Build order, mechanical-first, each TDD'd:
 
-1. **G9** — **real new DSP**: the program leveler behind the "Leveling" card
-   (FinishStage has none today; the doc comment was aspirational). Largest item.
-2. **G18** — undo/redo. **Needs a scope decision from Dan** (unspec'd in
+1. **G18** — undo/redo. **Needs a scope decision from Dan** (unspec'd in
    product.md/plan; ship Revert-only, or a real undo stack?).
 
 Then GUI polish: native file picker (`rfd`), finer pixel/spacing adjustments vs

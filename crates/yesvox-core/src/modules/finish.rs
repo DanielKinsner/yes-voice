@@ -55,6 +55,8 @@ pub struct FinishStage {
     air_db: f32,
     /// User-facing Presence/Air amount, `[0, 1]`, scaling the preset EQ patch.
     presence_air_amount: f32,
+    /// User-facing Leveling amount, `[0, 1]`, scaling the program gain rider.
+    leveling_amount: f32,
     /// True-peak ceiling, dBTP.
     ceiling_dbtp: f32,
     /// Limiter look-ahead, seconds (≥5 ms per the acceptance).
@@ -75,6 +77,7 @@ impl Default for FinishStage {
             presence_db: 0.0,
             air_db: 0.0,
             presence_air_amount: 1.0,
+            leveling_amount: 1.0,
             ceiling_dbtp: -1.0,
             lookahead_s: 0.005,
             sidechain_cutoff_hz: 12_000.0,
@@ -108,6 +111,16 @@ impl FinishStage {
         self.presence_air_amount
     }
 
+    /// Set the Leveling amount, scaling the program-level gain rider.
+    pub fn set_leveling_amount(&mut self, amount: f32) {
+        self.leveling_amount = amount.clamp(0.0, 1.0);
+    }
+
+    /// The current Leveling amount.
+    pub fn leveling_amount(&self) -> f32 {
+        self.leveling_amount
+    }
+
     /// Override the loudness target (the Session-level OUTPUT/Loudness control).
     pub fn set_target(&mut self, target: LoudnessTarget) {
         self.target = target;
@@ -134,9 +147,6 @@ impl FinishStage {
     }
 
     /// Enable or bypass the program-leveling sub-control.
-    ///
-    /// G9 lands the actual leveler DSP; until then this is tracked state only and
-    /// intentionally audio-neutral.
     pub fn set_leveling_enabled(&mut self, on: bool) {
         self.leveling_enabled = on;
     }
@@ -177,9 +187,38 @@ impl FinishStage {
         }
     }
 
-    fn apply_leveling(&self, _buffer: &mut AudioBuffer) {
-        // G9 adds the actual program leveler. The sub-control is tracked now so
-        // the Standard card is independently addressable without changing audio.
+    fn apply_leveling(&self, buffer: &mut AudioBuffer) {
+        if self.leveling_amount <= 0.0 || buffer.frames() == 0 {
+            return;
+        }
+
+        let sr = self.sample_rate.max(1.0);
+        let block = ((0.020 * sr) as usize).max(1);
+        let max_gain_db = 6.0 * self.leveling_amount;
+        let strength = 0.65 * self.leveling_amount;
+
+        for ch in 0..buffer.channel_count() {
+            let samples = buffer.channel_mut(ch);
+            let global_rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32)
+                .sqrt()
+                .max(1.0e-6);
+            let global_db = 20.0 * global_rms.log10();
+            let mut smoothed_gain = 1.0f32;
+
+            for chunk in samples.chunks_mut(block) {
+                let block_rms = (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32)
+                    .sqrt()
+                    .max(1.0e-6);
+                let block_db = 20.0 * block_rms.log10();
+                let gain_db = ((global_db - block_db) * strength).clamp(-max_gain_db, max_gain_db);
+                let target_gain = 10f32.powf(gain_db / 20.0);
+
+                for s in chunk {
+                    smoothed_gain += 0.0025 * (target_gain - smoothed_gain);
+                    *s *= smoothed_gain;
+                }
+            }
+        }
     }
 
     fn apply_gain(buffer: &mut AudioBuffer, gain: f32) {
@@ -305,6 +344,38 @@ mod tests {
             .map(|i| amp * (2.0 * PI * freq * i as f32 / SR as f32).sin())
             .collect();
         AudioBuffer::new(SR, 16, SampleEncoding::Int, vec![ch])
+    }
+
+    fn stepped_tone_buf() -> AudioBuffer {
+        let n = SR as usize * 4;
+        let mut ch = Vec::with_capacity(n);
+        for i in 0..n {
+            let amp = if i < n / 4 {
+                0.04
+            } else if i < n / 2 {
+                0.22
+            } else if i < 3 * n / 4 {
+                0.07
+            } else {
+                0.35
+            };
+            ch.push(amp * (2.0 * PI * 220.0 * i as f32 / SR as f32).sin());
+        }
+        AudioBuffer::new(SR, 16, SampleEncoding::Int, vec![ch])
+    }
+
+    fn block_rms_spread_db(buffer: &AudioBuffer, block: usize) -> f32 {
+        let mut levels: Vec<f32> = buffer
+            .channel(0)
+            .chunks(block)
+            .filter(|chunk| !chunk.is_empty())
+            .map(|chunk| {
+                let rms = (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt();
+                20.0 * rms.max(1.0e-6).log10()
+            })
+            .collect();
+        levels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        levels[levels.len() - 1] - levels[0]
     }
 
     #[test]
@@ -443,11 +514,12 @@ mod tests {
     }
 
     #[test]
-    fn leveling_enable_is_tracked_but_audio_neutral_until_g9() {
-        let input = tone_buf(0.2, 1000.0, 1.0);
+    fn leveling_amount_zero_is_audio_neutral() {
+        let input = stepped_tone_buf();
         let mut on = FinishStage::new(LoudnessTarget::MatchInput);
         on.set_loudness_enabled(false);
         on.set_leveling_enabled(true);
+        on.set_leveling_amount(0.0);
         let out_on = run(on, input.clone());
 
         let mut off = FinishStage::new(LoudnessTarget::MatchInput);
@@ -458,9 +530,52 @@ mod tests {
         for (a, b) in out_on.channel(0).iter().zip(out_off.channel(0)) {
             assert!(
                 (a - b).abs() <= f32::EPSILON,
-                "leveling is state only until G9 lands DSP"
+                "leveling amount 0 must render like Leveling disabled"
             );
         }
+    }
+
+    #[test]
+    fn leveling_reduces_program_level_spread_without_loudness() {
+        let input = stepped_tone_buf();
+        let before_spread = block_rms_spread_db(&input, SR as usize / 2);
+
+        let mut m = FinishStage::new(LoudnessTarget::MatchInput);
+        m.set_loudness_enabled(false);
+        m.set_leveling_amount(1.0);
+        let out = run(m, input.clone());
+        let after_spread = block_rms_spread_db(&out, SR as usize / 2);
+
+        assert_eq!(out.frames(), input.frames(), "leveler must preserve length");
+        assert!(
+            after_spread < before_spread - 1.5,
+            "leveling should reduce program spread: {before_spread} -> {after_spread} dB"
+        );
+        assert!(
+            true_peak_dbtp(&out) < 0.0,
+            "bounded leveler must not create full-scale overs"
+        );
+    }
+
+    #[test]
+    fn leveling_amount_scales_the_program_gain_rider() {
+        let input = stepped_tone_buf();
+        let before_spread = block_rms_spread_db(&input, SR as usize / 2);
+        let run_leveler = |amount: f32| {
+            let mut m = FinishStage::new(LoudnessTarget::MatchInput);
+            m.set_loudness_enabled(false);
+            m.set_leveling_amount(amount);
+            run(m, input.clone())
+        };
+        let half = run_leveler(0.5);
+        let full = run_leveler(1.0);
+        let half_spread = block_rms_spread_db(&half, SR as usize / 2);
+        let full_spread = block_rms_spread_db(&full, SR as usize / 2);
+
+        assert!(
+            before_spread > half_spread && half_spread > full_spread,
+            "amount must monotonically scale leveling: {before_spread}, {half_spread}, {full_spread}"
+        );
     }
 
     #[test]

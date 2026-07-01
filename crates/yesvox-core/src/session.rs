@@ -628,8 +628,7 @@ impl Session {
         self.finish_cards.presence_air_amount
     }
 
-    /// Enable or bypass the Leveling card. Audio remains neutral until G9 lands
-    /// the actual program leveler, but the user-visible state is tracked now.
+    /// Enable or bypass the Leveling card's program-level gain rider.
     pub fn set_leveling_enabled(&mut self, on: bool) {
         self.finish_cards.leveling_enabled = Some(on);
         self.output = None;
@@ -1151,6 +1150,10 @@ impl Session {
             .chain
             .finish
             .set_presence_air_amount(self.presence_air_amount());
+        built
+            .chain
+            .finish
+            .set_leveling_amount(self.leveling_amount());
         built.chain.set_click_repair(
             self.click_repair_enabled(),
             self.click_repair_amount() * self.flow,
@@ -1255,6 +1258,39 @@ mod tests {
         let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
         write_wav(path, &buf).expect("write fixture");
         buf
+    }
+
+    fn stepped_level_fixture(path: &Path) -> AudioBuffer {
+        let n = SR as usize * 4;
+        let mut x = Vec::with_capacity(n);
+        for i in 0..n {
+            let amp = if i < n / 4 {
+                0.04
+            } else if i < n / 2 {
+                0.22
+            } else if i < 3 * n / 4 {
+                0.07
+            } else {
+                0.35
+            };
+            x.push(amp * (2.0 * PI * 220.0 * i as f32 / SR as f32).sin());
+        }
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
+    fn block_rms_spread_db(samples: &[f32], block: usize) -> f32 {
+        let mut levels: Vec<f32> = samples
+            .chunks(block)
+            .filter(|chunk| !chunk.is_empty())
+            .map(|chunk| {
+                let rms = (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt();
+                20.0 * rms.max(1.0e-6).log10()
+            })
+            .collect();
+        levels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        levels[levels.len() - 1] - levels[0]
     }
 
     fn temp(tag: &str) -> PathBuf {
@@ -1987,7 +2023,7 @@ mod tests {
         assert_eq!(
             s.stage_mix(Stage::Finish),
             1.0,
-            "Leveling amount is tracked independently and stays audio-neutral"
+            "Leveling amount must not touch the whole Finish stage mix"
         );
 
         s.select_preset(Preset::NARRATION);
@@ -2042,25 +2078,48 @@ mod tests {
     }
 
     #[test]
-    fn leveling_amount_is_audio_neutral_until_g9() {
+    fn leveling_amount_reaches_rendered_program_leveler() {
         let path = temp("leveling-amount");
-        degraded_fixture(&path);
+        stepped_level_fixture(&path);
 
-        let render = |amount: f32| {
+        let render = |amount: f32, enabled: bool| {
             let mut s = Session::new();
             s.open(&path).unwrap();
+            s.set_card_enabled(CardId::Denoise, false);
+            s.set_card_enabled(CardId::DeReverb, false);
+            s.set_card_enabled(CardId::DeClickDePop, false);
+            s.set_card_enabled(CardId::MouthClicks, false);
+            s.set_card_enabled(CardId::DeHum, false);
+            s.set_card_enabled(CardId::DeEss, false);
+            s.set_card_enabled(CardId::Breath, false);
+            s.set_card_enabled(CardId::PresenceAir, false);
+            s.set_card_enabled(CardId::Loudness, false);
+            s.set_leveling_enabled(enabled);
             s.set_leveling_amount(amount);
             s.render().unwrap();
             s.output().unwrap().channel(0).to_vec()
         };
-        let default = render(1.0);
-        let leveled_dry = render(0.0);
-        for (a, b) in default.iter().zip(&leveled_dry) {
+        let disabled = render(1.0, false);
+        let amount_zero = render(0.0, true);
+        for (a, b) in disabled.iter().zip(&amount_zero) {
             assert!(
                 (a - b).abs() <= 1e-6,
-                "Leveling amount must be state-only until G9"
+                "Leveling amount 0 must render like Leveling disabled"
             );
         }
+
+        let leveled = render(1.0, true);
+        assert_eq!(
+            leveled.len(),
+            disabled.len(),
+            "Leveling must preserve sample length"
+        );
+        let dry_spread = block_rms_spread_db(&disabled, SR as usize / 2);
+        let leveled_spread = block_rms_spread_db(&leveled, SR as usize / 2);
+        assert!(
+            leveled_spread < dry_spread - 1.5,
+            "Leveling card should reduce rendered dynamics: {dry_spread} -> {leveled_spread} dB"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
