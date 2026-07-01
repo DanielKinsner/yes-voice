@@ -61,8 +61,35 @@ pub struct BatchSummary {
     pub done: usize,
     /// Files that failed (skipped + logged).
     pub failed: usize,
+    /// True when the caller stopped the run before all pending files were tried.
+    pub canceled: bool,
     /// Per-file failures from this run only.
     pub failures: Vec<BatchFailure>,
+}
+
+/// A UI/agent progress snapshot emitted before and after queue items run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatchProgress {
+    /// Total queue length, including already-done/failed rows.
+    pub total: usize,
+    /// Queue rows that are no longer pending at this point.
+    pub completed: usize,
+    /// The item about to run; `None` means the queue is between files or done.
+    pub current_index: Option<usize>,
+    /// Files written during this run.
+    pub done: usize,
+    /// Files failed during this run.
+    pub failed: usize,
+}
+
+/// Control response from a progress observer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchControl {
+    /// Keep processing pending files.
+    Continue,
+    /// Stop before starting the next pending file. The currently reported item
+    /// remains pending if cancellation is requested from a pre-file callback.
+    Cancel,
 }
 
 /// How a batch chooses the preset for each queued file.
@@ -102,6 +129,7 @@ impl BatchSummary {
         BatchSummary {
             done: 0,
             failed: 0,
+            canceled: false,
             failures: Vec::new(),
         }
     }
@@ -334,22 +362,55 @@ impl RenderQueue {
         self.run_inner(Some(log_path))
     }
 
+    /// Process pending items while reporting progress and allowing a UI/agent to
+    /// cancel at file boundaries.
+    pub fn run_with_progress(
+        &mut self,
+        mut progress: impl FnMut(BatchProgress) -> BatchControl,
+    ) -> BatchSummary {
+        self.run_inner_with_progress(None, &mut progress)
+            .expect("in-memory queue run cannot fail")
+    }
+
     fn run_inner(&mut self, log_path: Option<&Path>) -> Result<BatchSummary, QueueStateError> {
+        self.run_inner_with_progress(log_path, &mut |_| BatchControl::Continue)
+    }
+
+    fn run_inner_with_progress(
+        &mut self,
+        log_path: Option<&Path>,
+        progress: &mut dyn FnMut(BatchProgress) -> BatchControl,
+    ) -> Result<BatchSummary, QueueStateError> {
         if self.paused {
             return Ok(BatchSummary::empty());
         }
 
         let mut done = 0;
         let mut failed = 0;
+        let mut canceled = false;
         let mut failures = Vec::new();
         let mut log = match log_path {
             Some(path) => Some(open_render_log(path)?),
             None => None,
         };
-        for (index, item) in self.items.iter_mut().enumerate() {
-            if !matches!(item.status, JobStatus::Pending) {
+        let total = self.items.len();
+        for index in 0..self.items.len() {
+            if !matches!(self.items[index].status, JobStatus::Pending) {
                 continue; // already processed (resume-safe)
             }
+            let completed_before = completed_items(&self.items);
+            if progress(BatchProgress {
+                total,
+                completed: completed_before,
+                current_index: Some(index),
+                done,
+                failed,
+            }) == BatchControl::Cancel
+            {
+                canceled = true;
+                break;
+            }
+            let item = &mut self.items[index];
             item.status = render_one(&self.settings, self.preset_mode, &item.input, &item.output);
             if let Some(file) = log.as_mut() {
                 append_render_log(file, index, item)?;
@@ -367,10 +428,22 @@ impl RenderQueue {
                 }
                 JobStatus::Pending => {}
             }
+            if progress(BatchProgress {
+                total,
+                completed: completed_before + 1,
+                current_index: None,
+                done,
+                failed,
+            }) == BatchControl::Cancel
+            {
+                canceled = true;
+                break;
+            }
         }
         Ok(BatchSummary {
             done,
             failed,
+            canceled,
             failures,
         })
     }
@@ -499,6 +572,13 @@ fn append_render_log(
     serde_json::to_writer(&mut *file, &entry)?;
     file.write_all(b"\n")?;
     Ok(())
+}
+
+fn completed_items(items: &[QueueItem]) -> usize {
+    items
+        .iter()
+        .filter(|item| !matches!(item.status, JobStatus::Pending))
+        .count()
 }
 
 /// Render one file with the given configuration (a free fn so `run` can borrow
@@ -886,6 +966,105 @@ mod tests {
             retry_out,
             unselected_in,
             unselected_out,
+        ] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn run_with_progress_reports_file_boundaries() {
+        let in1 = temp("progress-a-in");
+        let in2 = temp("progress-b-in");
+        let out1 = temp("progress-a-out");
+        let out2 = temp("progress-b-out");
+        fixture(&in1);
+        fixture(&in2);
+
+        let mut q = RenderQueue::new(Settings::default(), Preset::PODCAST);
+        q.enqueue(&in1, &out1);
+        q.enqueue(&in2, &out2);
+        let mut events = Vec::new();
+        let summary = q.run_with_progress(|progress| {
+            events.push(progress);
+            BatchControl::Continue
+        });
+
+        assert_eq!(summary, BatchSummary::empty().with_counts(2, 0));
+        assert_eq!(
+            events,
+            vec![
+                BatchProgress {
+                    total: 2,
+                    completed: 0,
+                    current_index: Some(0),
+                    done: 0,
+                    failed: 0,
+                },
+                BatchProgress {
+                    total: 2,
+                    completed: 1,
+                    current_index: None,
+                    done: 1,
+                    failed: 0,
+                },
+                BatchProgress {
+                    total: 2,
+                    completed: 1,
+                    current_index: Some(1),
+                    done: 1,
+                    failed: 0,
+                },
+                BatchProgress {
+                    total: 2,
+                    completed: 2,
+                    current_index: None,
+                    done: 2,
+                    failed: 0,
+                },
+            ]
+        );
+
+        for p in [in1, in2, out1, out2] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn run_with_progress_can_cancel_before_next_file() {
+        let first_in = temp("cancel-first-in");
+        let second_in = temp("cancel-second-in");
+        let third_in = temp("cancel-third-in");
+        let first_out = temp("cancel-first-out");
+        let second_out = temp("cancel-second-out");
+        let third_out = temp("cancel-third-out");
+        fixture(&first_in);
+        fixture(&second_in);
+        fixture(&third_in);
+
+        let mut q = RenderQueue::new(Settings::default(), Preset::PODCAST);
+        q.enqueue(&first_in, &first_out);
+        q.enqueue(&second_in, &second_out);
+        q.enqueue(&third_in, &third_out);
+        let summary = q.run_with_progress(|progress| {
+            if progress.current_index == Some(1) {
+                BatchControl::Cancel
+            } else {
+                BatchControl::Continue
+            }
+        });
+
+        assert_eq!(summary.done, 1);
+        assert_eq!(summary.failed, 0);
+        assert!(summary.canceled);
+        assert!(matches!(q.items()[0].status, JobStatus::Done(_)));
+        assert!(matches!(q.items()[1].status, JobStatus::Pending));
+        assert!(matches!(q.items()[2].status, JobStatus::Pending));
+        assert!(first_out.exists());
+        assert!(!second_out.exists());
+        assert!(!third_out.exists());
+
+        for p in [
+            first_in, second_in, third_in, first_out, second_out, third_out,
         ] {
             let _ = std::fs::remove_file(p);
         }

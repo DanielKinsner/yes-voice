@@ -15,8 +15,8 @@ use std::{
 
 use eframe::egui;
 use yesvox_core::{
-    AudioBuffer, BatchPresetMode, CardId, ContentMode, JobStatus, LoudnessTarget, OutputFormat,
-    Preset, RenderQueue, Session, VocalIsolationCheck,
+    AudioBuffer, BatchControl, BatchPresetMode, BatchProgress, BatchSummary, CardId, ContentMode,
+    JobStatus, LoudnessTarget, OutputFormat, Preset, RenderQueue, Session, VocalIsolationCheck,
 };
 
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
@@ -259,6 +259,8 @@ struct YesVoxApp {
     preview_lufs: bool,
     add_to_library: bool,
     batch_queue: BatchQueueUi,
+    batch_cancel_requested: bool,
+    last_batch_progress: Option<BatchProgress>,
     isolation_check: Option<VocalIsolationCheck>,
 }
 
@@ -303,6 +305,8 @@ impl YesVoxApp {
             preview_lufs: false,
             add_to_library: true,
             batch_queue: BatchQueueUi::default(),
+            batch_cancel_requested: false,
+            last_batch_progress: None,
             isolation_check: None,
         }
     }
@@ -400,14 +404,21 @@ impl YesVoxApp {
             }
         }
 
-        let summary = queue.run();
+        let cancel_requested = &mut self.batch_cancel_requested;
+        let last_progress = &mut self.last_batch_progress;
+        let summary = queue.run_with_progress(|progress| {
+            *last_progress = Some(progress);
+            if *cancel_requested {
+                *cancel_requested = false;
+                BatchControl::Cancel
+            } else {
+                BatchControl::Continue
+            }
+        });
         for (queue_item, row_index) in queue.items().iter().zip(pending_indices) {
             self.batch_queue.rows[row_index].status = queue_item.status.clone();
         }
-        self.status = format!(
-            "Batch exported {} - {} failed",
-            summary.done, summary.failed
-        );
+        self.status = format_batch_status(&summary);
     }
 
     fn check_isolation_now(&mut self) {
@@ -1223,7 +1234,7 @@ impl YesVoxApp {
             ui,
             painter,
             c,
-            rect(1608.0, 948.0, 112.0, 30.0),
+            rect(1608.0, 948.0, 104.0, 30.0),
             GuiBatchPresetMode::ForceSelected.label(),
             force_active,
             "batch_force_preset",
@@ -1234,7 +1245,7 @@ impl YesVoxApp {
             ui,
             painter,
             c,
-            rect(1726.0, 948.0, 112.0, 30.0),
+            rect(1718.0, 948.0, 104.0, 30.0),
             GuiBatchPresetMode::DetectPerFile.label(),
             !force_active,
             "batch_detect_each",
@@ -1245,11 +1256,22 @@ impl YesVoxApp {
             ui,
             painter,
             c,
-            rect(1844.0, 948.0, 36.0, 30.0),
+            rect(1828.0, 948.0, 24.0, 30.0),
             if self.batch_queue.paused { ">" } else { "||" },
             "batch_pause",
         ) {
             self.batch_queue.paused = !self.batch_queue.paused;
+        }
+        if self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(1858.0, 948.0, 22.0, 30.0),
+            "x",
+            "batch_cancel",
+        ) {
+            self.batch_cancel_requested = true;
+            self.status = "Batch cancel requested".to_owned();
         }
         if self.outline_button(
             ui,
@@ -2893,6 +2915,20 @@ fn batch_output_path(input: &Path, format: OutputFormat) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+fn format_batch_status(summary: &BatchSummary) -> String {
+    if summary.canceled {
+        format!(
+            "Batch canceled - {} exported - {} failed",
+            summary.done, summary.failed
+        )
+    } else {
+        format!(
+            "Batch exported {} - {} failed",
+            summary.done, summary.failed
+        )
+    }
+}
+
 fn truncate_middle(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_owned();
@@ -3061,6 +3097,21 @@ mod tests {
         let path = batch_output_path(Path::new("clips/Lead Vocal.wav"), OutputFormat::Flac);
 
         assert_eq!(path, PathBuf::from("clips/Lead Vocal_YesVox.flac"));
+    }
+
+    #[test]
+    fn batch_status_reports_cancel_separately_from_failures() {
+        let summary = BatchSummary {
+            done: 1,
+            failed: 0,
+            canceled: true,
+            failures: Vec::new(),
+        };
+
+        assert_eq!(
+            format_batch_status(&summary),
+            "Batch canceled - 1 exported - 0 failed"
+        );
     }
 
     #[test]

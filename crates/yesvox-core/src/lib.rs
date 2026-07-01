@@ -54,7 +54,8 @@ pub use quality::{
     Resolved,
 };
 pub use render_queue::{
-    BatchFailure, BatchPresetMode, BatchSummary, JobStatus, QueueItem, QueueStateError, RenderQueue,
+    BatchControl, BatchFailure, BatchPresetMode, BatchProgress, BatchSummary, JobStatus, QueueItem,
+    QueueStateError, RenderQueue,
 };
 pub use session::{IsolationVerdict, OutputFormat, Session, SessionError, VocalIsolationCheck};
 pub use settings::{
