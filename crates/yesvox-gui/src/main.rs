@@ -306,7 +306,7 @@ impl YesVoxApp {
             painter,
             c,
             rect(1564.0, 14.0, 95.0, 40.0),
-            "Presets",
+            "Presets v",
             "top_presets",
         );
         self.icon_button(ui, painter, c, rect(1673.0, 14.0, 38.0, 40.0), "Gear", true);
@@ -445,7 +445,7 @@ impl YesVoxApp {
             painter,
             c,
             rect(18.0, 972.0, 256.0, 58.0),
-            "Upload  Import Vocal",
+            "Import Vocal",
             "import_vocal",
         ) {
             self.import();
@@ -585,34 +585,34 @@ impl YesVoxApp {
                 if (value - self.session.restoration_focus()).abs() > f32::EPSILON {
                     self.session.set_restoration_focus(value);
                 }
-                self.small_text(
+                self.micro_text(
                     painter,
                     c,
-                    macro_rect.left() + 6.0,
+                    macro_rect.left() - 2.0,
                     macro_rect.bottom() - 22.0,
                     "More",
                     TEXT_MUTED,
                 );
-                self.small_text(
+                self.micro_text(
                     painter,
                     c,
-                    macro_rect.left() + 6.0,
+                    macro_rect.left() - 2.0,
                     macro_rect.bottom() - 8.0,
                     "Transparent",
                     TEXT_MUTED,
                 );
-                self.small_text(
+                self.micro_text(
                     painter,
                     c,
-                    macro_rect.right() - 54.0,
+                    macro_rect.right() - 46.0,
                     macro_rect.bottom() - 22.0,
                     "More",
                     TEXT_MUTED,
                 );
-                self.small_text(
+                self.micro_text(
                     painter,
                     c,
-                    macro_rect.right() - 66.0,
+                    macro_rect.right() - 56.0,
                     macro_rect.bottom() - 8.0,
                     "Aggressive",
                     TEXT_MUTED,
@@ -639,7 +639,7 @@ impl YesVoxApp {
                 if (value - self.session.polish_intensity()).abs() > f32::EPSILON {
                     self.session.set_polish_intensity(value);
                 }
-                self.small_text(
+                self.micro_text(
                     painter,
                     c,
                     macro_rect.left() + 18.0,
@@ -647,7 +647,7 @@ impl YesVoxApp {
                     "Gentle",
                     TEXT_MUTED,
                 );
-                self.small_text(
+                self.micro_text(
                     painter,
                     c,
                     macro_rect.right() - 54.0,
@@ -715,7 +715,7 @@ impl YesVoxApp {
                 ui,
                 painter,
                 c,
-                rect(r.left() + 110.0, r.bottom() - 38.0, 82.0, 28.0),
+                rect(r.left() + 12.0, r.bottom() - 38.0, 112.0, 28.0),
                 "Target",
                 ("card_target", card.label()),
             );
@@ -729,14 +729,16 @@ impl YesVoxApp {
                 amount,
             );
         }
-        self.outline_button(
-            ui,
-            painter,
-            c,
-            rect(r.left() + 12.0, r.bottom() - 38.0, 112.0, 28.0),
-            "Advanced",
-            ("card_advanced", card.label()),
-        );
+        if card != CardId::Loudness {
+            self.outline_button(
+                ui,
+                painter,
+                c,
+                rect(r.left() + 12.0, r.bottom() - 38.0, 112.0, 28.0),
+                "Advanced",
+                ("card_advanced", card.label()),
+            );
+        }
     }
 
     fn draw_right_sidebar(
@@ -908,7 +910,7 @@ impl YesVoxApp {
             painter,
             c,
             rect(1588.0, 994.0, 304.0, 36.0),
-            "Upload  EXPORT VOCAL",
+            "EXPORT VOCAL",
             "export_vocal",
         ) {
             match self.session.export_to_target() {
@@ -953,11 +955,239 @@ impl YesVoxApp {
             TEXT,
         );
         painter.text(
-            c.pos(anchor.x + 111.0, anchor.y + 4.0),
+            c.pos(anchor.x + 101.0, anchor.y + 4.0),
             egui::Align2::LEFT_CENTER,
             "Vox",
             c.font(23.0),
             CYAN,
+        );
+    }
+
+    fn history_icon(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        redo: bool,
+        color: egui::Color32,
+    ) {
+        let sc = c.pos(center.x, center.y);
+        let r = c.v(10.0);
+        if redo {
+            arc(
+                painter,
+                sc,
+                r,
+                -115.0,
+                150.0,
+                egui::Stroke::new(c.v(1.8), color),
+            );
+            painter.line_segment(
+                [
+                    sc + egui::vec2(c.v(8.0), -c.v(10.0)),
+                    sc + egui::vec2(c.v(13.0), -c.v(7.0)),
+                ],
+                egui::Stroke::new(c.v(1.8), color),
+            );
+            painter.line_segment(
+                [
+                    sc + egui::vec2(c.v(8.0), -c.v(10.0)),
+                    sc + egui::vec2(c.v(7.0), -c.v(4.0)),
+                ],
+                egui::Stroke::new(c.v(1.8), color),
+            );
+        } else {
+            arc(
+                painter,
+                sc,
+                r,
+                30.0,
+                295.0,
+                egui::Stroke::new(c.v(1.8), color),
+            );
+            painter.line_segment(
+                [
+                    sc + egui::vec2(-c.v(8.0), -c.v(10.0)),
+                    sc + egui::vec2(-c.v(13.0), -c.v(7.0)),
+                ],
+                egui::Stroke::new(c.v(1.8), color),
+            );
+            painter.line_segment(
+                [
+                    sc + egui::vec2(-c.v(8.0), -c.v(10.0)),
+                    sc + egui::vec2(-c.v(7.0), -c.v(4.0)),
+                ],
+                egui::Stroke::new(c.v(1.8), color),
+            );
+        }
+    }
+
+    fn loop_icon(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        color: egui::Color32,
+    ) {
+        let sc = c.pos(center.x, center.y);
+        arc(
+            painter,
+            sc,
+            c.v(10.0),
+            -30.0,
+            275.0,
+            egui::Stroke::new(c.v(1.7), color),
+        );
+        painter.line_segment(
+            [
+                sc + egui::vec2(c.v(7.0), -c.v(8.0)),
+                sc + egui::vec2(c.v(13.0), -c.v(8.0)),
+            ],
+            egui::Stroke::new(c.v(1.7), color),
+        );
+        painter.line_segment(
+            [
+                sc + egui::vec2(c.v(13.0), -c.v(8.0)),
+                sc + egui::vec2(c.v(10.0), -c.v(13.0)),
+            ],
+            egui::Stroke::new(c.v(1.7), color),
+        );
+    }
+
+    fn upload_icon(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        color: egui::Color32,
+    ) {
+        let sc = c.pos(center.x, center.y);
+        painter.line_segment(
+            [
+                sc + egui::vec2(0.0, c.v(8.0)),
+                sc + egui::vec2(0.0, -c.v(8.0)),
+            ],
+            egui::Stroke::new(c.v(2.0), color),
+        );
+        painter.line_segment(
+            [
+                sc + egui::vec2(-c.v(6.0), -c.v(2.0)),
+                sc + egui::vec2(0.0, -c.v(8.0)),
+            ],
+            egui::Stroke::new(c.v(2.0), color),
+        );
+        painter.line_segment(
+            [
+                sc + egui::vec2(c.v(6.0), -c.v(2.0)),
+                sc + egui::vec2(0.0, -c.v(8.0)),
+            ],
+            egui::Stroke::new(c.v(2.0), color),
+        );
+        painter.line_segment(
+            [
+                sc + egui::vec2(-c.v(9.0), c.v(10.0)),
+                sc + egui::vec2(c.v(9.0), c.v(10.0)),
+            ],
+            egui::Stroke::new(c.v(2.0), color),
+        );
+    }
+
+    fn preview_icon(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        color: egui::Color32,
+    ) {
+        let tri = vec![
+            c.pos(center.x - 4.0, center.y - 7.0),
+            c.pos(center.x - 4.0, center.y + 7.0),
+            c.pos(center.x + 8.0, center.y),
+        ];
+        painter.add(egui::Shape::convex_polygon(tri, color, egui::Stroke::NONE));
+    }
+
+    fn settings_icon(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        color: egui::Color32,
+    ) {
+        let sc = c.pos(center.x, center.y);
+        painter.circle_stroke(sc, c.v(7.0), egui::Stroke::new(c.v(1.7), color));
+        painter.circle_filled(sc, c.v(2.4), color);
+        for i in 0..8 {
+            let a = i as f32 * std::f32::consts::TAU / 8.0;
+            let inner = sc + egui::vec2(a.cos() * c.v(10.0), a.sin() * c.v(10.0));
+            let outer = sc + egui::vec2(a.cos() * c.v(13.0), a.sin() * c.v(13.0));
+            painter.line_segment([inner, outer], egui::Stroke::new(c.v(1.5), color));
+        }
+    }
+
+    fn mic_icon(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        color: egui::Color32,
+    ) {
+        let body = rect(center.x - 6.0, center.y - 17.0, 12.0, 24.0);
+        painter.rect_stroke(
+            c.rect(body),
+            egui::CornerRadius::same(6),
+            egui::Stroke::new(c.v(1.8), color),
+            egui::StrokeKind::Inside,
+        );
+        arc(
+            painter,
+            c.pos(center.x, center.y + 2.0),
+            c.v(14.0),
+            20.0,
+            160.0,
+            egui::Stroke::new(c.v(1.8), color),
+        );
+        painter.line_segment(
+            [
+                c.pos(center.x, center.y + 17.0),
+                c.pos(center.x, center.y + 25.0),
+            ],
+            egui::Stroke::new(c.v(1.8), color),
+        );
+        painter.line_segment(
+            [
+                c.pos(center.x - 8.0, center.y + 25.0),
+                c.pos(center.x + 8.0, center.y + 25.0),
+            ],
+            egui::Stroke::new(c.v(1.8), color),
+        );
+    }
+
+    fn note_icon(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        color: egui::Color32,
+    ) {
+        painter.line_segment(
+            [
+                c.pos(center.x + 5.0, center.y - 18.0),
+                c.pos(center.x + 5.0, center.y + 11.0),
+            ],
+            egui::Stroke::new(c.v(2.0), color),
+        );
+        painter.line_segment(
+            [
+                c.pos(center.x + 5.0, center.y - 18.0),
+                c.pos(center.x + 18.0, center.y - 13.0),
+            ],
+            egui::Stroke::new(c.v(2.0), color),
+        );
+        painter.circle_stroke(
+            c.pos(center.x - 3.0, center.y + 13.0),
+            c.v(8.0),
+            egui::Stroke::new(c.v(2.0), color),
         );
     }
 
@@ -981,7 +1211,7 @@ impl YesVoxApp {
             painter,
             c,
             rect(500.0, 366.0, 38.0, 38.0),
-            "↻",
+            "Loop",
             "transport_loop",
         );
         self.body_text(painter, c, 756.0, 385.0, "Analyzing audio", TEXT);
@@ -1448,13 +1678,19 @@ impl YesVoxApp {
             FIELD
         };
         paint_panel(painter, c, r, 5, fill, BORDER_DIM);
-        painter.text(
-            c.rect(r).center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            c.font(13.0),
-            TEXT,
-        );
+        match label {
+            "Loop" => self.loop_icon(painter, c, r.center(), TEXT),
+            ">" => self.preview_icon(painter, c, r.center(), TEXT),
+            _ => {
+                painter.text(
+                    c.rect(r).center(),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    c.font(13.0),
+                    TEXT,
+                );
+            }
+        }
         resp.clicked()
     }
 
@@ -1470,13 +1706,25 @@ impl YesVoxApp {
         let resp = self.response(ui, c, r, id);
         let end = if resp.hovered() { CYAN } else { BLUE };
         paint_h_gradient(painter, c, r, PURPLE, end, 32, 6);
-        painter.text(
-            c.rect(r).center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            c.font(15.0),
-            TEXT,
-        );
+        let center = r.center();
+        if label.contains("Import") || label.contains("EXPORT") {
+            self.upload_icon(painter, c, egui::pos2(center.x - 58.0, center.y), TEXT);
+            painter.text(
+                c.pos(center.x + 8.0, center.y),
+                egui::Align2::CENTER_CENTER,
+                label,
+                c.font(15.0),
+                TEXT,
+            );
+        } else {
+            painter.text(
+                c.rect(r).center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                c.font(15.0),
+                TEXT,
+            );
+        }
         resp.clicked()
     }
 
@@ -1491,24 +1739,30 @@ impl YesVoxApp {
     ) -> bool {
         let resp = self.response(ui, c, r, label);
         paint_panel(painter, c, r, 6, FIELD, BORDER_DIM);
-        let display = match label {
-            "Undo" => "Undo",
-            "Redo" => "Redo",
-            "Gear" => "⚙",
-            "Help" => "?",
-            _ => label,
+        let color = if enabled { TEXT } else { TEXT_DIM };
+        match label {
+            "Undo" => self.history_icon(painter, c, r.center(), false, color),
+            "Redo" => self.history_icon(painter, c, r.center(), true, color),
+            "Gear" => self.settings_icon(painter, c, r.center(), color),
+            "Help" => {
+                painter.text(
+                    c.rect(r).center(),
+                    egui::Align2::CENTER_CENTER,
+                    "?",
+                    c.font(20.0),
+                    color,
+                );
+            }
+            _ => {
+                painter.text(
+                    c.rect(r).center(),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    c.font(13.0),
+                    color,
+                );
+            }
         };
-        painter.text(
-            c.rect(r).center(),
-            egui::Align2::CENTER_CENTER,
-            display,
-            c.font(if label == "Undo" || label == "Redo" {
-                11.0
-            } else {
-                20.0
-            }),
-            if enabled { TEXT } else { TEXT_DIM },
-        );
         resp.clicked()
     }
 
@@ -1530,13 +1784,30 @@ impl YesVoxApp {
         } else {
             paint_panel(painter, c, r, 6, alpha(PANEL_2, 230), BORDER_DIM);
         }
-        painter.text(
-            c.pos(r.center().x, r.top() + 32.0),
-            egui::Align2::CENTER_CENTER,
-            icon,
-            c.font(24.0),
-            if selected { TEXT } else { TEXT_MUTED },
-        );
+        let icon_color = if selected { TEXT } else { TEXT_MUTED };
+        match icon {
+            "Mic" => self.mic_icon(
+                painter,
+                c,
+                egui::pos2(r.center().x, r.top() + 35.0),
+                icon_color,
+            ),
+            "Note" => self.note_icon(
+                painter,
+                c,
+                egui::pos2(r.center().x, r.top() + 34.0),
+                icon_color,
+            ),
+            _ => {
+                painter.text(
+                    c.pos(r.center().x, r.top() + 32.0),
+                    egui::Align2::CENTER_CENTER,
+                    icon,
+                    c.font(24.0),
+                    icon_color,
+                );
+            }
+        }
         painter.text(
             c.pos(r.center().x, r.bottom() - 22.0),
             egui::Align2::CENTER_CENTER,
