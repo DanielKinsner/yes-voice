@@ -31,4 +31,4 @@ Mirrors the proven discipline of the Yes suite (yes-master, yes-daw). Not option
 
 ## Status
 
-**Build kickoff (2026-06-29).** Product definition + v1 architecture/build plan complete; implementation underway starting at **#1** (core boundary + WAV/FLAC I/O skeleton + the four CI guarantee gates). Stack: **Rust + egui + `ort`/`tract`**. Part of the music-first **"Yes" suite** (yes-master, yes-daw, YesStems, YesVox).
+**#17 Standard view underway (2026-06-30).** The core rack + the four CI guarantee gates are in; the current phase builds the agent-callable `Session` surface the UI needs and the **egui shell** (`crates/yesvox-gui`, bin `yesvox-gui`) over it. **See [`docs/STATUS.md`](docs/STATUS.md) for the full resume-from-here snapshot** — what's done, the remaining gaps (G6–G11, G18), decisions, and the eframe-0.35 GUI notes. Stack: **Rust + egui (eframe 0.35) + `ort`/`tract`**. Part of the music-first **"Yes" suite** (yes-master, yes-daw, YesStems, YesVox).
