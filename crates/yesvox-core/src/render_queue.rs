@@ -6,6 +6,7 @@
 //! preset, rendered, and exported (the writer auto-suffixes on collision). A
 //! failure is captured in the item's [`JobStatus`] and the run continues.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::preset::Preset;
@@ -28,7 +29,7 @@ pub enum JobStatus {
 }
 
 /// One queued vocal: where it comes from, where it goes, and how it went.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueueItem {
     /// Source file.
     pub input: PathBuf,
@@ -38,13 +39,45 @@ pub struct QueueItem {
     pub status: JobStatus,
 }
 
-/// Tally of a batch run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One failed queue item for end-of-batch retry/summary UI.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchFailure {
+    /// Index in the queue at the time the run processed this item.
+    pub index: usize,
+    /// Source file.
+    pub input: PathBuf,
+    /// Requested output path.
+    pub output: PathBuf,
+    /// Failure message captured from the renderer.
+    pub error: String,
+}
+
+/// Tally of a batch run, including the failed items a UI can surface for retry.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchSummary {
     /// Files written.
     pub done: usize,
     /// Files that failed (skipped + logged).
     pub failed: usize,
+    /// Per-file failures from this run only.
+    pub failures: Vec<BatchFailure>,
+}
+
+impl BatchSummary {
+    fn empty() -> Self {
+        BatchSummary {
+            done: 0,
+            failed: 0,
+            failures: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_counts(mut self, done: usize, failed: usize) -> Self {
+        self.done = done;
+        self.failed = failed;
+        self
+    }
 }
 
 /// Errors loading or saving crash-recoverable queue state.
@@ -82,6 +115,15 @@ impl From<serde_json::Error> for QueueStateError {
     fn from(e: serde_json::Error) -> Self {
         QueueStateError::Json(e)
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct RenderLogEntry {
+    schema_version: u32,
+    queue_index: usize,
+    input: PathBuf,
+    output: PathBuf,
+    status: JobStatus,
 }
 
 /// A batch render queue applying one settings + preset across many files.
@@ -214,24 +256,55 @@ impl RenderQueue {
     /// Process every pending item, skipping (and recording) failures. Returns a
     /// tally of the run.
     pub fn run(&mut self) -> BatchSummary {
+        self.run_inner(None)
+            .expect("in-memory queue run cannot fail")
+    }
+
+    /// Process every pending item and append one JSON object per processed file
+    /// to `log_path`.
+    pub fn run_with_log(&mut self, log_path: &Path) -> Result<BatchSummary, QueueStateError> {
+        self.run_inner(Some(log_path))
+    }
+
+    fn run_inner(&mut self, log_path: Option<&Path>) -> Result<BatchSummary, QueueStateError> {
         if self.paused {
-            return BatchSummary { done: 0, failed: 0 };
+            return Ok(BatchSummary::empty());
         }
 
         let mut done = 0;
         let mut failed = 0;
-        for item in &mut self.items {
+        let mut failures = Vec::new();
+        let mut log = match log_path {
+            Some(path) => Some(open_render_log(path)?),
+            None => None,
+        };
+        for (index, item) in self.items.iter_mut().enumerate() {
             if !matches!(item.status, JobStatus::Pending) {
                 continue; // already processed (resume-safe)
             }
             item.status = render_one(&self.settings, self.preset, &item.input, &item.output);
-            match item.status {
+            if let Some(file) = log.as_mut() {
+                append_render_log(file, index, item)?;
+            }
+            match &item.status {
                 JobStatus::Done(_) => done += 1,
-                JobStatus::Failed(_) => failed += 1,
+                JobStatus::Failed(error) => {
+                    failed += 1;
+                    failures.push(BatchFailure {
+                        index,
+                        input: item.input.clone(),
+                        output: item.output.clone(),
+                        error: error.clone(),
+                    });
+                }
                 JobStatus::Pending => {}
             }
         }
-        BatchSummary { done, failed }
+        Ok(BatchSummary {
+            done,
+            failed,
+            failures,
+        })
     }
 }
 
@@ -285,6 +358,33 @@ fn queue_backup_path(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(".bak");
     PathBuf::from(s)
+}
+
+fn open_render_log(path: &Path) -> Result<std::fs::File, QueueStateError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?)
+}
+
+fn append_render_log(
+    file: &mut std::fs::File,
+    queue_index: usize,
+    item: &QueueItem,
+) -> Result<(), QueueStateError> {
+    let entry = RenderLogEntry {
+        schema_version: QUEUE_SCHEMA_VERSION,
+        queue_index,
+        input: item.input.clone(),
+        output: item.output.clone(),
+        status: item.status.clone(),
+    };
+    serde_json::to_writer(&mut *file, &entry)?;
+    file.write_all(b"\n")?;
+    Ok(())
 }
 
 /// Render one file with the given configuration (a free fn so `run` can borrow
@@ -344,7 +444,7 @@ mod tests {
         q.enqueue(&in2, &out2);
         let summary = q.run();
 
-        assert_eq!(summary, BatchSummary { done: 2, failed: 0 });
+        assert_eq!(summary, BatchSummary::empty().with_counts(2, 0));
         assert!(q
             .items()
             .iter()
@@ -369,7 +469,11 @@ mod tests {
         q.enqueue(&good_in, &good_out); // must still run
         let summary = q.run();
 
-        assert_eq!(summary, BatchSummary { done: 1, failed: 1 });
+        assert_eq!(summary.done, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.failures.len(), 1);
+        assert_eq!(summary.failures[0].index, 0);
+        assert_eq!(summary.failures[0].input, missing);
         assert!(matches!(q.items()[0].status, JobStatus::Failed(_)));
         assert!(matches!(q.items()[1].status, JobStatus::Done(_)));
         assert!(good_out.exists());
@@ -391,7 +495,7 @@ mod tests {
         assert!(q.is_paused());
 
         let paused = q.run();
-        assert_eq!(paused, BatchSummary { done: 0, failed: 0 });
+        assert_eq!(paused, BatchSummary::empty());
         assert!(matches!(q.items()[0].status, JobStatus::Pending));
         assert!(
             !output.exists(),
@@ -401,7 +505,7 @@ mod tests {
         q.resume();
         assert!(!q.is_paused());
         let resumed = q.run();
-        assert_eq!(resumed, BatchSummary { done: 1, failed: 0 });
+        assert_eq!(resumed, BatchSummary::empty().with_counts(1, 0));
         assert!(matches!(q.items()[0].status, JobStatus::Done(_)));
         assert!(output.exists());
 
@@ -469,5 +573,46 @@ mod tests {
 
         let _ = std::fs::remove_file(queue_backup_path(&path));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn run_with_log_appends_jsonl_entries_and_returns_failure_details() {
+        let good_in = temp("log-good-in");
+        let good_out = temp("log-good-out");
+        let missing = temp("log-missing");
+        let missing_out = temp("log-missing-out");
+        let log = temp_json("render-log");
+        fixture(&good_in);
+        let _ = std::fs::remove_file(&missing);
+
+        let mut q = RenderQueue::new(Settings::default(), Preset::PODCAST);
+        q.enqueue(&missing, &missing_out);
+        q.enqueue(&good_in, &good_out);
+        let summary = q.run_with_log(&log).unwrap();
+
+        assert_eq!(summary.done, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.failures.len(), 1);
+        assert_eq!(summary.failures[0].index, 0);
+        assert_eq!(summary.failures[0].input, missing);
+        assert!(!summary.failures[0].error.is_empty());
+
+        let lines: Vec<String> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(lines.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&lines[1]).unwrap();
+        assert_eq!(first["schema_version"], QUEUE_SCHEMA_VERSION);
+        assert_eq!(first["queue_index"], 0);
+        assert_eq!(first["status"]["status"], "failed");
+        assert_eq!(second["queue_index"], 1);
+        assert_eq!(second["status"]["status"], "done");
+
+        for p in [good_in, good_out, missing_out, log] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }

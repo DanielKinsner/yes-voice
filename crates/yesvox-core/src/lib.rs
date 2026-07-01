@@ -53,7 +53,9 @@ pub use quality::{
     linear_residual, resolve, wet_dry_blend, DiffMonitor, Engine, EngineBinding, QualityMode,
     Resolved,
 };
-pub use render_queue::{BatchSummary, JobStatus, QueueItem, QueueStateError, RenderQueue};
+pub use render_queue::{
+    BatchFailure, BatchSummary, JobStatus, QueueItem, QueueStateError, RenderQueue,
+};
 pub use session::{IsolationVerdict, OutputFormat, Session, SessionError, VocalIsolationCheck};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,
