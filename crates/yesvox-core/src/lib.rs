@@ -54,7 +54,7 @@ pub use quality::{
     Resolved,
 };
 pub use render_queue::{BatchSummary, JobStatus, QueueItem, RenderQueue};
-pub use session::{OutputFormat, Session, SessionError};
+pub use session::{IsolationVerdict, OutputFormat, Session, SessionError, VocalIsolationCheck};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,
     SCHEMA_VERSION,

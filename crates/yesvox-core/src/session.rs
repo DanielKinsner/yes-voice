@@ -104,6 +104,91 @@ pub struct SmartAssistPlan {
     pub polish_intensity: f32,
 }
 
+/// A compact Standard-view verdict for one residual isolation dimension.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IsolationVerdict {
+    /// Residual is low enough to show a pass state.
+    Clean,
+    /// Residual is noticeable; show a caution state.
+    Warn,
+    /// Residual is high enough to invite another pass or a different source.
+    Attention,
+}
+
+impl IsolationVerdict {
+    /// User-facing short label for the bottom-strip verdict.
+    pub fn label(self) -> &'static str {
+        match self {
+            IsolationVerdict::Clean => "Clean",
+            IsolationVerdict::Warn => "Check",
+            IsolationVerdict::Attention => "Needs attention",
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            IsolationVerdict::Clean => 0,
+            IsolationVerdict::Warn => 1,
+            IsolationVerdict::Attention => 2,
+        }
+    }
+
+    fn max(self, other: Self) -> Self {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+/// The Vocal Isolation Check result: the rendered output is re-analyzed and the
+/// residual noise, room tail, and non-vocal bleed dimensions are turned into a
+/// deterministic verdict for the Standard bottom strip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VocalIsolationCheck {
+    /// The analyzer report from the rendered output, not the source input.
+    pub report: AnalysisReport,
+    /// Residual noise-floor verdict.
+    pub noise: IsolationVerdict,
+    /// Residual de-reverb / room-tail verdict.
+    pub reverb: IsolationVerdict,
+    /// Residual bleed / mix-likeness verdict.
+    pub bleed: BleedVerdict,
+}
+
+impl VocalIsolationCheck {
+    /// The worst residual dimension, as a single status chip for the UI.
+    pub fn overall(self) -> IsolationVerdict {
+        let bleed = match self.bleed {
+            BleedVerdict::Clean => IsolationVerdict::Clean,
+            BleedVerdict::Warn => IsolationVerdict::Warn,
+            BleedVerdict::Block => IsolationVerdict::Attention,
+        };
+        self.noise.max(self.reverb).max(bleed)
+    }
+
+    /// A concise Standard-view summary string.
+    pub fn summary(self) -> String {
+        format!(
+            "{} - noise {:.0} dBFS, RT60 {:.2}s, bleed {}",
+            self.overall().label(),
+            self.report.noise_floor_db,
+            self.report.reverb_time_s,
+            self.bleed_label()
+        )
+    }
+
+    /// The bleed verdict's UI label.
+    pub fn bleed_label(self) -> &'static str {
+        match self.bleed {
+            BleedVerdict::Clean => "clean",
+            BleedVerdict::Warn => "check",
+            BleedVerdict::Block => "too high",
+        }
+    }
+}
+
 fn scale01(value: f32, low: f32, high: f32) -> f32 {
     ((value - low) / (high - low)).clamp(0.0, 1.0)
 }
@@ -113,6 +198,26 @@ fn amount_from_score(score: f32, min: f32, max: f32) -> f32 {
         0.0
     } else {
         min + (max - min) * score.clamp(0.0, 1.0)
+    }
+}
+
+fn residual_noise_verdict(noise_floor_db: f32) -> IsolationVerdict {
+    if noise_floor_db <= -55.0 {
+        IsolationVerdict::Clean
+    } else if noise_floor_db <= -42.0 {
+        IsolationVerdict::Warn
+    } else {
+        IsolationVerdict::Attention
+    }
+}
+
+fn residual_reverb_verdict(reverb_time_s: f32, residual_nonvocal: f32) -> IsolationVerdict {
+    if reverb_time_s <= 0.25 || residual_nonvocal <= 0.03 {
+        IsolationVerdict::Clean
+    } else if reverb_time_s <= 0.65 || residual_nonvocal <= 0.12 {
+        IsolationVerdict::Warn
+    } else {
+        IsolationVerdict::Attention
     }
 }
 
@@ -985,6 +1090,22 @@ impl Session {
         ))
     }
 
+    /// Re-analyze the rendered output and return the bottom-strip Vocal Isolation
+    /// Check verdict. This intentionally depends on the current processed buffer:
+    /// changing cards/macros invalidates the output, and the next check reflects
+    /// the newly rendered audio rather than stale source analysis.
+    pub fn vocal_isolation_check(&self) -> Result<VocalIsolationCheck, SessionError> {
+        let output = self.output.as_ref().ok_or(SessionError::NotRendered)?;
+        let report = analyze(output).map_err(SessionError::Analysis)?;
+        let bleed = crate::modules::DeBleed::default().assess(output);
+        Ok(VocalIsolationCheck {
+            report,
+            noise: residual_noise_verdict(report.noise_floor_db),
+            reverb: residual_reverb_verdict(report.reverb_time_s, report.residual_nonvocal),
+            bleed,
+        })
+    }
+
     /// Run the bound chain on the open vocal, caching the processed result.
     /// Refuses a mix (de-bleed `Block`) with an actionable error.
     pub fn render(&mut self) -> Result<(), SessionError> {
@@ -1449,6 +1570,108 @@ mod tests {
         }
         assert!(s.ab_match_gain().is_some());
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn noise(amp: f32, n: usize, seed0: u32) -> Vec<f32> {
+        let mut s = seed0;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (((s >> 9) as f32 / (1u32 << 23) as f32) - 0.5) * 2.0 * amp
+            })
+            .collect()
+    }
+
+    fn direct_output(samples: Vec<f32>) -> Session {
+        let mut s = Session::new();
+        s.output = Some(AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![samples]));
+        s
+    }
+
+    #[test]
+    fn vocal_isolation_check_requires_a_render() {
+        let mut s = Session::new();
+        assert!(matches!(
+            s.vocal_isolation_check(),
+            Err(SessionError::NotRendered)
+        ));
+
+        let path = temp("g8-not-rendered");
+        quiet_tone_fixture(&path);
+        s.open(&path).unwrap();
+        assert!(matches!(
+            s.vocal_isolation_check(),
+            Err(SessionError::NotRendered)
+        ));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn vocal_isolation_check_reanalyzes_the_rendered_output() {
+        let mut samples = vec![0.0; SR as usize * 2];
+        for start in [SR as usize / 4, SR as usize + SR as usize / 4] {
+            for i in 0..SR as usize / 3 {
+                let t = i as f32 / SR as f32;
+                samples[start + i] = 0.25 * (2.0 * PI * 220.0 * t).sin();
+            }
+        }
+        let s = direct_output(samples);
+
+        let check = s.vocal_isolation_check().expect("check");
+
+        assert_eq!(check.noise, IsolationVerdict::Clean);
+        assert_eq!(check.reverb, IsolationVerdict::Clean);
+        assert_eq!(check.bleed, BleedVerdict::Clean);
+        assert_eq!(check.overall(), IsolationVerdict::Clean);
+        assert_eq!(check.report.channel_mode, crate::audio::ChannelLayout::Mono);
+    }
+
+    #[test]
+    fn vocal_isolation_check_flags_residual_noise_and_bleed() {
+        let samples = noise(0.35, SR as usize * 2, 12);
+        let s = direct_output(samples);
+
+        let check = s.vocal_isolation_check().expect("check");
+
+        assert_eq!(check.noise, IsolationVerdict::Attention);
+        assert_eq!(check.bleed, BleedVerdict::Block);
+        assert_eq!(check.overall(), IsolationVerdict::Attention);
+        assert!(check.summary().contains("Needs attention"));
+    }
+
+    #[test]
+    fn vocal_isolation_check_has_a_middle_warning_band() {
+        let report = AnalysisReport {
+            channel_mode: crate::audio::ChannelLayout::Mono,
+            integrated_lufs: -20.0,
+            true_peak_dbtp: -3.0,
+            noise_floor_db: -48.0,
+            clip_sample_count: 0,
+            clip_fraction: 0.0,
+            click_rate_hz: 0.0,
+            hum: crate::analysis::HumEstimate {
+                frequency: 0.0,
+                harmonic_count: 0,
+                strength_db: -120.0,
+            },
+            reverb_time_s: 0.40,
+            content: ContentGuess {
+                mode: ContentMode::Voiceover,
+                confidence: 0.8,
+            },
+            residual_nonvocal: 0.08,
+            resampled_for_batch: false,
+        };
+        let check = VocalIsolationCheck {
+            report,
+            noise: residual_noise_verdict(report.noise_floor_db),
+            reverb: residual_reverb_verdict(report.reverb_time_s, report.residual_nonvocal),
+            bleed: BleedVerdict::Clean,
+        };
+
+        assert_eq!(check.noise, IsolationVerdict::Warn);
+        assert_eq!(check.reverb, IsolationVerdict::Warn);
+        assert_eq!(check.overall(), IsolationVerdict::Warn);
     }
 
     #[test]

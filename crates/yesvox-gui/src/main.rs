@@ -12,6 +12,7 @@ use std::{fmt::Debug, hash::Hash, path::PathBuf};
 use eframe::egui;
 use yesvox_core::{
     AudioBuffer, CardId, ContentMode, LoudnessTarget, OutputFormat, Preset, Session,
+    VocalIsolationCheck,
 };
 
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
@@ -150,6 +151,7 @@ struct YesVoxApp {
     volume_match: bool,
     preview_lufs: bool,
     add_to_library: bool,
+    isolation_check: Option<VocalIsolationCheck>,
 }
 
 impl YesVoxApp {
@@ -192,6 +194,7 @@ impl YesVoxApp {
             volume_match: false,
             preview_lufs: false,
             add_to_library: true,
+            isolation_check: None,
         }
     }
 
@@ -237,10 +240,21 @@ impl YesVoxApp {
         match self.session.render() {
             Ok(()) => {
                 self.ab = AbView::Processed;
+                self.isolation_check = None;
                 let lufs = self.session.output_lufs().unwrap_or(f32::NAN);
                 self.status = format!("Rendered - OUT {lufs:.1} LUFS");
             }
             Err(e) => self.status = format!("Render failed: {e}"),
+        }
+    }
+
+    fn check_isolation_now(&mut self) {
+        match self.session.vocal_isolation_check() {
+            Ok(check) => {
+                self.status = format!("Isolation check: {}", check.summary());
+                self.isolation_check = Some(check);
+            }
+            Err(e) => self.status = format!("Isolation check failed: {e}"),
         }
     }
 
@@ -1720,12 +1734,34 @@ impl YesVoxApp {
             "Vocal Isolation Check",
         );
         self.help_dot(painter, c, egui::pos2(r.right() - 26.0, r.top() + 22.0));
+        let (line1, line2) = self
+            .isolation_check
+            .map(|check| {
+                (
+                    format!(
+                        "{} - noise {:.0} dBFS",
+                        check.overall().label(),
+                        check.report.noise_floor_db
+                    ),
+                    format!(
+                        "RT60 {:.2}s - bleed {}",
+                        check.report.reverb_time_s,
+                        check.bleed_label()
+                    ),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    "Checks for residual noise,".to_owned(),
+                    "reverb, or bleed.".to_owned(),
+                )
+            });
         self.small_text(
             painter,
             c,
             r.left() + 1090.0,
             r.top() + 62.0,
-            "Checks for residual noise,",
+            &line1,
             TEXT_MUTED,
         );
         self.small_text(
@@ -1733,17 +1769,19 @@ impl YesVoxApp {
             c,
             r.left() + 1090.0,
             r.top() + 88.0,
-            "reverb, or bleed.",
+            &line2,
             TEXT_MUTED,
         );
-        self.outline_button(
+        if self.outline_button(
             ui,
             painter,
             c,
             rect(r.left() + 1090.0, r.top() + 106.0, 154.0, 34.0),
             "◇  Check Now",
             "check_now",
-        );
+        ) {
+            self.check_isolation_now();
+        }
     }
 }
 
