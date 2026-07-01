@@ -18,11 +18,14 @@ use std::path::PathBuf;
 use eframe::egui;
 use yesvox_core::{CardId, ContentMode, LoudnessTarget, OutputFormat, Preset, Session};
 
+const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
+const MIN_VIEWPORT_SIZE: [f32; 2] = [1280.0, 720.0];
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1320.0, 820.0])
-            .with_min_inner_size([1040.0, 680.0])
+            .with_inner_size(DEFAULT_VIEWPORT_SIZE)
+            .with_min_inner_size(MIN_VIEWPORT_SIZE)
             .with_title("YesVox"),
         ..Default::default()
     };
@@ -584,6 +587,17 @@ fn install_theme(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_viewport_matches_reference_canvas() {
+        assert_eq!(DEFAULT_VIEWPORT_SIZE, [1920.0, 1080.0]);
+        assert_eq!(MIN_VIEWPORT_SIZE, [1280.0, 720.0]);
+        assert_eq!(
+            DEFAULT_VIEWPORT_SIZE[0] / DEFAULT_VIEWPORT_SIZE[1],
+            16.0 / 9.0
+        );
+        assert_eq!(MIN_VIEWPORT_SIZE[0] / MIN_VIEWPORT_SIZE[1], 16.0 / 9.0);
+    }
 
     #[test]
     fn loudness_labels_cover_every_target() {

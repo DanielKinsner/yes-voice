@@ -14,6 +14,9 @@ The annotated mock lives next to this file:
 `docs/ui/yesvox-v1-reference.png` — committed and synced. The written spec below
 transcribes it so the design intent stays diffable/searchable in-repo.
 
+The app canvas target is **1920×1080**. The committed PNG may be a scaled 16:9
+export, but the desktop shell should launch to a 1920×1080 inner viewport.
+
 ---
 
 ## Full layout transcription
