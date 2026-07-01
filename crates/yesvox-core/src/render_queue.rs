@@ -11,9 +11,13 @@ use std::path::{Path, PathBuf};
 use crate::preset::Preset;
 use crate::session::Session;
 use crate::settings::Settings;
+use serde::{Deserialize, Serialize};
+
+const QUEUE_SCHEMA_VERSION: u32 = 1;
 
 /// The outcome of a queued render.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status", content = "detail")]
 pub enum JobStatus {
     /// Not yet processed.
     Pending,
@@ -24,7 +28,7 @@ pub enum JobStatus {
 }
 
 /// One queued vocal: where it comes from, where it goes, and how it went.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QueueItem {
     /// Source file.
     pub input: PathBuf,
@@ -41,6 +45,43 @@ pub struct BatchSummary {
     pub done: usize,
     /// Files that failed (skipped + logged).
     pub failed: usize,
+}
+
+/// Errors loading or saving crash-recoverable queue state.
+#[derive(Debug)]
+pub enum QueueStateError {
+    /// Filesystem error.
+    Io(std::io::Error),
+    /// JSON serialization or parsing error.
+    Json(serde_json::Error),
+    /// The queue file names a preset this build does not know.
+    UnknownPreset(String),
+}
+
+impl std::fmt::Display for QueueStateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QueueStateError::Io(e) => write!(f, "queue state io error: {e}"),
+            QueueStateError::Json(e) => write!(f, "queue state json error: {e}"),
+            QueueStateError::UnknownPreset(name) => {
+                write!(f, "queue state references unknown preset: {name}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for QueueStateError {}
+
+impl From<std::io::Error> for QueueStateError {
+    fn from(e: std::io::Error) -> Self {
+        QueueStateError::Io(e)
+    }
+}
+
+impl From<serde_json::Error> for QueueStateError {
+    fn from(e: serde_json::Error) -> Self {
+        QueueStateError::Json(e)
+    }
 }
 
 /// A batch render queue applying one settings + preset across many files.
@@ -117,6 +158,59 @@ impl RenderQueue {
         true
     }
 
+    /// Serialize the queue to pretty JSON for crash recovery.
+    pub fn to_json(&self) -> Result<String, QueueStateError> {
+        Ok(serde_json::to_string_pretty(&PersistentQueue::from_queue(
+            self,
+        ))?)
+    }
+
+    /// Parse a queue from JSON and force it to paused recovery mode.
+    pub fn from_json(s: &str) -> Result<Self, QueueStateError> {
+        PersistentQueue::into_queue(serde_json::from_str(s)?)
+    }
+
+    /// Save `queue.json` atomically and keep a one-rotation `queue.json.bak`.
+    pub fn save(&self, path: &Path) -> Result<(), QueueStateError> {
+        let json = self.to_json()?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let backup = queue_backup_path(path);
+        if path.exists() {
+            let _ = std::fs::remove_file(&backup);
+            std::fs::copy(path, &backup)?;
+        }
+
+        let tmp = queue_temp_path(path);
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Load `queue.json`; if the primary is absent/corrupt, recover from
+    /// `queue.json.bak`. Recovered queues always start paused.
+    pub fn load_or_empty(path: &Path) -> Result<Self, QueueStateError> {
+        match load_queue(path) {
+            Ok(q) => Ok(q),
+            Err(QueueStateError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                let backup = queue_backup_path(path);
+                match load_queue(&backup) {
+                    Ok(q) => Ok(q),
+                    Err(QueueStateError::Io(be)) if be.kind() == std::io::ErrorKind::NotFound => {
+                        Ok(Self::new(
+                            Settings::default(),
+                            Preset::default_for(Default::default()),
+                        ))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Err(_) => load_queue(&queue_backup_path(path)),
+        }
+    }
+
     /// Process every pending item, skipping (and recording) failures. Returns a
     /// tally of the run.
     pub fn run(&mut self) -> BatchSummary {
@@ -139,6 +233,58 @@ impl RenderQueue {
         }
         BatchSummary { done, failed }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistentQueue {
+    schema_version: u32,
+    settings: Settings,
+    preset: String,
+    paused: bool,
+    items: Vec<QueueItem>,
+}
+
+impl PersistentQueue {
+    fn from_queue(queue: &RenderQueue) -> Self {
+        PersistentQueue {
+            schema_version: QUEUE_SCHEMA_VERSION,
+            settings: queue.settings.clone(),
+            preset: queue.preset.name.to_owned(),
+            paused: queue.paused,
+            items: queue.items.clone(),
+        }
+    }
+
+    fn into_queue(saved: PersistentQueue) -> Result<RenderQueue, QueueStateError> {
+        let preset = Preset::ALL
+            .iter()
+            .copied()
+            .find(|p| p.name == saved.preset)
+            .ok_or_else(|| QueueStateError::UnknownPreset(saved.preset.clone()))?;
+        Ok(RenderQueue {
+            settings: saved.settings,
+            preset,
+            // Recovery must not render until the app/user explicitly resumes.
+            paused: true,
+            items: saved.items,
+        })
+    }
+}
+
+fn load_queue(path: &Path) -> Result<RenderQueue, QueueStateError> {
+    RenderQueue::from_json(&std::fs::read_to_string(path)?)
+}
+
+fn queue_temp_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".yesvox-tmp");
+    PathBuf::from(s)
+}
+
+fn queue_backup_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".bak");
+    PathBuf::from(s)
 }
 
 /// Render one file with the given configuration (a free fn so `run` can borrow
@@ -173,6 +319,14 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("yesvox-queue-{tag}-{}.wav", std::process::id()));
         let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    fn temp_json(tag: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("yesvox-queue-{tag}-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(queue_backup_path(&p));
         p
     }
 
@@ -273,5 +427,47 @@ mod tests {
         assert!(q.move_item(2, 2));
         assert!(!q.move_item(3, 0));
         assert!(!q.move_item(0, 3));
+    }
+
+    #[test]
+    fn queue_json_round_trips_items_statuses_and_recovers_paused() {
+        let mut q = RenderQueue::new(Settings::default(), Preset::LEAD_VOCAL);
+        q.enqueue("lead.wav", "lead-yesvox.wav");
+        q.enqueue("bad.wav", "bad-yesvox.wav");
+        q.items[0].status = JobStatus::Done(PathBuf::from("lead-yesvox.wav"));
+        q.items[1].status = JobStatus::Failed("decode failed".to_owned());
+
+        let recovered = RenderQueue::from_json(&q.to_json().unwrap()).unwrap();
+
+        assert!(recovered.is_paused(), "crash recovery must land paused");
+        assert_eq!(recovered.items().len(), 2);
+        assert_eq!(recovered.items()[0].input, PathBuf::from("lead.wav"));
+        assert_eq!(
+            recovered.items()[0].status,
+            JobStatus::Done(PathBuf::from("lead-yesvox.wav"))
+        );
+        assert!(matches!(recovered.items()[1].status, JobStatus::Failed(_)));
+    }
+
+    #[test]
+    fn load_or_empty_recovers_from_backup_when_primary_is_corrupt() {
+        let path = temp_json("recover");
+
+        let mut q = RenderQueue::new(Settings::default(), Preset::PODCAST);
+        q.enqueue("first.wav", "first-yesvox.wav");
+        q.save(&path).unwrap();
+
+        q.enqueue("second.wav", "second-yesvox.wav");
+        q.save(&path).unwrap();
+        std::fs::write(&path, "{ this is not json").unwrap();
+
+        let recovered = RenderQueue::load_or_empty(&path).unwrap();
+
+        assert!(recovered.is_paused(), "backup recovery must land paused");
+        assert_eq!(recovered.items().len(), 1);
+        assert_eq!(recovered.items()[0].input, PathBuf::from("first.wav"));
+
+        let _ = std::fs::remove_file(queue_backup_path(&path));
+        let _ = std::fs::remove_file(path);
     }
 }
