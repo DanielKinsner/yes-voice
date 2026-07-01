@@ -56,6 +56,7 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **G12/13** | **OUTPUT + FILE** panels — `OutputFormat`, bit-depth/dither, name/location, `export_target()`/`export_to_target()`. |
 | **G15** | **Volume Match** — `ab_matched_input()`. |
 | **G17** | **Waveform peaks + channel meters** — `monitor::waveform_peaks / channel_peak_db / channel_rms_db`. |
+| **#19a** | **Render queue controls** — `RenderQueue` now supports append, pause/resume, reorder, pending-only resume, failure skip/summary. |
 | **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
 
 ## Next up (remaining mechanical gaps)
@@ -65,11 +66,13 @@ Build order, mechanical-first, each TDD'd:
 1. **G18** — undo/redo. **Needs a scope decision from Dan** (unspec'd in
    product.md/plan; ship Revert-only, or a real undo stack?).
 
-Then GUI polish: native file picker (`rfd`), finer pixel/spacing adjustments vs
-the mock, and the real playback-backed transport + spectral-monitor/reblend
+Then continue **#19** batch/export work: crash-recoverable queue persistence,
+per-file logs/summary, retry selected, batch force-preset vs per-file detection,
+and GUI queue affordances. GUI polish remains: finer pixel/spacing adjustments
+vs the mock and the real playback-backed transport + spectral-monitor/reblend
 (#18). The shell currently paints reference/deterministic placeholder waveforms,
 meters, spectrum, and transport controls when no file is loaded so the fresh
-launch matches the visual target.
+launch matches the visual target. Native file import uses `rfd`.
 
 ## Decisions on record
 

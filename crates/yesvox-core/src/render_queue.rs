@@ -47,6 +47,7 @@ pub struct BatchSummary {
 pub struct RenderQueue {
     settings: Settings,
     preset: Preset,
+    paused: bool,
     items: Vec<QueueItem>,
 }
 
@@ -57,6 +58,7 @@ impl RenderQueue {
         RenderQueue {
             settings,
             preset,
+            paused: false,
             items: Vec::new(),
         }
     }
@@ -85,9 +87,43 @@ impl RenderQueue {
         &self.items
     }
 
+    /// Whether the queue is currently paused. A paused queue keeps accepting
+    /// appends/reorders, but [`RenderQueue::run`] leaves all pending items alone.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Pause processing after the current run boundary.
+    pub fn pause(&mut self) {
+        self.paused = true;
+    }
+
+    /// Resume processing of pending items.
+    pub fn resume(&mut self) {
+        self.paused = false;
+    }
+
+    /// Move a queued item from `from` to `to`, preserving its status. Returns
+    /// `false` when either index is outside the queue.
+    pub fn move_item(&mut self, from: usize, to: usize) -> bool {
+        if from >= self.items.len() || to >= self.items.len() {
+            return false;
+        }
+        if from == to {
+            return true;
+        }
+        let item = self.items.remove(from);
+        self.items.insert(to, item);
+        true
+    }
+
     /// Process every pending item, skipping (and recording) failures. Returns a
     /// tally of the run.
     pub fn run(&mut self) -> BatchSummary {
+        if self.paused {
+            return BatchSummary { done: 0, failed: 0 };
+        }
+
         let mut done = 0;
         let mut failed = 0;
         for item in &mut self.items {
@@ -187,5 +223,55 @@ mod tests {
         for p in [good_in, good_out] {
             let _ = std::fs::remove_file(p);
         }
+    }
+
+    #[test]
+    fn paused_queue_does_not_process_pending_items_until_resumed() {
+        let input = temp("paused-in");
+        let output = temp("paused-out");
+        fixture(&input);
+
+        let mut q = RenderQueue::new(Settings::default(), Preset::PODCAST);
+        q.enqueue(&input, &output);
+        q.pause();
+        assert!(q.is_paused());
+
+        let paused = q.run();
+        assert_eq!(paused, BatchSummary { done: 0, failed: 0 });
+        assert!(matches!(q.items()[0].status, JobStatus::Pending));
+        assert!(
+            !output.exists(),
+            "paused queue must not render pending files"
+        );
+
+        q.resume();
+        assert!(!q.is_paused());
+        let resumed = q.run();
+        assert_eq!(resumed, BatchSummary { done: 1, failed: 0 });
+        assert!(matches!(q.items()[0].status, JobStatus::Done(_)));
+        assert!(output.exists());
+
+        for p in [input, output] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn reorder_preserves_items_and_statuses() {
+        let mut q = RenderQueue::new(Settings::default(), Preset::PODCAST);
+        q.enqueue("a.wav", "a-out.wav");
+        q.enqueue("b.wav", "b-out.wav");
+        q.enqueue("c.wav", "c-out.wav");
+        q.items[1].status = JobStatus::Failed("decode failed".to_owned());
+
+        assert!(q.move_item(1, 0));
+        assert_eq!(q.items()[0].input, PathBuf::from("b.wav"));
+        assert!(matches!(q.items()[0].status, JobStatus::Failed(_)));
+        assert_eq!(q.items()[1].input, PathBuf::from("a.wav"));
+        assert_eq!(q.items()[2].input, PathBuf::from("c.wav"));
+
+        assert!(q.move_item(2, 2));
+        assert!(!q.move_item(3, 0));
+        assert!(!q.move_item(0, 3));
     }
 }
