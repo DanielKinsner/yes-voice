@@ -200,6 +200,23 @@ impl RenderQueue {
         true
     }
 
+    /// Mark selected failed items as pending so the next run retries them.
+    ///
+    /// Done and already-pending items are left untouched; out-of-range indices
+    /// are ignored. Returns the number of failed items selected for retry.
+    pub fn retry_failed(&mut self, indices: impl IntoIterator<Item = usize>) -> usize {
+        let mut selected = 0;
+        for index in indices {
+            if let Some(item) = self.items.get_mut(index) {
+                if matches!(item.status, JobStatus::Failed(_)) {
+                    item.status = JobStatus::Pending;
+                    selected += 1;
+                }
+            }
+        }
+        selected
+    }
+
     /// Serialize the queue to pretty JSON for crash recovery.
     pub fn to_json(&self) -> Result<String, QueueStateError> {
         Ok(serde_json::to_string_pretty(&PersistentQueue::from_queue(
@@ -612,6 +629,59 @@ mod tests {
         assert_eq!(second["status"]["status"], "done");
 
         for p in [good_in, good_out, missing_out, log] {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+
+    #[test]
+    fn retry_failed_marks_only_selected_failed_items_pending() {
+        let first_in = temp("retry-first-in");
+        let first_out = temp("retry-first-out");
+        let retry_in = temp("retry-missing-in");
+        let retry_out = temp("retry-missing-out");
+        let unselected_in = temp("retry-unselected-in");
+        let unselected_out = temp("retry-unselected-out");
+        fixture(&first_in);
+        let _ = std::fs::remove_file(&retry_in);
+        let _ = std::fs::remove_file(&unselected_in);
+
+        let mut q = RenderQueue::new(Settings::default(), Preset::PODCAST);
+        q.enqueue(&first_in, &first_out);
+        q.enqueue(&retry_in, &retry_out);
+        q.enqueue(&unselected_in, &unselected_out);
+
+        let first = q.run();
+        assert_eq!(first.done, 1);
+        assert_eq!(first.failed, 2);
+        assert!(matches!(q.items()[0].status, JobStatus::Done(_)));
+        assert!(matches!(q.items()[1].status, JobStatus::Failed(_)));
+        assert!(matches!(q.items()[2].status, JobStatus::Failed(_)));
+
+        fixture(&retry_in);
+        let selected = q.retry_failed([1, 1, 0, 99]);
+        assert_eq!(selected, 1, "only the selected failed item should retry");
+        assert!(matches!(q.items()[0].status, JobStatus::Done(_)));
+        assert!(matches!(q.items()[1].status, JobStatus::Pending));
+        assert!(matches!(q.items()[2].status, JobStatus::Failed(_)));
+
+        let retry = q.run();
+        assert_eq!(retry.done, 1);
+        assert_eq!(retry.failed, 0);
+        assert!(matches!(q.items()[0].status, JobStatus::Done(_)));
+        assert!(matches!(q.items()[1].status, JobStatus::Done(_)));
+        assert!(matches!(q.items()[2].status, JobStatus::Failed(_)));
+        assert!(first_out.exists());
+        assert!(retry_out.exists());
+        assert!(!unselected_out.exists());
+
+        for p in [
+            first_in,
+            first_out,
+            retry_in,
+            retry_out,
+            unselected_in,
+            unselected_out,
+        ] {
             let _ = std::fs::remove_file(p);
         }
     }
