@@ -45,6 +45,9 @@ impl LoudnessTarget {
 #[derive(Clone, Debug)]
 pub struct FinishStage {
     enabled: bool,
+    presence_air_enabled: bool,
+    leveling_enabled: bool,
+    loudness_enabled: bool,
     target: LoudnessTarget,
     /// Presence boost (≈5 kHz) in dB.
     presence_db: f32,
@@ -63,6 +66,9 @@ impl Default for FinishStage {
     fn default() -> Self {
         FinishStage {
             enabled: true,
+            presence_air_enabled: true,
+            leveling_enabled: true,
+            loudness_enabled: true,
             target: LoudnessTarget::Podcast,
             presence_db: 0.0,
             air_db: 0.0,
@@ -104,6 +110,39 @@ impl FinishStage {
         self.enabled
     }
 
+    /// Enable or bypass the presence/air EQ sub-control.
+    pub fn set_presence_air_enabled(&mut self, on: bool) {
+        self.presence_air_enabled = on;
+    }
+
+    /// Whether the presence/air EQ sub-control is active.
+    pub fn presence_air_enabled(&self) -> bool {
+        self.presence_air_enabled
+    }
+
+    /// Enable or bypass the program-leveling sub-control.
+    ///
+    /// G9 lands the actual leveler DSP; until then this is tracked state only and
+    /// intentionally audio-neutral.
+    pub fn set_leveling_enabled(&mut self, on: bool) {
+        self.leveling_enabled = on;
+    }
+
+    /// Whether the program-leveling sub-control is active.
+    pub fn leveling_enabled(&self) -> bool {
+        self.leveling_enabled
+    }
+
+    /// Enable or bypass loudness normalization plus the true-peak limiter.
+    pub fn set_loudness_enabled(&mut self, on: bool) {
+        self.loudness_enabled = on;
+    }
+
+    /// Whether loudness normalization plus the true-peak limiter are active.
+    pub fn loudness_enabled(&self) -> bool {
+        self.loudness_enabled
+    }
+
     /// Look-ahead in samples.
     fn lookahead_samples(&self) -> usize {
         ((self.lookahead_s * self.sample_rate) as usize).max(1)
@@ -121,6 +160,11 @@ impl FinishStage {
                 *s = air.process(presence.process(*s));
             }
         }
+    }
+
+    fn apply_leveling(&self, _buffer: &mut AudioBuffer) {
+        // G9 adds the actual program leveler. The sub-control is tracked now so
+        // the Standard card is independently addressable without changing audio.
     }
 
     fn apply_gain(buffer: &mut AudioBuffer, gain: f32) {
@@ -194,27 +238,33 @@ impl VocalProcessor for FinishStage {
         if !self.enabled {
             return;
         }
-        // Loudness reference for Match-input is the pre-EQ input.
+        // Loudness reference for Match-input is the pre-finish input.
         let input_lufs = integrated_lufs(buffer);
 
-        self.apply_eq(buffer);
-
-        match self.target {
-            LoudnessTarget::PeakNormalize => {
-                let tp = true_peak_dbtp(buffer);
-                let gain = 10f32.powf((self.ceiling_dbtp - tp) / 20.0);
-                Self::apply_gain(buffer, gain);
-            }
-            target => {
-                let want = target.lufs().or(input_lufs);
-                if let (Some(target_lufs), Some(measured)) = (want, integrated_lufs(buffer)) {
-                    let gain = 10f32.powf((target_lufs - measured) / 20.0);
+        if self.presence_air_enabled {
+            self.apply_eq(buffer);
+        }
+        if self.leveling_enabled {
+            self.apply_leveling(buffer);
+        }
+        if self.loudness_enabled {
+            match self.target {
+                LoudnessTarget::PeakNormalize => {
+                    let tp = true_peak_dbtp(buffer);
+                    let gain = 10f32.powf((self.ceiling_dbtp - tp) / 20.0);
                     Self::apply_gain(buffer, gain);
                 }
+                target => {
+                    let want = target.lufs().or(input_lufs);
+                    if let (Some(target_lufs), Some(measured)) = (want, integrated_lufs(buffer)) {
+                        let gain = 10f32.powf((target_lufs - measured) / 20.0);
+                        Self::apply_gain(buffer, gain);
+                    }
+                }
             }
-        }
 
-        self.limit(buffer);
+            self.limit(buffer);
+        }
     }
 
     fn reset(&mut self) {}
@@ -275,6 +325,77 @@ mod tests {
         let out = run(FinishStage::new(LoudnessTarget::MatchInput), input);
         let after = integrated_lufs(&out).unwrap();
         assert!((after - before).abs() <= 0.3, "{before} -> {after}");
+    }
+
+    #[test]
+    fn presence_air_bypass_skips_eq_but_loudness_still_runs() {
+        let input = tone_buf(0.02, 5000.0, 4.0);
+
+        let baseline = run(FinishStage::new(LoudnessTarget::Podcast), input.clone());
+
+        let mut no_eq = FinishStage::new(LoudnessTarget::Podcast);
+        no_eq.set_eq(9.0, 9.0);
+        no_eq.set_presence_air_enabled(false);
+        let out = run(no_eq, input);
+
+        for (a, b) in out.channel(0).iter().zip(baseline.channel(0)) {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "presence/air bypass must skip EQ exactly"
+            );
+        }
+        let lufs = integrated_lufs(&out).expect("loudness");
+        assert!(
+            (lufs - (-16.0)).abs() <= 0.3,
+            "loudness must still run with presence/air bypassed: {lufs}"
+        );
+    }
+
+    #[test]
+    fn loudness_bypass_skips_normalization_and_limiter_but_eq_still_runs() {
+        let input = tone_buf(0.7, 5000.0, 4.0);
+        let before_lufs = integrated_lufs(&input).expect("input loudness");
+
+        let mut m = FinishStage::new(LoudnessTarget::Podcast);
+        m.set_eq(6.0, 0.0);
+        m.set_loudness_enabled(false);
+        let out = run(m, input);
+
+        let after_lufs = integrated_lufs(&out).expect("output loudness");
+        assert!(
+            (after_lufs - (-16.0)).abs() > 3.0,
+            "loudness bypass must not normalize to the target: {after_lufs}"
+        );
+        assert!(
+            after_lufs > before_lufs + 3.0,
+            "presence EQ must still run with loudness bypassed: {before_lufs} -> {after_lufs}"
+        );
+        let tp = true_peak_dbtp(&out);
+        assert!(
+            tp > -0.2,
+            "loudness bypass must also bypass the limiter ceiling, got {tp} dBTP"
+        );
+    }
+
+    #[test]
+    fn leveling_enable_is_tracked_but_audio_neutral_until_g9() {
+        let input = tone_buf(0.2, 1000.0, 1.0);
+        let mut on = FinishStage::new(LoudnessTarget::MatchInput);
+        on.set_loudness_enabled(false);
+        on.set_leveling_enabled(true);
+        let out_on = run(on, input.clone());
+
+        let mut off = FinishStage::new(LoudnessTarget::MatchInput);
+        off.set_loudness_enabled(false);
+        off.set_leveling_enabled(false);
+        let out_off = run(off, input);
+
+        for (a, b) in out_on.channel(0).iter().zip(out_off.channel(0)) {
+            assert!(
+                (a - b).abs() <= f32::EPSILON,
+                "leveling is state only until G9 lands DSP"
+            );
+        }
     }
 
     #[test]

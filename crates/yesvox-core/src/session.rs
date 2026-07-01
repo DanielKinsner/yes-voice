@@ -99,6 +99,36 @@ impl Default for Card {
     }
 }
 
+/// Independent enable overrides for the Standard finish cards that share
+/// `Stage::Finish` underneath.
+#[derive(Clone, Copy, Default)]
+struct FinishCards {
+    presence_air_enabled: Option<bool>,
+    leveling_enabled: Option<bool>,
+    loudness_enabled: Option<bool>,
+}
+
+impl FinishCards {
+    fn set_enabled(&mut self, card: CardId, on: bool) -> bool {
+        match card {
+            CardId::PresenceAir => self.presence_air_enabled = Some(on),
+            CardId::Leveling => self.leveling_enabled = Some(on),
+            CardId::Loudness => self.loudness_enabled = Some(on),
+            _ => return false,
+        }
+        true
+    }
+
+    fn enabled_override(&self, card: CardId) -> Option<bool> {
+        match card {
+            CardId::PresenceAir => self.presence_air_enabled,
+            CardId::Leveling => self.leveling_enabled,
+            CardId::Loudness => self.loudness_enabled,
+            _ => None,
+        }
+    }
+}
+
 /// A stateful vocal-editing session.
 pub struct Session {
     settings: Settings,
@@ -107,6 +137,7 @@ pub struct Session {
     report: Option<AnalysisReport>,
     output: Option<AudioBuffer>,
     cards: [Card; STAGE_COUNT],
+    finish_cards: FinishCards,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -150,6 +181,7 @@ impl Session {
             report: None,
             output: None,
             cards: [Card::default(); STAGE_COUNT],
+            finish_cards: FinishCards::default(),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -213,6 +245,10 @@ impl Session {
     /// or more engine stages — e.g. "De-click / De-pop" toggles both `DeClick` and
     /// `DePop` — so the agent and the egui toggle drive the same single action.
     pub fn set_card_enabled(&mut self, card: CardId, on: bool) {
+        if self.finish_cards.set_enabled(card, on) {
+            self.output = None;
+            return;
+        }
         for &stage in card.stages() {
             self.set_stage_enabled(stage, on);
         }
@@ -221,7 +257,53 @@ impl Session {
     /// Whether a UI card is effectively on — true iff every stage it governs
     /// resolves to enabled.
     pub fn card_enabled(&self, card: CardId) -> bool {
+        if let Some(on) = self.resolve_finish_card_enabled(card) {
+            return on;
+        }
         card.stages().iter().all(|&s| self.resolve_stage_enabled(s))
+    }
+
+    fn resolve_finish_card_enabled(&self, card: CardId) -> Option<bool> {
+        let sub = self.finish_cards.enabled_override(card)?;
+        Some(self.resolve_stage_enabled(Stage::Finish) && sub)
+    }
+
+    /// Enable or bypass the Presence/Air card without affecting Leveling or
+    /// Loudness. This is the Session-level surface behind the Standard card.
+    pub fn set_presence_air_enabled(&mut self, on: bool) {
+        self.finish_cards.presence_air_enabled = Some(on);
+        self.output = None;
+    }
+
+    /// Whether the Presence/Air card is effectively active.
+    pub fn presence_air_enabled(&self) -> bool {
+        self.resolve_finish_card_enabled(CardId::PresenceAir)
+            .unwrap_or_else(|| self.resolve_stage_enabled(Stage::Finish))
+    }
+
+    /// Enable or bypass the Leveling card. Audio remains neutral until G9 lands
+    /// the actual program leveler, but the user-visible state is tracked now.
+    pub fn set_leveling_enabled(&mut self, on: bool) {
+        self.finish_cards.leveling_enabled = Some(on);
+        self.output = None;
+    }
+
+    /// Whether the Leveling card is effectively active.
+    pub fn leveling_enabled(&self) -> bool {
+        self.resolve_finish_card_enabled(CardId::Leveling)
+            .unwrap_or_else(|| self.resolve_stage_enabled(Stage::Finish))
+    }
+
+    /// Enable or bypass loudness normalization and the true-peak limiter.
+    pub fn set_loudness_enabled(&mut self, on: bool) {
+        self.finish_cards.loudness_enabled = Some(on);
+        self.output = None;
+    }
+
+    /// Whether loudness normalization and the true-peak limiter are active.
+    pub fn loudness_enabled(&self) -> bool {
+        self.resolve_finish_card_enabled(CardId::Loudness)
+            .unwrap_or_else(|| self.resolve_stage_enabled(Stage::Finish))
     }
 
     /// Set the global dry→wet master (the "Flow Amount" macro), clamped `[0, 1]`.
@@ -350,6 +432,7 @@ impl Session {
     /// Polish Intensity) persist across preset changes.
     fn reset_cards(&mut self) {
         self.cards = [Card::default(); STAGE_COUNT];
+        self.finish_cards = FinishCards::default();
         self.loudness_override = None;
     }
 
@@ -534,6 +617,18 @@ impl Session {
         // over the preset's finish target; with no override this re-asserts the
         // preset's own target, so it is a no-op.
         built.chain.finish.set_target(self.loudness_target());
+        built
+            .chain
+            .finish
+            .set_presence_air_enabled(self.presence_air_enabled());
+        built
+            .chain
+            .finish
+            .set_leveling_enabled(self.leveling_enabled());
+        built
+            .chain
+            .finish
+            .set_loudness_enabled(self.loudness_enabled());
 
         // De-bleed refusal (plan §4.5): refuse a mix before processing.
         let verdict = built.chain.assess_bleed(input);
@@ -896,6 +991,74 @@ mod tests {
             (s.output_lufs().unwrap() - (-20.0)).abs() <= 0.5,
             "Custom(-20) → −20 LUFS"
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn finish_card_enables_are_independent_session_state() {
+        let mut s = Session::new();
+        assert!(s.presence_air_enabled());
+        assert!(s.leveling_enabled());
+        assert!(s.loudness_enabled());
+
+        s.set_card_enabled(CardId::PresenceAir, false);
+        assert!(!s.card_enabled(CardId::PresenceAir));
+        assert!(s.card_enabled(CardId::Leveling));
+        assert!(s.card_enabled(CardId::Loudness));
+        assert_eq!(
+            s.stage_enabled_override(Stage::Finish),
+            None,
+            "Presence/Air must not bypass the whole Finish stage"
+        );
+
+        s.set_leveling_enabled(false);
+        assert!(
+            !s.leveling_enabled(),
+            "Leveling state is tracked independently"
+        );
+        assert!(s.loudness_enabled());
+
+        s.set_loudness_enabled(false);
+        assert!(!s.loudness_enabled());
+        s.set_presence_air_enabled(true);
+        assert!(s.presence_air_enabled());
+        assert!(!s.leveling_enabled());
+        assert!(!s.loudness_enabled());
+
+        s.select_preset(Preset::NARRATION);
+        assert!(
+            s.presence_air_enabled(),
+            "preset changes reset finish card state"
+        );
+        assert!(s.leveling_enabled());
+        assert!(s.loudness_enabled());
+    }
+
+    #[test]
+    fn finish_card_enables_reach_the_rendered_finish_stage() {
+        let path = temp("finish-card-render");
+        quiet_tone_fixture(&path);
+
+        let mut no_presence = Session::new();
+        no_presence.open(&path).unwrap();
+        no_presence.set_card_enabled(CardId::PresenceAir, false);
+        no_presence.render().unwrap();
+        let no_presence_lufs = no_presence.output_lufs().unwrap();
+        assert!(
+            (no_presence_lufs - (-16.0)).abs() <= 0.6,
+            "Presence/Air bypass must leave loudness running: {no_presence_lufs}"
+        );
+
+        let mut no_loudness = Session::new();
+        no_loudness.open(&path).unwrap();
+        no_loudness.set_card_enabled(CardId::Loudness, false);
+        no_loudness.render().unwrap();
+        let no_loudness_lufs = no_loudness.output_lufs().unwrap();
+        assert!(
+            (no_loudness_lufs - (-16.0)).abs() > 2.0,
+            "Loudness bypass must reach render and skip normalization: {no_loudness_lufs}"
+        );
+
         let _ = std::fs::remove_file(&path);
     }
 
