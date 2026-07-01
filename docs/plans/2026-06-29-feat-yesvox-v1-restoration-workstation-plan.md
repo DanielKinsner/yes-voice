@@ -432,20 +432,18 @@ Singing quality is treated as a **release gate**, not a feature flag we hope pas
 |---|---|---|
 | F0 deviation, sustained voiced frames | CREPE/pyin sidecar (eval-only) | **<=3 cents** median, <=5 cents p95 |
 | Vibrato rate & depth | Hilbert demod on F0 contour, voiced segments >=300 ms | preserved **±10%** rate AND depth |
-| Formant F1/F2 drift | LPC (order 18 @ 48 k) on stable vowels | **<=5%** mean drift |
+| Spectral-envelope preservation | cosine similarity on dry voiced regions | **>=0.95** |
 | Audible warble | Frame-wise HNR (Praat-equivalent) | HNR drop **<=2 dB** vs input on voiced frames |
 | Vocal tail survival | Energy in -60..-30 dBFS decay region vs WPE-only baseline | **>=6 dB** above WPE truncation point |
-| Blind A/B preference | >=3 engineer ears, randomized, loudness-matched -23 LUFS-S, character+cleanup ballot | **>=66%** prefer processed over input |
 
-`cargo run -p yesvox-eval --bin singing_gate -- refset/singing/` emits `gate_report.json` + static HTML; CI artifact-uploads both. **One stem failing any quantitative row fails the gate.**
+`cargo test -p yesvox-core --test singing_gate` runs the synthetic sung-character fixtures in CI. **One fixture failing any quantitative row fails the gate.** Optional blind listening can inform calibration, but it is not a ship blocker and cannot replace the metric gate.
 
-### 6.3 Fallback flow (gate red)
+### 6.3 Regression flow (gate red)
 
-1. Flip build-time feature `--no-default-features --features voiceover_only`.
-2. **Hide the Singing toggle entirely** in Standard and Advanced - not greyed, not tooltipped, **not rendered**. Detection reports `voiceover` or `unknown -> voiceover-default`.
-3. Singing presets and (future) SRS integration remain compiled behind `cfg(feature = "singing_darklaunch")` for continued internal tuning against the same refset; no UI path reaches them.
-4. Public copy: **"v1 is voiceover; singing ships in v1.x."** No "coming soon" placeholder, no roadmap teaser in-app.
-5. **Settings-schema slot reserved now** (§5.8): `content_mode: enum { Voiceover, Singing }` with `Singing` accepted by the v1 build, and `singing: { preset, intensity, tail_preservation, ... }` block present and round-tripped so future singing refinements require **zero settings-file format break**.
+1. Treat the red gate as a mechanical regression in the v1 singing path.
+2. Fix the failing metric before claiming the slice done; do not substitute optional listening, hidden fallback behavior, or a Voiceover-only build.
+3. Keep the explicit Voiceover/Singing toggle and singing presets first-class in v1 once the gate is green.
+4. **Settings-schema slot remains stable** (§5.8): `content_mode: enum { Voiceover, Singing }` with `Singing` accepted by the v1 build, and `singing: { preset, intensity, tail_preservation, ... }` block present and round-tripped so future singing refinements require **zero settings-file format break**.
 
 ### 6.4 Broader evaluation protocol
 
