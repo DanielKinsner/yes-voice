@@ -9,12 +9,14 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::analysis::AnalysisReport;
 use crate::preset::Preset;
 use crate::session::Session;
 use crate::settings::Settings;
 use serde::{Deserialize, Serialize};
 
 const QUEUE_SCHEMA_VERSION: u32 = 1;
+const DETECTED_PRESET_CONFIDENCE: f32 = 0.70;
 
 /// The outcome of a queued render.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +63,38 @@ pub struct BatchSummary {
     pub failed: usize,
     /// Per-file failures from this run only.
     pub failures: Vec<BatchFailure>,
+}
+
+/// How a batch chooses the preset for each queued file.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BatchPresetMode {
+    /// Apply one explicit preset to every file in the queue.
+    Force(Preset),
+    /// Let each file's analysis choose its content-mode default when confidence
+    /// is high; otherwise use the explicit fallback preset.
+    DetectPerFile { fallback: Preset },
+}
+
+impl BatchPresetMode {
+    fn preset_for_report(self, report: &AnalysisReport) -> Preset {
+        match self {
+            BatchPresetMode::Force(preset) => preset,
+            BatchPresetMode::DetectPerFile { fallback } => {
+                if report.content.confidence >= DETECTED_PRESET_CONFIDENCE {
+                    Preset::default_for(report.content.mode)
+                } else {
+                    fallback
+                }
+            }
+        }
+    }
+
+    fn fallback_preset(self) -> Preset {
+        match self {
+            BatchPresetMode::Force(preset)
+            | BatchPresetMode::DetectPerFile { fallback: preset } => preset,
+        }
+    }
 }
 
 impl BatchSummary {
@@ -129,7 +163,7 @@ struct RenderLogEntry {
 /// A batch render queue applying one settings + preset across many files.
 pub struct RenderQueue {
     settings: Settings,
-    preset: Preset,
+    preset_mode: BatchPresetMode,
     paused: bool,
     items: Vec<QueueItem>,
 }
@@ -140,7 +174,19 @@ impl RenderQueue {
     pub fn new(settings: Settings, preset: Preset) -> Self {
         RenderQueue {
             settings,
-            preset,
+            preset_mode: BatchPresetMode::Force(preset),
+            paused: false,
+            items: Vec::new(),
+        }
+    }
+
+    /// A queue that lets each file's analysis choose the Voiceover/Singing
+    /// default preset when confidence is high, with an explicit fallback for
+    /// low-confidence files.
+    pub fn detect_per_file(settings: Settings, fallback: Preset) -> Self {
+        RenderQueue {
+            settings,
+            preset_mode: BatchPresetMode::DetectPerFile { fallback },
             paused: false,
             items: Vec::new(),
         }
@@ -168,6 +214,11 @@ impl RenderQueue {
     /// The queued items and their statuses.
     pub fn items(&self) -> &[QueueItem] {
         &self.items
+    }
+
+    /// The queue's batch preset-selection mode.
+    pub fn preset_mode(&self) -> BatchPresetMode {
+        self.preset_mode
     }
 
     /// Whether the queue is currently paused. A paused queue keeps accepting
@@ -299,7 +350,7 @@ impl RenderQueue {
             if !matches!(item.status, JobStatus::Pending) {
                 continue; // already processed (resume-safe)
             }
-            item.status = render_one(&self.settings, self.preset, &item.input, &item.output);
+            item.status = render_one(&self.settings, self.preset_mode, &item.input, &item.output);
             if let Some(file) = log.as_mut() {
                 append_render_log(file, index, item)?;
             }
@@ -328,37 +379,83 @@ impl RenderQueue {
 #[derive(Serialize, Deserialize)]
 struct PersistentQueue {
     schema_version: u32,
+    // Kept for backward compatibility with v1 queue.json files written before
+    // explicit batch preset modes existed.
     settings: Settings,
     preset: String,
+    #[serde(default)]
+    preset_mode: Option<PersistentPresetMode>,
     paused: bool,
     items: Vec<QueueItem>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "mode")]
+enum PersistentPresetMode {
+    Force { preset: String },
+    DetectPerFile { fallback_preset: String },
+}
+
 impl PersistentQueue {
     fn from_queue(queue: &RenderQueue) -> Self {
+        let fallback = queue.preset_mode.fallback_preset().name.to_owned();
         PersistentQueue {
             schema_version: QUEUE_SCHEMA_VERSION,
             settings: queue.settings.clone(),
-            preset: queue.preset.name.to_owned(),
+            preset: fallback.clone(),
+            preset_mode: Some(PersistentPresetMode::from_mode(queue.preset_mode)),
             paused: queue.paused,
             items: queue.items.clone(),
         }
     }
 
     fn into_queue(saved: PersistentQueue) -> Result<RenderQueue, QueueStateError> {
-        let preset = Preset::ALL
-            .iter()
-            .copied()
-            .find(|p| p.name == saved.preset)
-            .ok_or_else(|| QueueStateError::UnknownPreset(saved.preset.clone()))?;
+        let preset_mode = match saved.preset_mode {
+            Some(mode) => mode.into_mode()?,
+            None => BatchPresetMode::Force(preset_by_name(&saved.preset)?),
+        };
         Ok(RenderQueue {
             settings: saved.settings,
-            preset,
+            preset_mode,
             // Recovery must not render until the app/user explicitly resumes.
             paused: true,
             items: saved.items,
         })
     }
+}
+
+impl PersistentPresetMode {
+    fn from_mode(mode: BatchPresetMode) -> Self {
+        match mode {
+            BatchPresetMode::Force(preset) => PersistentPresetMode::Force {
+                preset: preset.name.to_owned(),
+            },
+            BatchPresetMode::DetectPerFile { fallback } => PersistentPresetMode::DetectPerFile {
+                fallback_preset: fallback.name.to_owned(),
+            },
+        }
+    }
+
+    fn into_mode(self) -> Result<BatchPresetMode, QueueStateError> {
+        Ok(match self {
+            PersistentPresetMode::Force { preset } => {
+                BatchPresetMode::Force(preset_by_name(&preset)?)
+            }
+            PersistentPresetMode::DetectPerFile { fallback_preset } => {
+                BatchPresetMode::DetectPerFile {
+                    fallback: preset_by_name(&fallback_preset)?,
+                }
+            }
+        })
+    }
+}
+
+fn preset_by_name(name: &str) -> Result<Preset, QueueStateError> {
+    Preset::ALL
+        .iter()
+        .copied()
+        .find(|p| p.name == name)
+        .ok_or_else(|| QueueStateError::UnknownPreset(name.to_owned()))
 }
 
 fn load_queue(path: &Path) -> Result<RenderQueue, QueueStateError> {
@@ -406,9 +503,20 @@ fn append_render_log(
 
 /// Render one file with the given configuration (a free fn so `run` can borrow
 /// `self.items` mutably without aliasing the config).
-fn render_one(settings: &Settings, preset: Preset, input: &Path, output: &Path) -> JobStatus {
-    let mut session = Session::with_config(settings.clone(), preset);
-    match session.process_file(input, output) {
+fn render_one(
+    settings: &Settings,
+    preset_mode: BatchPresetMode,
+    input: &Path,
+    output: &Path,
+) -> JobStatus {
+    let mut session = Session::with_config(settings.clone(), preset_mode.fallback_preset());
+    let result = (|| {
+        let report = *session.open(input)?;
+        session.select_preset(preset_mode.preset_for_report(&report));
+        session.render()?;
+        session.export(output)
+    })();
+    match result {
         Ok(path) => JobStatus::Done(path),
         Err(e) => JobStatus::Failed(e.to_string()),
     }
@@ -417,8 +525,10 @@ fn render_one(settings: &Settings, preset: Preset, input: &Path, output: &Path) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::{AudioBuffer, SampleEncoding};
+    use crate::analysis::{ContentGuess, HumEstimate};
+    use crate::audio::{AudioBuffer, ChannelLayout, SampleEncoding};
     use crate::io::write_wav;
+    use crate::settings::ContentMode;
     use std::f32::consts::PI;
 
     const SR: u32 = 48_000;
@@ -445,6 +555,65 @@ mod tests {
         let _ = std::fs::remove_file(&p);
         let _ = std::fs::remove_file(queue_backup_path(&p));
         p
+    }
+
+    fn report(mode: ContentMode, confidence: f32) -> AnalysisReport {
+        AnalysisReport {
+            channel_mode: ChannelLayout::Mono,
+            integrated_lufs: -20.0,
+            true_peak_dbtp: -3.0,
+            noise_floor_db: -65.0,
+            clip_sample_count: 0,
+            clip_fraction: 0.0,
+            click_rate_hz: 0.0,
+            hum: HumEstimate {
+                frequency: 0.0,
+                harmonic_count: 0,
+                strength_db: -120.0,
+            },
+            reverb_time_s: 0.0,
+            content: ContentGuess { mode, confidence },
+            residual_nonvocal: 0.0,
+            resampled_for_batch: false,
+        }
+    }
+
+    #[test]
+    fn forced_batch_mode_uses_the_selected_preset_for_every_report() {
+        let mode = BatchPresetMode::Force(Preset::NARRATION);
+
+        assert_eq!(
+            mode.preset_for_report(&report(ContentMode::Singing, 0.99)),
+            Preset::NARRATION
+        );
+    }
+
+    #[test]
+    fn detected_batch_mode_uses_high_confidence_file_content() {
+        let mode = BatchPresetMode::DetectPerFile {
+            fallback: Preset::PODCAST,
+        };
+
+        assert_eq!(
+            mode.preset_for_report(&report(ContentMode::Singing, 0.85)),
+            Preset::LEAD_VOCAL
+        );
+        assert_eq!(
+            mode.preset_for_report(&report(ContentMode::Voiceover, 0.85)),
+            Preset::PODCAST
+        );
+    }
+
+    #[test]
+    fn detected_batch_mode_falls_back_when_confidence_is_low() {
+        let mode = BatchPresetMode::DetectPerFile {
+            fallback: Preset::NATURAL_VOCAL,
+        };
+
+        assert_eq!(
+            mode.preset_for_report(&report(ContentMode::Voiceover, 0.69)),
+            Preset::NATURAL_VOCAL
+        );
     }
 
     #[test]
@@ -568,6 +737,42 @@ mod tests {
             JobStatus::Done(PathBuf::from("lead-yesvox.wav"))
         );
         assert!(matches!(recovered.items()[1].status, JobStatus::Failed(_)));
+    }
+
+    #[test]
+    fn queue_json_round_trips_detected_batch_mode() {
+        let mut q = RenderQueue::detect_per_file(Settings::default(), Preset::NARRATION);
+        q.enqueue("first.wav", "first-yesvox.wav");
+
+        let recovered = RenderQueue::from_json(&q.to_json().unwrap()).unwrap();
+
+        assert_eq!(
+            recovered.preset_mode(),
+            BatchPresetMode::DetectPerFile {
+                fallback: Preset::NARRATION
+            }
+        );
+        assert!(recovered.is_paused(), "crash recovery must land paused");
+        assert_eq!(recovered.items()[0].input, PathBuf::from("first.wav"));
+    }
+
+    #[test]
+    fn legacy_queue_json_without_preset_mode_recovers_as_forced_preset() {
+        let json = r#"{
+          "schema_version": 1,
+          "settings": { "schema_version": 1 },
+          "preset": "Lead Vocal",
+          "paused": false,
+          "items": []
+        }"#;
+
+        let recovered = RenderQueue::from_json(json).unwrap();
+
+        assert_eq!(
+            recovered.preset_mode(),
+            BatchPresetMode::Force(Preset::LEAD_VOCAL)
+        );
+        assert!(recovered.is_paused(), "crash recovery must land paused");
     }
 
     #[test]
