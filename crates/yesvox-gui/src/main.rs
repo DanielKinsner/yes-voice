@@ -10,7 +10,9 @@
 use std::{fmt::Debug, hash::Hash, path::PathBuf};
 
 use eframe::egui;
-use yesvox_core::{CardId, ContentMode, LoudnessTarget, OutputFormat, Preset, Session};
+use yesvox_core::{
+    AudioBuffer, CardId, ContentMode, LoudnessTarget, OutputFormat, Preset, Session,
+};
 
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
 const MIN_VIEWPORT_SIZE: [f32; 2] = [1280.0, 720.0];
@@ -140,6 +142,7 @@ struct YesVoxApp {
     tab: Tab,
     ab: AbView,
     path_input: String,
+    source_path: Option<PathBuf>,
     source_name: String,
     name_input: String,
     status: String,
@@ -181,9 +184,10 @@ impl YesVoxApp {
             tab: Tab::Restore,
             ab: AbView::Processed,
             path_input: String::new(),
+            source_path: None,
             source_name: "Lead Vocal.wav".to_owned(),
             name_input: "Lead Vocal_YesVox".to_owned(),
-            status: "Analyzing audio".to_owned(),
+            status: "Ready - import a vocal".to_owned(),
             reblend_amount: 0.25,
             volume_match: false,
             preview_lufs: false,
@@ -192,21 +196,37 @@ impl YesVoxApp {
     }
 
     fn import(&mut self) {
-        let path = PathBuf::from(self.path_input.trim());
-        if path.as_os_str().is_empty() {
-            self.status =
-                "Native file picker pending; drag/path import is not wired in this visual pass."
-                    .to_owned();
+        let path = rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "wave", "flac"])
+            .set_title("Import Vocal")
+            .pick_file()
+            .or_else(|| {
+                let typed = self.path_input.trim();
+                (!typed.is_empty()).then(|| PathBuf::from(typed))
+            });
+        let Some(path) = path else {
+            self.status = "Import cancelled".to_owned();
             return;
-        }
+        };
+        self.open_path(path);
+    }
+
+    fn open_path(&mut self, path: PathBuf) {
         match self.session.open(&path) {
             Ok(_) => {
+                self.source_path = Some(path.clone());
+                self.path_input = path.display().to_string();
                 self.source_name = path
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("Vocal.wav")
                     .to_owned();
-                self.name_input = self.session.output_name().unwrap_or("vocal").to_owned();
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("vocal");
+                self.name_input = format!("{stem}_YesVox");
+                self.session.set_output_name(&self.name_input);
+                if let Some(parent) = path.parent() {
+                    self.session.set_output_location(parent);
+                }
                 self.render_now();
             }
             Err(e) => self.status = format!("Import failed: {e}"),
@@ -221,6 +241,70 @@ impl YesVoxApp {
                 self.status = format!("Rendered - OUT {lufs:.1} LUFS");
             }
             Err(e) => self.status = format!("Render failed: {e}"),
+        }
+    }
+
+    fn audible_buffer(&self) -> Option<AudioBuffer> {
+        match self.ab {
+            AbView::Original if self.volume_match => self.session.ab_matched_input(),
+            AbView::Original => self.session.input().cloned(),
+            AbView::Processed => self
+                .session
+                .reblend(self.reblend_amount)
+                .or_else(|| self.session.output().cloned())
+                .or_else(|| self.session.input().cloned()),
+        }
+    }
+
+    fn input_duration(&self) -> Option<f32> {
+        let input = self.session.input()?;
+        Some(input.frames() as f32 / input.sample_rate().max(1) as f32)
+    }
+
+    fn duration_label(&self) -> String {
+        self.input_duration()
+            .map(format_duration)
+            .unwrap_or_else(|| "--:--".to_owned())
+    }
+
+    fn source_format_label(&self) -> String {
+        self.source_path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_uppercase())
+            .unwrap_or_else(|| "WAV".to_owned())
+    }
+
+    fn sample_rate_label(&self) -> String {
+        self.session
+            .input()
+            .map(|b| format!("{:.1} kHz", b.sample_rate() as f32 / 1000.0))
+            .unwrap_or_else(|| "-- kHz".to_owned())
+    }
+
+    fn bit_depth_label(&self) -> String {
+        self.session
+            .input()
+            .map(|b| format!("{}-bit", b.bits_per_sample()))
+            .unwrap_or_else(|| "--bit".to_owned())
+    }
+
+    fn channel_label(&self) -> &'static str {
+        match self.session.input().map(AudioBuffer::channel_count) {
+            Some(1) => "Mono",
+            Some(2) => "Stereo",
+            _ => "--",
+        }
+    }
+
+    fn processing_label(&self) -> &'static str {
+        if self.session.output().is_some() {
+            "Rendered"
+        } else if self.session.input().is_some() {
+            "Loaded"
+        } else {
+            "Ready"
         }
     }
 }
@@ -330,7 +414,15 @@ impl YesVoxApp {
     ) {
         paint_panel(painter, c, l.left, 8, alpha(PANEL, 225), BORDER_DIM);
         self.section_label(painter, c, 28.0, 94.0, "VOCAL ORDER");
-        self.small_text(painter, c, 28.0, 118.0, "1 vocal - 3:28", TEXT_MUTED);
+        let duration = self.duration_label();
+        self.small_text(
+            painter,
+            c,
+            28.0,
+            118.0,
+            &format!("1 vocal - {duration}"),
+            TEXT_MUTED,
+        );
         paint_panel(
             painter,
             c,
@@ -341,16 +433,18 @@ impl YesVoxApp {
         );
         self.body_text(painter, c, 38.0, 171.0, "01", CYAN);
         self.body_text(painter, c, 72.0, 161.0, &self.source_name, TEXT);
-        self.small_text(painter, c, 72.0, 184.0, "3:28", CYAN);
+        self.small_text(painter, c, 72.0, 184.0, &duration, CYAN);
         self.draw_mini_wave(painter, c, rect(224.0, 162.0, 28.0, 22.0));
-        self.outline_button(
+        if self.outline_button(
             ui,
             painter,
             c,
             rect(18.0, 220.0, 256.0, 48.0),
             "+   Add Vocal",
             "add_vocal",
-        );
+        ) {
+            self.import();
+        }
 
         painter.line_segment(
             [c.pos(28.0, 350.0), c.pos(264.0, 350.0)],
@@ -437,9 +531,23 @@ impl YesVoxApp {
             alpha(PANEL_2, 220),
             BORDER_DIM,
         );
-        self.small_text(painter, c, 34.0, 918.0, "Analyzing audio", CYAN);
-        self.small_text(painter, c, 226.0, 918.0, "14%", CYAN);
-        self.progress_bar(painter, c, rect(34.0, 934.0, 218.0, 6.0), 0.14);
+        self.small_text(painter, c, 34.0, 918.0, self.processing_label(), CYAN);
+        let progress = if self.session.output().is_some() {
+            1.0
+        } else if self.session.input().is_some() {
+            0.55
+        } else {
+            0.0
+        };
+        self.small_text(
+            painter,
+            c,
+            218.0,
+            918.0,
+            &format!("{:.0}%", progress * 100.0),
+            CYAN,
+        );
+        self.progress_bar(painter, c, rect(34.0, 934.0, 218.0, 6.0), progress);
         if self.gradient_button(
             ui,
             painter,
@@ -463,15 +571,36 @@ impl YesVoxApp {
         paint_panel(painter, c, l.hero, 8, alpha(PANEL, 210), BORDER_DIM);
         let source = self.source_name.to_uppercase();
         self.title_text(painter, c, 322.0, 106.0, &source);
-        self.small_text(painter, c, 322.0, 132.0, "WAV", TEXT_MUTED);
+        self.small_text(
+            painter,
+            c,
+            322.0,
+            132.0,
+            &self.source_format_label(),
+            TEXT_MUTED,
+        );
         self.small_text(painter, c, 370.0, 132.0, "|", TEXT_DIM);
-        self.small_text(painter, c, 392.0, 132.0, "48 kHz", TEXT_MUTED);
+        self.small_text(
+            painter,
+            c,
+            392.0,
+            132.0,
+            &self.sample_rate_label(),
+            TEXT_MUTED,
+        );
         self.small_text(painter, c, 456.0, 132.0, "|", TEXT_DIM);
-        self.small_text(painter, c, 478.0, 132.0, "24-bit", TEXT_MUTED);
+        self.small_text(
+            painter,
+            c,
+            478.0,
+            132.0,
+            &self.bit_depth_label(),
+            TEXT_MUTED,
+        );
         self.small_text(painter, c, 538.0, 132.0, "|", TEXT_DIM);
-        self.small_text(painter, c, 560.0, 132.0, "Mono", TEXT_MUTED);
+        self.small_text(painter, c, 560.0, 132.0, self.channel_label(), TEXT_MUTED);
         self.small_text(painter, c, 610.0, 132.0, "|", TEXT_DIM);
-        self.small_text(painter, c, 632.0, 132.0, "3:28", TEXT_MUTED);
+        self.small_text(painter, c, 632.0, 132.0, &self.duration_label(), TEXT_MUTED);
 
         self.small_text(painter, c, 782.0, 116.0, "FLOW AMOUNT", TEXT_MUTED);
         let mut flow = self.session.flow_amount();
@@ -810,7 +939,7 @@ impl YesVoxApp {
             1608.0,
             498.0,
             "Sample Rate",
-            "48.0 kHz",
+            &self.sample_rate_label(),
             "sample_rate_row",
         );
         self.field_row(
@@ -820,7 +949,7 @@ impl YesVoxApp {
             1608.0,
             546.0,
             "Bit Depth",
-            "24-bit",
+            &self.bit_depth_label(),
             "bit_depth_row",
         );
         self.field_row(
@@ -923,17 +1052,61 @@ impl YesVoxApp {
     fn draw_status_bar(&self, painter: &egui::Painter, c: CanvasMap, l: ReferenceLayout) {
         paint_panel(painter, c, l.status, 0, alpha(PANEL, 245), BORDER_DIM);
         painter.circle_filled(c.pos(18.0, 1062.0), c.v(5.0), BLUE);
-        self.small_text(painter, c, 34.0, 1066.0, "Analyzing", TEXT_MUTED);
+        self.small_text(
+            painter,
+            c,
+            34.0,
+            1066.0,
+            self.processing_label(),
+            TEXT_MUTED,
+        );
         painter.circle_filled(c.pos(116.0, 1062.0), c.v(5.0), TEXT_DIM);
-        self.small_text(painter, c, 132.0, 1066.0, "Quality -", TEXT_MUTED);
-        self.small_text(painter, c, 832.0, 1066.0, "LIVE PEAK  -", TEXT_MUTED);
-        self.small_text(painter, c, 950.0, 1066.0, "LIVE LUFS  -", TEXT_MUTED);
-        self.small_text(painter, c, 1662.0, 1066.0, "PROCESSING", TEXT_DIM);
+        self.small_text(
+            painter,
+            c,
+            132.0,
+            1066.0,
+            &format!("Quality {:?}", self.session.settings().quality_mode),
+            TEXT_MUTED,
+        );
+        let audible = self.audible_buffer();
+        let peak = audible
+            .as_ref()
+            .map(|b| yesvox_core::monitor::channel_peak_db(b, 0));
+        let lufs = match self.ab {
+            AbView::Original if self.volume_match => audible
+                .as_ref()
+                .and_then(yesvox_core::loudness::integrated_lufs),
+            AbView::Original => self.session.input_lufs(),
+            AbView::Processed => self
+                .session
+                .reblend(self.reblend_amount)
+                .as_ref()
+                .and_then(yesvox_core::loudness::integrated_lufs)
+                .or_else(|| self.session.output_lufs()),
+        };
+        self.small_text(
+            painter,
+            c,
+            832.0,
+            1066.0,
+            &format!("LIVE PEAK  {}", db_label(peak)),
+            TEXT_MUTED,
+        );
+        self.small_text(
+            painter,
+            c,
+            950.0,
+            1066.0,
+            &format!("LIVE LUFS  {}", lufs_label(lufs)),
+            TEXT_MUTED,
+        );
+        self.small_text(painter, c, 1662.0, 1066.0, &self.status, TEXT_DIM);
         self.badge(
             painter,
             c,
             rect(1760.0, 1049.0, 142.0, 24.0),
-            "ANALYZING AUDIO",
+            &self.processing_label().to_ascii_uppercase(),
             true,
         );
     }
@@ -1205,7 +1378,14 @@ impl YesVoxApp {
             c.pos(360.0, 384.0),
         ];
         painter.add(egui::Shape::convex_polygon(tri, TEXT, egui::Stroke::NONE));
-        self.body_text(painter, c, 396.0, 390.0, "0:00 / 3:28", TEXT);
+        self.body_text(
+            painter,
+            c,
+            396.0,
+            390.0,
+            &format!("0:00 / {}", self.duration_label()),
+            TEXT,
+        );
         self.outline_button(
             ui,
             painter,
@@ -1214,9 +1394,23 @@ impl YesVoxApp {
             "Loop",
             "transport_loop",
         );
-        self.body_text(painter, c, 756.0, 385.0, "Analyzing audio", TEXT);
-        self.body_text(painter, c, 884.0, 385.0, "14%", TEXT);
-        self.progress_bar(painter, c, rect(712.0, 398.0, 350.0, 6.0), 0.14);
+        self.body_text(painter, c, 756.0, 385.0, self.processing_label(), TEXT);
+        let progress = if self.session.output().is_some() {
+            1.0
+        } else if self.session.input().is_some() {
+            0.55
+        } else {
+            0.0
+        };
+        self.body_text(
+            painter,
+            c,
+            884.0,
+            385.0,
+            &format!("{:.0}%", progress * 100.0),
+            TEXT,
+        );
+        self.progress_bar(painter, c, rect(712.0, 398.0, 350.0, 6.0), progress);
         if self.checkbox(
             ui,
             painter,
@@ -1247,8 +1441,8 @@ impl YesVoxApp {
         let height = sr.height() * 0.42;
         let buckets = sr.width().round().max(1.0) as usize;
         let peaks = self
-            .session
-            .input()
+            .audible_buffer()
+            .as_ref()
             .map(|b| yesvox_core::monitor::waveform_peaks(b, 0, buckets));
         let selection = rect(r.left(), r.top(), r.width() * 0.20, r.height());
         paint_h_gradient(
@@ -1286,13 +1480,14 @@ impl YesVoxApp {
     }
 
     fn draw_time_labels(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+        let duration = self.input_duration().unwrap_or(208.0);
         self.small_text(painter, c, r.left(), r.bottom() + 26.0, "0:00", TEXT_MUTED);
         self.small_text(
             painter,
             c,
             r.left() + r.width() * 0.32,
             r.bottom() + 26.0,
-            "1:00",
+            &format_duration(duration * 0.32),
             TEXT_MUTED,
         );
         self.small_text(
@@ -1300,7 +1495,7 @@ impl YesVoxApp {
             c,
             r.left() + r.width() * 0.61,
             r.bottom() + 26.0,
-            "2:00",
+            &format_duration(duration * 0.61),
             TEXT_MUTED,
         );
         self.small_text(
@@ -1308,7 +1503,7 @@ impl YesVoxApp {
             c,
             r.right() - 36.0,
             r.bottom() + 26.0,
-            "3:28",
+            &format_duration(duration),
             TEXT_MUTED,
         );
     }
@@ -1325,7 +1520,7 @@ impl YesVoxApp {
             c,
             r.left() + 18.0,
             r.top() + 58.0,
-            "-7.8 LUFS",
+            &lufs_label(self.session.input_lufs()),
             TEXT,
         );
         self.body_text(
@@ -1333,32 +1528,34 @@ impl YesVoxApp {
             c,
             r.left() + 94.0,
             r.top() + 58.0,
-            "-10.1 LUFS",
+            &lufs_label(self.session.output_lufs()),
             TEXT,
         );
+        let input = self.session.input();
+        let output = self.session.output();
         self.vertical_meter(
             painter,
             c,
             rect(r.left() + 28.0, r.top() + 72.0, 11.0, 88.0),
-            0.72,
+            meter_value(input, 0),
         );
         self.vertical_meter(
             painter,
             c,
             rect(r.left() + 46.0, r.top() + 72.0, 11.0, 88.0),
-            0.66,
+            meter_value(input, 1),
         );
         self.vertical_meter(
             painter,
             c,
             rect(r.left() + 104.0, r.top() + 72.0, 11.0, 88.0),
-            0.64,
+            meter_value(output, 0),
         );
         self.vertical_meter(
             painter,
             c,
             rect(r.left() + 122.0, r.top() + 72.0, 11.0, 88.0),
-            0.58,
+            meter_value(output, 1),
         );
         for (i, label) in ["0", "-6", "-12", "-18", "-24", "-30", "-36", "-48"]
             .iter()
@@ -1440,7 +1637,7 @@ impl YesVoxApp {
             TEXT_MUTED,
         );
         let spec = rect(r.left() + 20.0, r.top() + 50.0, 560.0, 72.0);
-        self.draw_spectrum(painter, c, spec);
+        self.draw_spectrum(painter, c, spec, self.session.difference().as_ref());
         for (x, label) in [
             (0.0, "20"),
             (64.0, "50"),
@@ -2103,13 +2300,26 @@ impl YesVoxApp {
         paint_v_gradient(painter, c.rect(fill), AMBER, BLUE, 20);
     }
 
-    fn draw_spectrum(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+    fn draw_spectrum(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        difference: Option<&AudioBuffer>,
+    ) {
         paint_panel(painter, c, r, 4, FIELD, BORDER_DIM);
         let cols = r.width().round() as usize;
+        let peaks = difference.map(|b| yesvox_core::monitor::waveform_peaks(b, 0, cols.max(1)));
         for i in (0..cols).step_by(2) {
             let t = i as f32 / cols.max(1) as f32;
-            let h = (0.12 + (t * 31.0).sin().abs() * 0.50 + (t * 113.0).cos().abs() * 0.28)
-                * r.height();
+            let h = peaks
+                .as_ref()
+                .and_then(|p| p.get(i).copied())
+                .map(|(lo, hi)| (lo.abs().max(hi.abs()).clamp(0.02, 1.0)) * r.height())
+                .unwrap_or_else(|| {
+                    (0.12 + (t * 31.0).sin().abs() * 0.50 + (t * 113.0).cos().abs() * 0.28)
+                        * r.height()
+                });
             let color = if t < 0.5 {
                 lerp_color(AMBER, PURPLE, t * 2.0)
             } else {
@@ -2418,6 +2628,34 @@ fn loudness_label(t: LoudnessTarget) -> String {
         LoudnessTarget::PeakNormalize => "Peak norm".to_owned(),
         LoudnessTarget::Custom(v) => format!("{v:.1} LUFS"),
     }
+}
+
+fn format_duration(seconds: f32) -> String {
+    let total = seconds.max(0.0).round() as u32;
+    format!("{}:{:02}", total / 60, total % 60)
+}
+
+fn lufs_label(value: Option<f32>) -> String {
+    value
+        .map(|v| format!("{v:.1} LUFS"))
+        .unwrap_or_else(|| "-- LUFS".to_owned())
+}
+
+fn db_label(value: Option<f32>) -> String {
+    value
+        .map(|v| format!("{v:.1} dB"))
+        .unwrap_or_else(|| "-- dB".to_owned())
+}
+
+fn meter_value(buffer: Option<&AudioBuffer>, ch: usize) -> f32 {
+    let Some(buffer) = buffer else {
+        return 0.0;
+    };
+    if ch >= buffer.channel_count() {
+        return 0.0;
+    }
+    let peak = yesvox_core::monitor::channel_peak_db(buffer, ch);
+    ((peak + 48.0) / 48.0).clamp(0.0, 1.0)
 }
 
 fn install_theme(ctx: &egui::Context) {
