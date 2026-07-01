@@ -82,6 +82,40 @@ impl OutputFormat {
     }
 }
 
+/// The deterministic Smart Assist recommendation for one Standard rack card.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmartAssistCard {
+    /// The card Smart Assist configures.
+    pub card: CardId,
+    /// Whether Smart Assist recommends the card should be active.
+    pub enabled: bool,
+    /// The recommended card amount, `[0, 1]`.
+    pub amount: f32,
+}
+
+/// Smart Assist's complete analysis-to-Standard-view recommendation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SmartAssistPlan {
+    /// Card recommendations in [`CardId::ALL`] display order.
+    pub cards: [SmartAssistCard; CardId::ALL.len()],
+    /// The Restoration Focus radial position, `[0, 1]`.
+    pub restoration_focus: f32,
+    /// The Polish Intensity radial position, `[0, 1]`.
+    pub polish_intensity: f32,
+}
+
+fn scale01(value: f32, low: f32, high: f32) -> f32 {
+    ((value - low) / (high - low)).clamp(0.0, 1.0)
+}
+
+fn amount_from_score(score: f32, min: f32, max: f32) -> f32 {
+    if score <= 0.0 {
+        0.0
+    } else {
+        min + (max - min) * score.clamp(0.0, 1.0)
+    }
+}
+
 /// A per-rack-card override layered over the preset's defaults: an optional
 /// enable (None = use the preset's default) and a wet/dry mix.
 #[derive(Clone, Copy)]
@@ -683,6 +717,148 @@ impl Session {
         self.report.map(|r| r.content)
     }
 
+    /// Build the deterministic Smart Assist recommendation for an analysis
+    /// report under the current user-authoritative content mode. This is a pure
+    /// mapping: no cloud, no model call, and no hidden mode flip.
+    pub fn smart_assist_plan(report: &AnalysisReport, mode: ContentMode) -> SmartAssistPlan {
+        let noise = scale01(report.noise_floor_db, -70.0, -35.0);
+        let reverb_raw = scale01(report.reverb_time_s, 0.12, 1.10);
+        let click = scale01(report.click_rate_hz, 0.20, 8.0);
+        let mouth_click = scale01(report.click_rate_hz, 2.0, 14.0);
+        let hum = if report.hum.frequency > 0.0 {
+            scale01(report.hum.strength_db, -38.0, -8.0)
+        } else {
+            0.0
+        };
+        let bleed = scale01(report.residual_nonvocal, 0.04, 0.35);
+        let clipped = scale01(report.clip_fraction, 0.0005, 0.05);
+        let defect = noise
+            .max(reverb_raw)
+            .max(click)
+            .max(hum)
+            .max(bleed)
+            .max(clipped);
+
+        let singing = mode == ContentMode::Singing;
+        let reverb = if singing {
+            (reverb_raw * 0.55).min(0.45)
+        } else {
+            reverb_raw
+        };
+        let deess = if singing {
+            0.28 + 0.22 * click.max(noise * 0.35)
+        } else {
+            0.35 + 0.30 * click.max(noise * 0.40)
+        }
+        .clamp(0.0, 0.75);
+        let breath = if singing {
+            0.0
+        } else {
+            0.25 + 0.35 * noise.max(click * 0.5)
+        }
+        .clamp(0.0, 0.75);
+        let presence = if singing {
+            0.30 + 0.20 * (1.0 - noise).max(0.0)
+        } else {
+            0.35 + 0.25 * (1.0 - noise).max(0.0)
+        }
+        .clamp(0.0, 0.65);
+        let leveling = scale01((-18.0 - report.integrated_lufs).abs(), 1.0, 12.0);
+
+        let restoration_focus = if defect < 0.22 {
+            1.0 / 6.0
+        } else if defect < 0.68 {
+            0.5
+        } else {
+            5.0 / 6.0
+        };
+        let polish_intensity = if singing {
+            0.38 + 0.17 * defect.min(1.0)
+        } else {
+            0.45 + 0.25 * defect.min(1.0)
+        }
+        .clamp(0.0, 1.0);
+
+        SmartAssistPlan {
+            cards: [
+                SmartAssistCard {
+                    card: CardId::Denoise,
+                    enabled: noise > 0.08,
+                    amount: amount_from_score(noise, 0.20, 0.90),
+                },
+                SmartAssistCard {
+                    card: CardId::DeReverb,
+                    enabled: if singing {
+                        report.reverb_time_s >= 0.55
+                    } else {
+                        reverb_raw > 0.08
+                    },
+                    amount: amount_from_score(reverb, 0.18, if singing { 0.45 } else { 0.85 }),
+                },
+                SmartAssistCard {
+                    card: CardId::DeClickDePop,
+                    enabled: click > 0.0 || clipped > 0.0,
+                    amount: amount_from_score(click.max(clipped * 0.60), 0.25, 0.90),
+                },
+                SmartAssistCard {
+                    card: CardId::MouthClicks,
+                    enabled: mouth_click > 0.0,
+                    amount: amount_from_score(mouth_click, 0.20, 0.75),
+                },
+                SmartAssistCard {
+                    card: CardId::DeHum,
+                    enabled: hum > 0.0,
+                    amount: amount_from_score(hum, 0.25, 0.85),
+                },
+                SmartAssistCard {
+                    card: CardId::DeEss,
+                    enabled: true,
+                    amount: deess,
+                },
+                SmartAssistCard {
+                    card: CardId::Breath,
+                    enabled: !singing,
+                    amount: breath,
+                },
+                SmartAssistCard {
+                    card: CardId::PresenceAir,
+                    enabled: true,
+                    amount: presence,
+                },
+                SmartAssistCard {
+                    card: CardId::Leveling,
+                    enabled: true,
+                    amount: amount_from_score(leveling, 0.30, 0.80),
+                },
+                SmartAssistCard {
+                    card: CardId::Loudness,
+                    enabled: true,
+                    amount: 1.0,
+                },
+            ],
+            restoration_focus,
+            polish_intensity,
+        }
+    }
+
+    /// Analyze → configure the Standard-view cards from the current report. The
+    /// Voiceover/Singing toggle remains authoritative; Smart Assist uses it for
+    /// conservative singing settings but never changes it behind the user's back.
+    pub fn apply_smart_assist(&mut self) -> Result<SmartAssistPlan, SessionError> {
+        let report = *self.report.as_ref().ok_or(SessionError::NotLoaded)?;
+        let plan = Self::smart_assist_plan(&report, self.settings.content_mode);
+        self.set_restoration_focus(plan.restoration_focus);
+        self.set_polish_intensity(plan.polish_intensity);
+        for rec in plan.cards {
+            self.set_card_enabled(rec.card, rec.enabled);
+            if rec.card != CardId::Loudness {
+                self.set_card_amount(rec.card, rec.amount);
+            }
+        }
+        self.output = None;
+        Ok(plan)
+    }
+
     /// Set the content mode (the Voiceover/Singing toggle). Re-selects the default
     /// preset for the new mode and invalidates the last render.
     pub fn set_content_mode(&mut self, mode: ContentMode) {
@@ -967,6 +1143,35 @@ mod tests {
         p
     }
 
+    fn report(
+        noise_floor_db: f32,
+        reverb_time_s: f32,
+        click_rate_hz: f32,
+        hum_strength_db: f32,
+        residual_nonvocal: f32,
+        mode: ContentMode,
+        confidence: f32,
+    ) -> AnalysisReport {
+        AnalysisReport {
+            channel_mode: crate::audio::ChannelLayout::Mono,
+            integrated_lufs: -20.0,
+            true_peak_dbtp: -3.0,
+            noise_floor_db,
+            clip_sample_count: 0,
+            clip_fraction: 0.0,
+            click_rate_hz,
+            hum: crate::analysis::HumEstimate {
+                frequency: if hum_strength_db > -120.0 { 60.0 } else { 0.0 },
+                harmonic_count: if hum_strength_db > -120.0 { 2 } else { 0 },
+                strength_db: hum_strength_db,
+            },
+            reverb_time_s,
+            content: ContentGuess { mode, confidence },
+            residual_nonvocal,
+            resampled_for_batch: false,
+        }
+    }
+
     #[test]
     fn render_applies_the_selected_preset_not_the_mode_default() {
         // Regression for the preset-application defect: render() must build the
@@ -999,6 +1204,120 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn smart_assist_maps_more_defects_to_more_restoration() {
+        let clean = report(-78.0, 0.03, 0.0, -120.0, 0.01, ContentMode::Voiceover, 0.9);
+        let damaged = report(-38.0, 0.90, 9.0, -10.0, 0.30, ContentMode::Voiceover, 0.9);
+
+        let clean_plan = Session::smart_assist_plan(&clean, ContentMode::Voiceover);
+        let damaged_plan = Session::smart_assist_plan(&damaged, ContentMode::Voiceover);
+
+        let amount = |plan: &SmartAssistPlan, card| {
+            plan.cards
+                .iter()
+                .find(|rec| rec.card == card)
+                .expect("card")
+                .amount
+        };
+        let enabled = |plan: &SmartAssistPlan, card| {
+            plan.cards
+                .iter()
+                .find(|rec| rec.card == card)
+                .expect("card")
+                .enabled
+        };
+
+        assert!(!enabled(&clean_plan, CardId::Denoise));
+        assert!(enabled(&damaged_plan, CardId::Denoise));
+        assert!(amount(&damaged_plan, CardId::Denoise) > amount(&clean_plan, CardId::Denoise));
+        assert!(amount(&damaged_plan, CardId::DeReverb) > amount(&clean_plan, CardId::DeReverb));
+        assert!(
+            amount(&damaged_plan, CardId::DeClickDePop) > amount(&clean_plan, CardId::DeClickDePop)
+        );
+        assert!(amount(&damaged_plan, CardId::DeHum) > amount(&clean_plan, CardId::DeHum));
+        assert_eq!(
+            damaged_plan.restoration_focus,
+            5.0 / 6.0,
+            "severe defects choose the Restoration HQ focus band"
+        );
+    }
+
+    #[test]
+    fn apply_smart_assist_configures_cards_but_not_the_content_toggle() {
+        let mut s = Session::new();
+        s.report = Some(report(
+            -40.0,
+            0.80,
+            10.0,
+            -12.0,
+            0.20,
+            ContentMode::Singing,
+            0.98,
+        ));
+        assert_eq!(s.settings().content_mode, ContentMode::Voiceover);
+
+        let plan = s.apply_smart_assist().expect("smart assist");
+
+        assert_eq!(
+            s.settings().content_mode,
+            ContentMode::Voiceover,
+            "the analyzer guess is advisory; the explicit toggle stays authoritative"
+        );
+        for rec in plan.cards {
+            assert_eq!(
+                s.card_enabled(rec.card),
+                rec.enabled,
+                "{:?} enabled",
+                rec.card
+            );
+            if rec.card != CardId::Loudness {
+                assert_eq!(s.card_amount(rec.card), rec.amount, "{:?} amount", rec.card);
+            }
+        }
+        assert_eq!(s.restoration_focus(), plan.restoration_focus);
+        assert_eq!(s.polish_intensity(), plan.polish_intensity);
+    }
+
+    #[test]
+    fn smart_assist_keeps_singing_dereverb_and_breath_conservative() {
+        let roomy = report(-42.0, 0.95, 4.0, -120.0, 0.05, ContentMode::Singing, 0.9);
+
+        let voiceover = Session::smart_assist_plan(&roomy, ContentMode::Voiceover);
+        let singing = Session::smart_assist_plan(&roomy, ContentMode::Singing);
+
+        let amount = |plan: &SmartAssistPlan, card| {
+            plan.cards
+                .iter()
+                .find(|rec| rec.card == card)
+                .expect("card")
+                .amount
+        };
+        let enabled = |plan: &SmartAssistPlan, card| {
+            plan.cards
+                .iter()
+                .find(|rec| rec.card == card)
+                .expect("card")
+                .enabled
+        };
+
+        assert!(
+            amount(&singing, CardId::DeReverb) < amount(&voiceover, CardId::DeReverb),
+            "singing de-reverb must stay gentler to preserve tails"
+        );
+        assert!(enabled(&voiceover, CardId::Breath));
+        assert!(!enabled(&singing, CardId::Breath));
+        assert_eq!(amount(&singing, CardId::Breath), 0.0);
+    }
+
+    #[test]
+    fn smart_assist_requires_an_analysis_report() {
+        let mut s = Session::new();
+        assert!(matches!(
+            s.apply_smart_assist(),
+            Err(SessionError::NotLoaded)
+        ));
     }
 
     #[test]
