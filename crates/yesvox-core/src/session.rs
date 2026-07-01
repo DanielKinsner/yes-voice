@@ -101,11 +101,25 @@ impl Default for Card {
 
 /// Independent enable overrides for the Standard finish cards that share
 /// `Stage::Finish` underneath.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 struct FinishCards {
     presence_air_enabled: Option<bool>,
     leveling_enabled: Option<bool>,
     loudness_enabled: Option<bool>,
+    presence_air_amount: f32,
+    leveling_amount: f32,
+}
+
+impl Default for FinishCards {
+    fn default() -> Self {
+        FinishCards {
+            presence_air_enabled: None,
+            leveling_enabled: None,
+            loudness_enabled: None,
+            presence_air_amount: 1.0,
+            leveling_amount: 1.0,
+        }
+    }
 }
 
 impl FinishCards {
@@ -126,6 +140,24 @@ impl FinishCards {
             CardId::Loudness => self.loudness_enabled,
             _ => None,
         }
+    }
+
+    fn amount(&self, card: CardId) -> Option<f32> {
+        match card {
+            CardId::PresenceAir => Some(self.presence_air_amount),
+            CardId::Leveling => Some(self.leveling_amount),
+            _ => None,
+        }
+    }
+
+    fn set_amount(&mut self, card: CardId, amount: f32) -> bool {
+        let amount = amount.clamp(0.0, 1.0);
+        match card {
+            CardId::PresenceAir => self.presence_air_amount = amount,
+            CardId::Leveling => self.leveling_amount = amount,
+            _ => return false,
+        }
+        true
     }
 }
 
@@ -221,6 +253,33 @@ impl Session {
         self.cards[stage as usize].mix
     }
 
+    /// Set a visible Standard card's amount. Finish sub-controls that share
+    /// `Stage::Finish` get independent amounts here instead of mutating the whole
+    /// Finish stage mix.
+    pub fn set_card_amount(&mut self, card: CardId, amount: f32) {
+        if self.finish_cards.set_amount(card, amount) {
+            self.output = None;
+            return;
+        }
+        if card == CardId::Loudness {
+            return;
+        }
+        for &stage in card.stages() {
+            self.set_stage_mix(stage, amount);
+        }
+    }
+
+    /// A visible Standard card's current amount.
+    pub fn card_amount(&self, card: CardId) -> f32 {
+        if let Some(amount) = self.finish_cards.amount(card) {
+            return amount;
+        }
+        if card == CardId::Loudness {
+            return 1.0;
+        }
+        self.stage_mix(card.stages()[0])
+    }
+
     /// Enable or bypass a rack card (overriding the preset default).
     pub fn set_stage_enabled(&mut self, stage: Stage, on: bool) {
         self.cards[stage as usize].enabled = Some(on);
@@ -281,6 +340,18 @@ impl Session {
             .unwrap_or_else(|| self.resolve_stage_enabled(Stage::Finish))
     }
 
+    /// Set the Presence/Air amount, scaling the active preset's EQ patch without
+    /// touching Leveling or Loudness.
+    pub fn set_presence_air_amount(&mut self, amount: f32) {
+        self.finish_cards.presence_air_amount = amount.clamp(0.0, 1.0);
+        self.output = None;
+    }
+
+    /// The current Presence/Air amount.
+    pub fn presence_air_amount(&self) -> f32 {
+        self.finish_cards.presence_air_amount
+    }
+
     /// Enable or bypass the Leveling card. Audio remains neutral until G9 lands
     /// the actual program leveler, but the user-visible state is tracked now.
     pub fn set_leveling_enabled(&mut self, on: bool) {
@@ -292,6 +363,18 @@ impl Session {
     pub fn leveling_enabled(&self) -> bool {
         self.resolve_finish_card_enabled(CardId::Leveling)
             .unwrap_or_else(|| self.resolve_stage_enabled(Stage::Finish))
+    }
+
+    /// Set the Leveling amount. G9 wires this into the actual leveler; for now it
+    /// is tracked state only and does not change audio.
+    pub fn set_leveling_amount(&mut self, amount: f32) {
+        self.finish_cards.leveling_amount = amount.clamp(0.0, 1.0);
+        self.output = None;
+    }
+
+    /// The current Leveling amount.
+    pub fn leveling_amount(&self) -> f32 {
+        self.finish_cards.leveling_amount
     }
 
     /// Enable or bypass loudness normalization and the true-peak limiter.
@@ -629,6 +712,10 @@ impl Session {
             .chain
             .finish
             .set_loudness_enabled(self.loudness_enabled());
+        built
+            .chain
+            .finish
+            .set_presence_air_amount(self.presence_air_amount());
 
         // De-bleed refusal (plan §4.5): refuse a mix before processing.
         let verdict = built.chain.assess_bleed(input);
@@ -1058,6 +1145,102 @@ mod tests {
             (no_loudness_lufs - (-16.0)).abs() > 2.0,
             "Loudness bypass must reach render and skip normalization: {no_loudness_lufs}"
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn finish_card_amounts_do_not_mutate_the_shared_finish_stage_mix() {
+        let mut s = Session::new();
+        s.set_card_amount(CardId::PresenceAir, 0.25);
+        assert_eq!(s.presence_air_amount(), 0.25);
+        assert_eq!(s.card_amount(CardId::PresenceAir), 0.25);
+        assert_eq!(
+            s.stage_mix(Stage::Finish),
+            1.0,
+            "Presence/Air amount must not touch the whole Finish stage mix"
+        );
+
+        s.set_card_amount(CardId::Leveling, 0.4);
+        assert_eq!(s.leveling_amount(), 0.4);
+        assert_eq!(s.card_amount(CardId::Leveling), 0.4);
+        assert_eq!(
+            s.stage_mix(Stage::Finish),
+            1.0,
+            "Leveling amount is tracked independently and stays audio-neutral"
+        );
+
+        s.select_preset(Preset::NARRATION);
+        assert_eq!(s.presence_air_amount(), 1.0);
+        assert_eq!(s.leveling_amount(), 1.0);
+    }
+
+    #[test]
+    fn presence_air_amount_reaches_render_without_bypassing_loudness() {
+        let path = temp("presence-air-amount");
+        degraded_fixture(&path);
+
+        let render = |amount: f32, enabled: bool| {
+            let mut s = Session::new();
+            s.open(&path).unwrap();
+            s.set_presence_air_amount(amount);
+            s.set_presence_air_enabled(enabled);
+            s.render().unwrap();
+            (
+                s.output().unwrap().channel(0).to_vec(),
+                s.output_lufs().unwrap(),
+            )
+        };
+
+        let (dry_amount, dry_amount_lufs) = render(0.0, true);
+        let (disabled, disabled_lufs) = render(1.0, false);
+        assert!(
+            (dry_amount_lufs - (-16.0)).abs() <= 0.6,
+            "Presence/Air amount 0 must leave loudness running: {dry_amount_lufs}"
+        );
+        assert!(
+            (disabled_lufs - (-16.0)).abs() <= 0.6,
+            "Presence/Air disabled must leave loudness running: {disabled_lufs}"
+        );
+        for (a, b) in dry_amount.iter().zip(&disabled) {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "Presence/Air amount 0 must render like Presence/Air disabled"
+            );
+        }
+
+        let (wet_amount, _) = render(1.0, true);
+        assert!(
+            wet_amount
+                .iter()
+                .zip(&dry_amount)
+                .any(|(a, b)| (a - b).abs() > 1e-5),
+            "Presence/Air amount 1 must reach the rendered EQ"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn leveling_amount_is_audio_neutral_until_g9() {
+        let path = temp("leveling-amount");
+        degraded_fixture(&path);
+
+        let render = |amount: f32| {
+            let mut s = Session::new();
+            s.open(&path).unwrap();
+            s.set_leveling_amount(amount);
+            s.render().unwrap();
+            s.output().unwrap().channel(0).to_vec()
+        };
+        let default = render(1.0);
+        let leveled_dry = render(0.0);
+        for (a, b) in default.iter().zip(&leveled_dry) {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "Leveling amount must be state-only until G9"
+            );
+        }
 
         let _ = std::fs::remove_file(&path);
     }

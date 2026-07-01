@@ -53,6 +53,8 @@ pub struct FinishStage {
     presence_db: f32,
     /// Air boost (high shelf ≈12 kHz) in dB.
     air_db: f32,
+    /// User-facing Presence/Air amount, `[0, 1]`, scaling the preset EQ patch.
+    presence_air_amount: f32,
     /// True-peak ceiling, dBTP.
     ceiling_dbtp: f32,
     /// Limiter look-ahead, seconds (≥5 ms per the acceptance).
@@ -72,6 +74,7 @@ impl Default for FinishStage {
             target: LoudnessTarget::Podcast,
             presence_db: 0.0,
             air_db: 0.0,
+            presence_air_amount: 1.0,
             ceiling_dbtp: -1.0,
             lookahead_s: 0.005,
             sidechain_cutoff_hz: 12_000.0,
@@ -93,6 +96,16 @@ impl FinishStage {
     pub fn set_eq(&mut self, presence_db: f32, air_db: f32) {
         self.presence_db = presence_db;
         self.air_db = air_db;
+    }
+
+    /// Set the Presence/Air amount, scaling the preset EQ patch.
+    pub fn set_presence_air_amount(&mut self, amount: f32) {
+        self.presence_air_amount = amount.clamp(0.0, 1.0);
+    }
+
+    /// The current Presence/Air amount.
+    pub fn presence_air_amount(&self) -> f32 {
+        self.presence_air_amount
     }
 
     /// Override the loudness target (the Session-level OUTPUT/Loudness control).
@@ -149,13 +162,15 @@ impl FinishStage {
     }
 
     fn apply_eq(&self, buffer: &mut AudioBuffer) {
-        if self.presence_db == 0.0 && self.air_db == 0.0 {
+        let presence_db = self.presence_db * self.presence_air_amount;
+        let air_db = self.air_db * self.presence_air_amount;
+        if presence_db == 0.0 && air_db == 0.0 {
             return;
         }
         let sr = self.sample_rate;
         for ch in 0..buffer.channel_count() {
-            let mut presence = Biquad::peaking(sr, 5000.0, 1.0, self.presence_db);
-            let mut air = Biquad::high_shelf(sr, 12_000.0, 0.707, self.air_db);
+            let mut presence = Biquad::peaking(sr, 5000.0, 1.0, presence_db);
+            let mut air = Biquad::high_shelf(sr, 12_000.0, 0.707, air_db);
             for s in buffer.channel_mut(ch) {
                 *s = air.process(presence.process(*s));
             }
@@ -348,6 +363,56 @@ mod tests {
         assert!(
             (lufs - (-16.0)).abs() <= 0.3,
             "loudness must still run with presence/air bypassed: {lufs}"
+        );
+    }
+
+    #[test]
+    fn presence_air_amount_zero_bypasses_eq_but_loudness_still_runs() {
+        let input = tone_buf(0.02, 5000.0, 4.0);
+
+        let baseline = run(FinishStage::new(LoudnessTarget::Podcast), input.clone());
+
+        let mut dry_eq = FinishStage::new(LoudnessTarget::Podcast);
+        dry_eq.set_eq(9.0, 9.0);
+        dry_eq.set_presence_air_amount(0.0);
+        let out = run(dry_eq, input);
+
+        for (a, b) in out.channel(0).iter().zip(baseline.channel(0)) {
+            assert!(
+                (a - b).abs() <= 1e-6,
+                "Presence/Air amount 0 must bypass EQ exactly"
+            );
+        }
+        let lufs = integrated_lufs(&out).expect("loudness");
+        assert!(
+            (lufs - (-16.0)).abs() <= 0.3,
+            "loudness must still run with Presence/Air amount 0: {lufs}"
+        );
+    }
+
+    #[test]
+    fn presence_air_amount_scales_the_eq_patch() {
+        let input = tone_buf(0.1, 5000.0, 2.0);
+        let input_lufs = integrated_lufs(&input).expect("input loudness");
+
+        let run_eq = |amount: f32| {
+            let mut m = FinishStage::new(LoudnessTarget::MatchInput);
+            m.set_loudness_enabled(false);
+            m.set_eq(6.0, 0.0);
+            m.set_presence_air_amount(amount);
+            run(m, input.clone())
+        };
+        let dry_lufs = integrated_lufs(&run_eq(0.0)).expect("dry eq loudness");
+        let half_lufs = integrated_lufs(&run_eq(0.5)).expect("half eq loudness");
+        let full_lufs = integrated_lufs(&run_eq(1.0)).expect("full eq loudness");
+
+        assert!(
+            (dry_lufs - input_lufs).abs() <= 0.1,
+            "amount 0 must leave the EQ patch dry"
+        );
+        assert!(
+            dry_lufs < half_lufs && half_lufs < full_lufs,
+            "amount must scale the EQ monotonically: {dry_lufs}, {half_lufs}, {full_lufs}"
         );
     }
 

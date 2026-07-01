@@ -1,6 +1,6 @@
 # YesVox — build status & pick-up guide
 
-> Resume-from-anywhere snapshot. Last updated **2026-06-30**. For product intent
+> Resume-from-anywhere snapshot. Last updated **2026-07-01**. For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
 > for the GUI target see [`ui/yesvox-v1-ui-reference.md`](ui/yesvox-v1-ui-reference.md).
@@ -15,7 +15,7 @@ surface the UI needs, then a thin **egui shell** over it. Both are underway and
 - **Workspace:** `yesvox-core` (lib), `yesvox-app` (headless CLI, bin `yesvox`),
   **`yesvox-gui`** (the egui app, bin `yesvox-gui`, **new**), `xtask`.
 - **The gate is green.** `cargo xtask gate` = fmt → clippy `-D warnings` → test →
-  `cargo deny check`. 165 core tests + the GUI compile/tests pass.
+  `cargo deny check`. 175 core tests + the GUI compile/tests pass.
 
 ## Build / run / verify (any machine)
 
@@ -47,6 +47,8 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **G3** | **Restoration Focus** radial → quantized onto `QualityMode`. |
 | **G4** | **Polish Intensity** radial → scales the polish group (de-ess+breath; default = nominal). |
 | **G5** | **Loudness target** settable on the Session (+`LoudnessTarget::Custom(f32)`). |
+| **G6** | **Independent finish-card enables** — Presence/Air, Leveling, and Loudness no longer toggle the whole `FinishStage`; Leveling is tracked but audio-neutral until G9. |
+| **G10** | **Presence/Air amount** — Session + `FinishStage` expose the EQ amount, and the GUI card slider drives it without changing loudness/leveling. |
 | **G12/13** | **OUTPUT + FILE** panels — `OutputFormat`, bit-depth/dither, name/location, `export_target()`/`export_to_target()`. |
 | **G15** | **Volume Match** — `ab_matched_input()`. |
 | **G17** | **Waveform peaks + channel meters** — `monitor::waveform_peaks / channel_peak_db / channel_rms_db`. |
@@ -56,18 +58,15 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 
 Build order, mechanical-first, each TDD'd:
 
-1. **G6** — FinishStage sub-enables so Presence/Air, Leveling, Loudness are
-   *independent* cards (today they share one Finish stage/knob).
-2. **G10** — Presence/Air amount reachable from the Session.
-3. **G11** — per-kind DeClick: split Click vs MouthClick so the two transient
+1. **G11** — per-kind DeClick: split Click vs MouthClick so the two transient
    cards drive independently (today Mouth-Clicks shares De-click's knob).
-4. **G7** — Smart Assist: auto-configure card amounts/enables from the analysis
+2. **G7** — Smart Assist: auto-configure card amounts/enables from the analysis
    report (noisier → more denoise, etc.).
-5. **G8** — Vocal Isolation Check: re-analyze the rendered output → residual
+3. **G8** — Vocal Isolation Check: re-analyze the rendered output → residual
    noise/reverb/bleed verdict.
-6. **G9** — **real new DSP**: the program leveler behind the "Leveling" card
+4. **G9** — **real new DSP**: the program leveler behind the "Leveling" card
    (FinishStage has none today; the doc comment was aspirational). Largest item.
-7. **G18** — undo/redo. **Needs a scope decision from Dan** (unspec'd in
+5. **G18** — undo/redo. **Needs a scope decision from Dan** (unspec'd in
    product.md/plan; ship Revert-only, or a real undo stack?).
 
 Then GUI polish: native file picker (`rfd`), theme/spacing fidelity vs the mock,

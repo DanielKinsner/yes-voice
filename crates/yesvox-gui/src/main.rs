@@ -410,18 +410,21 @@ impl YesVoxApp {
                             .color(egui::Color32::WHITE),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // The "amount" knob — fans out to every stage the card drives.
-                        let stage0 = card.stages()[0];
-                        let mut mix = self.session.stage_mix(stage0);
-                        if ui
-                            .add(egui::Slider::new(&mut mix, 0.0..=1.0).show_value(false))
-                            .changed()
-                        {
-                            for &st in card.stages() {
-                                self.session.set_stage_mix(st, mix);
+                        if card == CardId::Loudness {
+                            ui.colored_label(
+                                TEXT_DIM,
+                                loudness_label(self.session.loudness_target()),
+                            );
+                        } else {
+                            let mut amount = self.session.card_amount(card);
+                            if ui
+                                .add(egui::Slider::new(&mut amount, 0.0..=1.0).show_value(false))
+                                .changed()
+                            {
+                                self.session.set_card_amount(card, amount);
                             }
+                            ui.colored_label(TEXT_DIM, format!("{:.0}%", amount * 100.0));
                         }
-                        ui.colored_label(TEXT_DIM, format!("{:.0}%", mix * 100.0));
                     });
                 });
             });
