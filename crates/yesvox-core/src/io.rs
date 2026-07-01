@@ -10,8 +10,12 @@
 //! generated from a fixed-seed PRNG so exports stay byte-reproducible for the
 //! golden discipline.
 
-use crate::audio::{AudioBuffer, ChannelLayout, SampleEncoding};
+use crate::audio::{
+    AudioBuffer, ChannelLayout, ContainerMetadata, FlacMetadataBlock, SampleEncoding,
+    WavMetadataChunk,
+};
 use crate::settings::ExportOptions;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Errors from decoding or encoding audio files.
@@ -100,12 +104,15 @@ pub fn read_wav(path: &Path) -> Result<AudioBuffer, IoError> {
         }
     };
 
+    let metadata = read_wav_metadata(path)?;
+
     Ok(deinterleave(
         spec.sample_rate,
         bits,
         encoding,
         nch,
         interleaved,
+        metadata,
     ))
 }
 
@@ -134,12 +141,15 @@ pub fn read_flac(path: &Path) -> Result<AudioBuffer, IoError> {
         interleaved.truncate(total as usize * nch);
     }
 
+    let metadata = read_flac_metadata(path)?;
+
     Ok(deinterleave(
         info.sample_rate,
         bits,
         SampleEncoding::Int,
         nch,
         interleaved,
+        metadata,
     ))
 }
 
@@ -150,13 +160,14 @@ fn deinterleave(
     encoding: SampleEncoding,
     nch: usize,
     interleaved: Vec<f32>,
+    metadata: ContainerMetadata,
 ) -> AudioBuffer {
     let frames = interleaved.len() / nch;
     let mut channels: Vec<Vec<f32>> = (0..nch).map(|_| Vec::with_capacity(frames)).collect();
     for (i, sample) in interleaved.into_iter().enumerate() {
         channels[i % nch].push(sample);
     }
-    AudioBuffer::new(sample_rate, bits, encoding, channels)
+    AudioBuffer::with_metadata(sample_rate, bits, encoding, channels, metadata)
 }
 
 /// Encode an [`AudioBuffer`] to a WAV file atomically (temp file + rename),
@@ -217,6 +228,7 @@ pub fn write_wav_with(
         }
         writer.finalize()?;
     }
+    preserve_wav_metadata(&tmp, buffer.metadata())?;
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -252,8 +264,14 @@ pub fn write_flac_with(
         bits as usize,
         buffer.sample_rate() as usize,
     );
-    let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
+    let mut stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
         .map_err(|e| IoError::FlacEncode(format!("{e:?}")))?;
+    for block in buffer.metadata().flac_blocks() {
+        let data =
+            flacenc::component::MetadataBlockData::new_unknown(block.block_type(), block.data())
+                .map_err(|e| IoError::FlacEncode(format!("{e:?}")))?;
+        stream.add_metadata_block(data);
+    }
 
     let mut sink = flacenc::bitsink::ByteSink::new();
     stream
@@ -372,6 +390,94 @@ fn extension(path: &Path) -> Option<String> {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|s| s.to_ascii_lowercase())
+}
+
+fn read_wav_metadata(path: &Path) -> Result<ContainerMetadata, IoError> {
+    let bytes = std::fs::read(path)?;
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Ok(ContainerMetadata::empty());
+    }
+
+    let mut chunks = Vec::new();
+    let mut pos = 12usize;
+    while pos + 8 <= bytes.len() {
+        let id: [u8; 4] = bytes[pos..pos + 4].try_into().unwrap();
+        let len = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        let data_start = pos + 8;
+        let data_end = data_start.saturating_add(len);
+        if data_end > bytes.len() {
+            break;
+        }
+        if &id != b"fmt " && &id != b"data" {
+            chunks.push(WavMetadataChunk::new(
+                id,
+                bytes[data_start..data_end].to_vec(),
+            ));
+        }
+        pos = data_end + (len & 1);
+    }
+    Ok(ContainerMetadata::with_wav_chunks(chunks))
+}
+
+fn preserve_wav_metadata(path: &Path, metadata: &ContainerMetadata) -> Result<(), IoError> {
+    if metadata.wav_chunks().is_empty() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(path)?;
+    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Ok(());
+    }
+
+    let mut out = Vec::with_capacity(bytes.len() + serialized_wav_metadata_len(metadata));
+    out.extend_from_slice(&bytes);
+    for chunk in metadata.wav_chunks() {
+        out.extend_from_slice(&chunk.id());
+        out.extend_from_slice(&(chunk.data().len() as u32).to_le_bytes());
+        out.extend_from_slice(chunk.data());
+        if chunk.data().len() % 2 == 1 {
+            out.push(0);
+        }
+    }
+
+    let riff_size = (out.len() - 8) as u32;
+    out[4..8].copy_from_slice(&riff_size.to_le_bytes());
+    std::fs::write(path, out)?;
+    Ok(())
+}
+
+fn serialized_wav_metadata_len(metadata: &ContainerMetadata) -> usize {
+    metadata
+        .wav_chunks()
+        .iter()
+        .map(|chunk| 8 + chunk.data().len() + (chunk.data().len() & 1))
+        .sum()
+}
+
+fn read_flac_metadata(path: &Path) -> Result<ContainerMetadata, IoError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic)?;
+    if &magic != b"fLaC" {
+        return Ok(ContainerMetadata::empty());
+    }
+
+    let mut blocks = Vec::new();
+    loop {
+        let mut header = [0u8; 4];
+        file.read_exact(&mut header)?;
+        let is_last = (header[0] & 0x80) != 0;
+        let block_type = header[0] & 0x7f;
+        let len = ((header[1] as usize) << 16) | ((header[2] as usize) << 8) | header[3] as usize;
+        let mut data = vec![0u8; len];
+        file.read_exact(&mut data)?;
+        if block_type == 2 || block_type == 4 {
+            blocks.push(FlacMetadataBlock::new(block_type, data));
+        }
+        if is_last {
+            break;
+        }
+    }
+    Ok(ContainerMetadata::with_flac_blocks(blocks))
 }
 
 /// Sibling temp path for the atomic-write dance.

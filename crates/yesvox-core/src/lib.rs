@@ -32,7 +32,10 @@ pub mod singing;
 pub use analysis::{
     analyze, analyze_file, AnalysisError, AnalysisReport, ContentGuess, HumEstimate,
 };
-pub use audio::{AudioBuffer, ChannelLayout, SampleEncoding};
+pub use audio::{
+    AudioBuffer, ChannelLayout, ContainerMetadata, FlacMetadataBlock, SampleEncoding,
+    WavMetadataChunk,
+};
 pub use build::BuiltChain;
 pub use card::CardId;
 pub use chain::{Chain, Stage};

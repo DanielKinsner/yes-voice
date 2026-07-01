@@ -6,8 +6,9 @@ mod common;
 use std::path::Path;
 
 use yesvox_core::{
-    export, read_audio, read_wav, write_wav, write_wav_with, AudioBuffer, ExportOptions,
-    SampleEncoding, DEFAULT_FLAC_COMPRESSION_LEVEL,
+    export, read_audio, read_wav, write_wav, write_wav_with, AudioBuffer, ContainerMetadata,
+    ExportOptions, FlacMetadataBlock, SampleEncoding, WavMetadataChunk,
+    DEFAULT_FLAC_COMPRESSION_LEVEL,
 };
 
 /// A deterministic mono ramp + tone, values strictly inside (-1, 1).
@@ -222,6 +223,78 @@ fn flac_compression_level_changes_encoding_without_changing_audio() {
 }
 
 #[test]
+fn wav_export_preserves_source_metadata_chunks() {
+    let mut buf = tone(2_400, 24, SampleEncoding::Int);
+    let metadata = ContainerMetadata::with_wav_chunks(vec![
+        WavMetadataChunk::new(*b"bext", b"broadcast metadata".to_vec()),
+        WavMetadataChunk::new(
+            *b"iXML",
+            b"<BWFXML><PROJECT>YesVox</PROJECT></BWFXML>".to_vec(),
+        ),
+        WavMetadataChunk::new(*b"LIST", b"INFOICMT\x0a\x00\x00\x00round trip".to_vec()),
+        WavMetadataChunk::new(*b"yvx1", b"unknown chunk".to_vec()),
+    ]);
+    buf.set_metadata(metadata.clone());
+
+    let path = common::temp_wav("metadata");
+    write_wav_with(
+        &path,
+        &buf,
+        ExportOptions {
+            bit_depth: 24,
+            encoding: SampleEncoding::Int,
+            dither: false,
+            flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
+        },
+    )
+    .expect("metadata wav write");
+
+    let back = read_wav(&path).expect("metadata wav read");
+    assert_eq!(back.metadata().wav_chunks(), metadata.wav_chunks());
+    assert_eq!(back.frames(), buf.frames());
+    assert_eq!(back.sample_rate(), buf.sample_rate());
+    common::remove(&[&path]);
+}
+
+#[test]
+fn flac_export_preserves_vorbis_comments_and_application_blocks_at_planned_levels() {
+    let mut buf = tone(2_400, 16, SampleEncoding::Int);
+    let metadata = ContainerMetadata::with_flac_blocks(vec![
+        FlacMetadataBlock::new(4, vorbis_comment_block("YesVoxTest", &["ARTIST=YesVox"])),
+        FlacMetadataBlock::new(2, b"YVOXapplication payload".to_vec()),
+    ]);
+    buf.set_metadata(metadata.clone());
+
+    for level in [0, 5, 8] {
+        let path = std::env::temp_dir().join(format!(
+            "yesvox-flac-metadata-{}-{level}.flac",
+            std::process::id()
+        ));
+        common::remove(&[&path]);
+        let written = export(
+            &path,
+            &buf,
+            ExportOptions {
+                bit_depth: 16,
+                encoding: SampleEncoding::Int,
+                dither: false,
+                flac_compression_level: level,
+            },
+        )
+        .expect("metadata flac export");
+
+        let back = read_audio(&written).expect("metadata flac read");
+        assert_eq!(
+            back.metadata().flac_blocks(),
+            metadata.flac_blocks(),
+            "metadata blocks must round-trip at FLAC level {level}"
+        );
+        assert_eq!(back.frames(), buf.frames());
+        common::remove(&[&written]);
+    }
+}
+
+#[test]
 fn write_wav_remains_bit_exact_identity() {
     // The low-level writer (used for fixtures) stays bit-exact: decode of its
     // output equals the source samples exactly.
@@ -235,4 +308,16 @@ fn write_wav_remains_bit_exact_identity() {
     }
     assert!(Path::new(&path).exists());
     common::remove(&[&path]);
+}
+
+fn vorbis_comment_block(vendor: &str, comments: &[&str]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+    out.extend_from_slice(vendor.as_bytes());
+    out.extend_from_slice(&(comments.len() as u32).to_le_bytes());
+    for comment in comments {
+        out.extend_from_slice(&(comment.len() as u32).to_le_bytes());
+        out.extend_from_slice(comment.as_bytes());
+    }
+    out
 }

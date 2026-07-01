@@ -42,6 +42,94 @@ pub enum SampleEncoding {
     Float,
 }
 
+/// A raw RIFF/WAVE chunk preserved from the source file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WavMetadataChunk {
+    id: [u8; 4],
+    data: Vec<u8>,
+}
+
+impl WavMetadataChunk {
+    /// Build a chunk from its four-byte RIFF ID and payload.
+    pub fn new(id: [u8; 4], data: Vec<u8>) -> Self {
+        WavMetadataChunk { id, data }
+    }
+
+    /// The four-byte RIFF chunk ID.
+    pub fn id(&self) -> [u8; 4] {
+        self.id
+    }
+
+    /// The raw chunk payload, excluding the RIFF header and pad byte.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+/// A raw FLAC metadata block preserved from the source stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlacMetadataBlock {
+    block_type: u8,
+    data: Vec<u8>,
+}
+
+impl FlacMetadataBlock {
+    /// Build a FLAC metadata block from its 7-bit type and payload.
+    pub fn new(block_type: u8, data: Vec<u8>) -> Self {
+        FlacMetadataBlock { block_type, data }
+    }
+
+    /// The FLAC metadata block type.
+    pub fn block_type(&self) -> u8 {
+        self.block_type
+    }
+
+    /// The raw block payload, excluding the FLAC metadata header.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+/// Container metadata carried with decoded audio so export can preserve it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ContainerMetadata {
+    wav_chunks: Vec<WavMetadataChunk>,
+    flac_blocks: Vec<FlacMetadataBlock>,
+}
+
+impl ContainerMetadata {
+    /// Empty metadata for synthetic buffers and generated fixtures.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Metadata chunks preserved from a WAV source.
+    pub fn wav_chunks(&self) -> &[WavMetadataChunk] {
+        &self.wav_chunks
+    }
+
+    /// Metadata blocks preserved from a FLAC source.
+    pub fn flac_blocks(&self) -> &[FlacMetadataBlock] {
+        &self.flac_blocks
+    }
+
+    /// Replace WAV chunks while keeping any other container metadata empty.
+    pub fn with_wav_chunks(wav_chunks: Vec<WavMetadataChunk>) -> Self {
+        ContainerMetadata {
+            wav_chunks,
+            flac_blocks: Vec::new(),
+        }
+    }
+
+    /// Replace FLAC blocks while keeping any other container metadata empty.
+    pub fn with_flac_blocks(flac_blocks: Vec<FlacMetadataBlock>) -> Self {
+        ContainerMetadata {
+            wav_chunks: Vec::new(),
+            flac_blocks,
+        }
+    }
+}
+
 /// An f32-planar audio buffer plus the metadata needed to export losslessly.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioBuffer {
@@ -49,6 +137,7 @@ pub struct AudioBuffer {
     bits_per_sample: u16,
     encoding: SampleEncoding,
     channels: Vec<Vec<f32>>,
+    metadata: ContainerMetadata,
 }
 
 impl AudioBuffer {
@@ -73,7 +162,21 @@ impl AudioBuffer {
             bits_per_sample,
             encoding,
             channels,
+            metadata: ContainerMetadata::empty(),
         }
+    }
+
+    /// Build a buffer with source-container metadata attached.
+    pub fn with_metadata(
+        sample_rate: u32,
+        bits_per_sample: u16,
+        encoding: SampleEncoding,
+        channels: Vec<Vec<f32>>,
+        metadata: ContainerMetadata,
+    ) -> Self {
+        let mut buffer = AudioBuffer::new(sample_rate, bits_per_sample, encoding, channels);
+        buffer.metadata = metadata;
+        buffer
     }
 
     /// Sample rate in Hz.
@@ -120,6 +223,16 @@ impl AudioBuffer {
     /// All channels as planar slices.
     pub fn channels(&self) -> &[Vec<f32>] {
         &self.channels
+    }
+
+    /// Source-container metadata to preserve on export.
+    pub fn metadata(&self) -> &ContainerMetadata {
+        &self.metadata
+    }
+
+    /// Replace the source-container metadata.
+    pub fn set_metadata(&mut self, metadata: ContainerMetadata) {
+        self.metadata = metadata;
     }
 }
 
