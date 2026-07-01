@@ -1209,8 +1209,9 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::SampleEncoding;
-    use crate::io::write_wav;
+    use crate::audio::{ContainerMetadata, SampleEncoding, WavMetadataChunk};
+    use crate::io::{read_wav, write_wav, write_wav_with};
+    use crate::settings::{ExportOptions, DEFAULT_FLAC_COMPRESSION_LEVEL};
     use std::f32::consts::PI;
 
     const SR: u32 = 48_000;
@@ -1526,6 +1527,48 @@ mod tests {
         assert!(written.exists());
         // Non-destructive: the input file is untouched.
         assert_eq!(before, std::fs::read(&in_path).unwrap());
+
+        let _ = std::fs::remove_file(&in_path);
+        let _ = std::fs::remove_file(&written);
+    }
+
+    #[test]
+    fn render_then_export_preserves_source_wav_metadata() {
+        let in_path = temp("metadata-render-in");
+        let out_path = temp("metadata-render-out");
+        let mut input = quiet_tone_fixture(&in_path);
+        let metadata = ContainerMetadata::with_wav_chunks(vec![
+            WavMetadataChunk::new(*b"bext", b"session broadcast metadata".to_vec()),
+            WavMetadataChunk::new(
+                *b"iXML",
+                b"<BWFXML><PROJECT>Session</PROJECT></BWFXML>".to_vec(),
+            ),
+            WavMetadataChunk::new(*b"LIST", b"INFOICMT\x0c\x00\x00\x00session path".to_vec()),
+        ]);
+        input.set_metadata(metadata.clone());
+        write_wav_with(
+            &in_path,
+            &input,
+            ExportOptions {
+                bit_depth: 24,
+                encoding: SampleEncoding::Int,
+                dither: false,
+                flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
+            },
+        )
+        .expect("write metadata fixture");
+
+        let mut s = Session::new();
+        s.open(&in_path).expect("open");
+        s.render().expect("render");
+        let written = s.export(&out_path).expect("export");
+
+        let back = read_wav(&written).expect("read exported metadata");
+        assert_eq!(
+            back.metadata().wav_chunks(),
+            metadata.wav_chunks(),
+            "session open -> render -> export must preserve source WAV metadata"
+        );
 
         let _ = std::fs::remove_file(&in_path);
         let _ = std::fs::remove_file(&written);
