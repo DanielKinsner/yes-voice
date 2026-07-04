@@ -450,6 +450,32 @@ impl TransientCards {
     }
 }
 
+/// Advanced-only De-bleed controls. De-bleed has no Standard card because native
+/// takes leave it off; Advanced exposes source mode and mix-refusal thresholds.
+#[derive(Clone, Copy)]
+struct DeBleedAdvanced {
+    source_imported: bool,
+    warn_threshold: f32,
+    block_threshold: f32,
+}
+
+impl Default for DeBleedAdvanced {
+    fn default() -> Self {
+        DeBleedAdvanced {
+            source_imported: false,
+            warn_threshold: 0.02,
+            block_threshold: 0.15,
+        }
+    }
+}
+
+impl DeBleedAdvanced {
+    fn set_thresholds(&mut self, warn: f32, block: f32) {
+        self.warn_threshold = warn.clamp(0.0, 1.0);
+        self.block_threshold = block.clamp(0.0, 1.0).max(self.warn_threshold);
+    }
+}
+
 /// A stateful vocal-editing session.
 pub struct Session {
     settings: Settings,
@@ -461,6 +487,7 @@ pub struct Session {
     cards: [Card; STAGE_COUNT],
     finish_cards: FinishCards,
     transient_cards: TransientCards,
+    debleed: DeBleedAdvanced,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -502,6 +529,7 @@ pub struct SessionSnapshot {
     cards: [Card; STAGE_COUNT],
     finish_cards: FinishCards,
     transient_cards: TransientCards,
+    debleed: DeBleedAdvanced,
     flow: f32,
     polish: f32,
     loudness_override: Option<LoudnessTarget>,
@@ -533,6 +561,7 @@ impl Session {
             cards: [Card::default(); STAGE_COUNT],
             finish_cards: FinishCards::default(),
             transient_cards: TransientCards::default(),
+            debleed: DeBleedAdvanced::default(),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -587,6 +616,31 @@ impl Session {
         self.cards[stage as usize].mix
     }
 
+    /// Whether the Advanced De-bleed source mode is "imported stem". Imported
+    /// stems enable De-bleed by default; native takes leave it off.
+    pub fn debleed_source_imported(&self) -> bool {
+        self.debleed.source_imported
+    }
+
+    /// Set Advanced De-bleed source mode. This controls the default enabled
+    /// state, while an explicit stage override still wins.
+    pub fn set_debleed_source_imported(&mut self, imported: bool) {
+        self.debleed.source_imported = imported;
+        self.output = None;
+    }
+
+    /// Advanced De-bleed warn/block thresholds for the mix-likeness guard.
+    pub fn debleed_thresholds(&self) -> (f32, f32) {
+        (self.debleed.warn_threshold, self.debleed.block_threshold)
+    }
+
+    /// Set Advanced De-bleed warn/block thresholds. Values clamp to `[0, 1]`,
+    /// and the block threshold is never below the warn threshold.
+    pub fn set_debleed_thresholds(&mut self, warn: f32, block: f32) {
+        self.debleed.set_thresholds(warn, block);
+        self.output = None;
+    }
+
     /// Set a visible Standard card's amount. Finish sub-controls that share
     /// `Stage::Finish` get independent amounts here instead of mutating the whole
     /// Finish stage mix.
@@ -639,6 +693,11 @@ impl Session {
     /// otherwise the active preset's default. This is the on/off position the
     /// Standard-view card toggle shows, resolvable without a render.
     pub fn resolve_stage_enabled(&self, stage: Stage) -> bool {
+        if stage == Stage::DeBleed {
+            return self.cards[stage as usize]
+                .enabled
+                .unwrap_or(self.debleed.source_imported);
+        }
         self.cards[stage as usize]
             .enabled
             .unwrap_or_else(|| self.preset.stage_default_enabled(stage))
@@ -1301,6 +1360,7 @@ impl Session {
             cards: self.cards,
             finish_cards: self.finish_cards,
             transient_cards: self.transient_cards,
+            debleed: self.debleed,
             flow: self.flow,
             polish: self.polish,
             loudness_override: self.loudness_override,
@@ -1317,6 +1377,7 @@ impl Session {
         self.cards = snapshot.cards;
         self.finish_cards = snapshot.finish_cards;
         self.transient_cards = snapshot.transient_cards;
+        self.debleed = snapshot.debleed;
         self.flow = snapshot.flow;
         self.polish = snapshot.polish;
         self.loudness_override = snapshot.loudness_override;
@@ -1389,6 +1450,13 @@ impl Session {
         );
         // Carry the neural→light fallback reason (if any) for the GUI/CLI (#33).
         let engine_note = built.engine_note.take();
+
+        built.chain.debleed = crate::modules::DeBleed::for_source(self.debleed_source_imported());
+        let (debleed_warn, debleed_block) = self.debleed_thresholds();
+        built
+            .chain
+            .debleed
+            .set_thresholds(debleed_warn, debleed_block);
 
         // Apply the per-card overrides (the UI rack) over the preset's defaults,
         // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
@@ -2984,6 +3052,56 @@ mod tests {
         assert!(s.card_enabled(CardId::MouthClicks));
         // A 1:1 card resolves through the same path.
         assert!(s.card_enabled(CardId::Denoise));
+    }
+
+    #[test]
+    fn advanced_debleed_source_mode_sets_the_debleed_default() {
+        let mut s = Session::new();
+        assert!(!s.debleed_source_imported());
+        assert!(
+            !s.resolve_stage_enabled(Stage::DeBleed),
+            "native takes leave de-bleed off by default"
+        );
+
+        s.set_debleed_source_imported(true);
+        assert!(s.debleed_source_imported());
+        assert!(
+            s.resolve_stage_enabled(Stage::DeBleed),
+            "imported stems enable de-bleed by default"
+        );
+
+        s.set_stage_enabled(Stage::DeBleed, false);
+        assert!(
+            !s.resolve_stage_enabled(Stage::DeBleed),
+            "an explicit stage override still wins over source mode"
+        );
+    }
+
+    #[test]
+    fn advanced_debleed_thresholds_reach_render_refusal() {
+        let path = temp("advanced-debleed-thresholds");
+        degraded_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+
+        assert_eq!(s.debleed_thresholds(), (0.02, 0.15));
+        s.set_debleed_thresholds(0.8, 0.2);
+        assert_eq!(
+            s.debleed_thresholds(),
+            (0.8, 0.8),
+            "block threshold clamps to at least warn"
+        );
+
+        s.set_debleed_thresholds(0.0, 0.0);
+        assert!(
+            matches!(s.render(), Err(SessionError::BleedBlocked(_))),
+            "zero block threshold must refuse before processing"
+        );
+
+        s.set_debleed_thresholds(0.95, 0.99);
+        s.render().expect("relaxed thresholds render");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
