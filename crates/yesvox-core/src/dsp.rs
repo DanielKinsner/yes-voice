@@ -7,6 +7,20 @@
 
 use std::f32::consts::PI;
 
+/// Flush a subnormal (denormal) magnitude to zero (#28). Recursive filter state
+/// that decays toward silence drifts into the denormal range, where every
+/// arithmetic op is ~100× slower; pinning tiny magnitudes to exact zero avoids
+/// that stall. The threshold sits far above f32's smallest normal yet ~600 dB
+/// below full scale, so it never touches an audible value.
+#[inline]
+pub(crate) fn flush_denormal(v: f32) -> f32 {
+    if v.abs() < 1.0e-30 {
+        0.0
+    } else {
+        v
+    }
+}
+
 /// A transposed-Direct-Form-II biquad. Coefficients are stored already
 /// normalized by `a0`.
 #[derive(Clone, Copy, Debug)]
@@ -139,8 +153,9 @@ impl Biquad {
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z1;
-        self.z1 = self.b1 * x - self.a1 * y + self.z2;
-        self.z2 = self.b2 * x - self.a2 * y;
+        // Flush denormal state so decaying tails don't stall the recursion (#28).
+        self.z1 = flush_denormal(self.b1 * x - self.a1 * y + self.z2);
+        self.z2 = flush_denormal(self.b2 * x - self.a2 * y);
         y
     }
 
@@ -204,6 +219,30 @@ mod tests {
 
     fn process_buf(mut f: Biquad, xs: &[f32]) -> Vec<f32> {
         xs.iter().map(|&x| f.process(x)).collect()
+    }
+
+    #[test]
+    fn flush_denormal_zeros_subnormals_and_keeps_normals() {
+        assert_eq!(flush_denormal(1.0e-40), 0.0, "subnormal flushed");
+        assert_eq!(flush_denormal(-1.0e-35), 0.0, "below threshold flushed");
+        assert_eq!(flush_denormal(0.0), 0.0);
+        assert_eq!(flush_denormal(0.5), 0.5, "normal kept");
+        assert_eq!(flush_denormal(-1.0e-3), -1.0e-3, "audible-range kept");
+    }
+
+    #[test]
+    fn biquad_impulse_then_silence_settles_to_exact_zero() {
+        // A stable shelf fed an impulse then long silence: the recursive state
+        // decays and, with the denormal flush, settles to *exact* zero and stays
+        // finite — no denormal tail (#28).
+        let mut f = Biquad::high_shelf(48_000.0, 6_000.0, 0.7, 6.0);
+        f.process(1.0);
+        let mut y = 1.0;
+        for _ in 0..20_000 {
+            y = f.process(0.0);
+            assert!(y.is_finite(), "output stayed finite");
+        }
+        assert_eq!(y, 0.0, "state flushed to exact zero, no denormal tail");
     }
 
     fn sine(freq: f32, sr: f32, n: usize) -> Vec<f32> {
