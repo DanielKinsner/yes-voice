@@ -895,6 +895,31 @@ fn should_refresh_player_source(current: Option<AudibleCacheKey>, next: AudibleC
     current != Some(next)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SpectrogramCacheKey {
+    audible: AudibleCacheKey,
+    columns: usize,
+    rows: usize,
+}
+
+fn advanced_spectrogram_dimensions(r: egui::Rect) -> (usize, usize) {
+    let columns = ((r.width() / 7.0).round() as usize).clamp(64, 240);
+    let rows = ((r.height() / 4.0).round() as usize).clamp(32, 96);
+    (columns, rows)
+}
+
+fn spectrogram_cache_key(
+    audible: AudibleCacheKey,
+    columns: usize,
+    rows: usize,
+) -> SpectrogramCacheKey {
+    SpectrogramCacheKey {
+        audible,
+        columns,
+        rows,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct AudibleMetrics {
     peak_db: f32,
@@ -919,6 +944,11 @@ impl AudibleCache {
             metrics,
         }
     }
+}
+
+struct SpectrogramCache {
+    key: SpectrogramCacheKey,
+    spectrogram: yesvox_core::monitor::Spectrogram,
 }
 
 /// Result of an off-thread batch run: the per-row status updates to apply and
@@ -965,6 +995,7 @@ struct YesVoxApp {
     /// monitor buffers cannot outlive the session audio they summarize.
     audio_generation: u64,
     audible_cache: Option<AudibleCache>,
+    spectrogram_cache: Option<SpectrogramCache>,
     player_source_key: Option<AudibleCacheKey>,
     /// Settings snapshot taken before each render (the session is *moved* onto
     /// the worker; if the worker panics, the session is lost with it and gets
@@ -1041,6 +1072,7 @@ impl YesVoxApp {
             reblend_dirty: false,
             audio_generation: 0,
             audible_cache: None,
+            spectrogram_cache: None,
             player_source_key: None,
             render_recovery: None,
             preset_menu_open: false,
@@ -1059,6 +1091,7 @@ impl YesVoxApp {
     fn bump_audio_generation(&mut self) {
         self.audio_generation = self.audio_generation.wrapping_add(1);
         self.audible_cache = None;
+        self.spectrogram_cache = None;
         self.player_source_key = None;
     }
 
@@ -1161,6 +1194,31 @@ impl YesVoxApp {
             .as_ref()
             .filter(|cache| cache.key == key)
             .map(|cache| cache.metrics)
+    }
+
+    fn spectrogram_for(
+        &mut self,
+        columns: usize,
+        rows: usize,
+    ) -> Option<&yesvox_core::monitor::Spectrogram> {
+        let key = spectrogram_cache_key(self.audible_key(), columns, rows);
+        if self
+            .spectrogram_cache
+            .as_ref()
+            .is_some_and(|cache| cache.key == key)
+        {
+            return self
+                .spectrogram_cache
+                .as_ref()
+                .map(|cache| &cache.spectrogram);
+        }
+
+        let buffer = self.audible_buffer()?.clone();
+        let spectrogram = yesvox_core::monitor::spectrogram(&buffer, 0, columns, rows);
+        self.spectrogram_cache = Some(SpectrogramCache { key, spectrogram });
+        self.spectrogram_cache
+            .as_ref()
+            .map(|cache| &cache.spectrogram)
     }
 
     fn set_ab_view(&mut self, ab: AbView) {
@@ -2130,7 +2188,11 @@ impl YesVoxApp {
             l.spectrogram.width() - 40.0,
             l.spectrogram.height() - 76.0,
         );
-        self.draw_spectrum(painter, c, spec, self.session.difference().as_ref());
+        let (columns, rows) = advanced_spectrogram_dimensions(spec);
+        {
+            let spectrogram = self.spectrogram_for(columns, rows);
+            draw_advanced_spectrogram(painter, c, spec, spectrogram);
+        }
         self.draw_time_labels(painter, c, spec);
 
         let group_titles = [
@@ -5496,6 +5558,72 @@ fn synthetic_peak(t: f32) -> (f32, f32) {
     (-hi * (0.68 + 0.25 * (t * 21.0).cos().abs()), hi)
 }
 
+fn draw_advanced_spectrogram(
+    painter: &egui::Painter,
+    c: CanvasMap,
+    r: egui::Rect,
+    spectrogram: Option<&yesvox_core::monitor::Spectrogram>,
+) {
+    paint_panel(painter, c, r, 4, FIELD, BORDER_DIM);
+    let Some(spectrogram) = spectrogram else {
+        return;
+    };
+    if spectrogram.columns == 0 || spectrogram.rows == 0 {
+        return;
+    }
+
+    let cell_w = r.width() / spectrogram.columns as f32;
+    let cell_h = r.height() / spectrogram.rows as f32;
+    for x in 0..spectrogram.columns {
+        for y in 0..spectrogram.rows {
+            let value = spectrogram.cell(x, y);
+            if value <= 0.001 {
+                continue;
+            }
+            let draw_y = spectrogram.rows - 1 - y;
+            let cell = rect(
+                r.left() + x as f32 * cell_w,
+                r.top() + draw_y as f32 * cell_h,
+                cell_w + 0.2,
+                cell_h + 0.2,
+            );
+            painter.rect_filled(
+                c.rect(cell),
+                egui::CornerRadius::ZERO,
+                spectrogram_color(value),
+            );
+        }
+    }
+
+    for t in [0.25, 0.5, 0.75] {
+        let x = r.left() + r.width() * t;
+        painter.line_segment(
+            [c.pos(x, r.top()), c.pos(x, r.bottom())],
+            egui::Stroke::new(c.v(0.75), alpha(BORDER, 78)),
+        );
+    }
+    for t in [0.33, 0.66] {
+        let y = r.top() + r.height() * t;
+        painter.line_segment(
+            [c.pos(r.left(), y), c.pos(r.right(), y)],
+            egui::Stroke::new(c.v(0.75), alpha(BORDER, 62)),
+        );
+    }
+}
+
+fn spectrogram_color(value: f32) -> egui::Color32 {
+    let value = value.clamp(0.0, 1.0).powf(0.72);
+    if value < 0.28 {
+        lerp_color(alpha(BLUE, 46), BLUE, value / 0.28)
+    } else if value < 0.58 {
+        lerp_color(BLUE, CYAN, (value - 0.28) / 0.30)
+    } else if value < 0.82 {
+        lerp_color(CYAN, AMBER, (value - 0.58) / 0.24)
+    } else {
+        lerp_color(AMBER, TEXT, (value - 0.82) / 0.18)
+    }
+}
+
 fn paint_panel(
     painter: &egui::Painter,
     c: CanvasMap,
@@ -6430,6 +6558,57 @@ mod tests {
             Some(key),
             audible_cache_key(AbView::Original, false, 0.25, false, 7)
         ));
+    }
+
+    #[test]
+    fn advanced_spectrogram_grid_stays_dense_but_bounded() {
+        let l = AdvancedLayout::new();
+        let spec = rect(
+            l.spectrogram.left() + 20.0,
+            l.spectrogram.top() + 52.0,
+            l.spectrogram.width() - 40.0,
+            l.spectrogram.height() - 76.0,
+        );
+        let (columns, rows) = advanced_spectrogram_dimensions(spec);
+
+        assert!((64..=240).contains(&columns));
+        assert!((32..=96).contains(&rows));
+        assert!(columns >= 160, "Advanced needs enough time detail");
+        assert!(rows >= 40, "Advanced needs enough frequency detail");
+    }
+
+    #[test]
+    fn spectrogram_cache_key_tracks_audible_source_and_grid() {
+        let audible = audible_cache_key(AbView::Processed, false, 0.25, false, 7);
+        let key = spectrogram_cache_key(audible, 192, 72);
+
+        assert_eq!(key.audible, audible);
+        assert_ne!(key, spectrogram_cache_key(audible, 160, 72));
+        assert_ne!(key, spectrogram_cache_key(audible, 192, 48));
+        assert_ne!(
+            key,
+            spectrogram_cache_key(
+                audible_cache_key(AbView::Original, false, 0.25, false, 7),
+                192,
+                72,
+            )
+        );
+        assert_ne!(
+            key,
+            spectrogram_cache_key(
+                audible_cache_key(AbView::Processed, true, 0.25, false, 7),
+                192,
+                72,
+            )
+        );
+        assert_ne!(
+            key,
+            spectrogram_cache_key(
+                audible_cache_key(AbView::Processed, false, 0.25, false, 8),
+                192,
+                72,
+            )
+        );
     }
 
     #[test]
