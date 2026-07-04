@@ -246,6 +246,31 @@ mod tests {
 
     const SR: u32 = 48_000;
 
+    #[cfg(feature = "neural")]
+    #[test]
+    #[ignore = "needs ORT_DYLIB_PATH — ort's dynamic-load probe blocks without the runtime"]
+    fn a_garbage_model_file_falls_back_to_light_not_a_crash() {
+        // A corrupt/wrong ONNX at YESVOX_MODEL_PATH must degrade to the light
+        // engine with a reason, never panic (#33). Needs the onnxruntime lib
+        // (ORT_DYLIB_PATH) present; the *mechanism* (neural request -> light +
+        // reason) is covered without the feature by
+        // `factory_builds_light_and_falls_back_without_a_model`.
+        use crate::quality::{Engine, QualityMode};
+        let path = std::env::temp_dir().join(format!("yesvox-garbage-{}.onnx", std::process::id()));
+        std::fs::write(&path, b"this is definitely not an onnx graph").unwrap();
+        let built = build_denoiser(QualityMode::Balanced.binding(), Some(&path));
+        assert_eq!(
+            built.actual,
+            Engine::Light,
+            "garbage model -> light fallback"
+        );
+        assert!(
+            built.fallback_reason.is_some(),
+            "the corrupt-model fallback carries a reason"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn bypass_is_exact_identity() {
         let n = 20_000;
