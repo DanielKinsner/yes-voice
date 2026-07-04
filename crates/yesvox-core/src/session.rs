@@ -19,6 +19,7 @@ use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
 use crate::modules::{BleedVerdict, LoudnessTarget};
+use crate::playback::PlaybackSource;
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
 use crate::quality::QualityMode;
@@ -1094,6 +1095,24 @@ impl Session {
         ))
     }
 
+    /// The buffer to audition for a given [`PlaybackSource`] (#23) — the single
+    /// mapping the transport/GUI use so A/B, reblend and difference all pull from
+    /// the same monitor buffers. `None` until the relevant buffer exists.
+    pub fn playback_buffer(
+        &self,
+        source: PlaybackSource,
+        volume_match: bool,
+        reblend_amount: f32,
+    ) -> Option<AudioBuffer> {
+        match source {
+            PlaybackSource::Original if volume_match => self.ab_matched_input(),
+            PlaybackSource::Original => self.input().cloned(),
+            PlaybackSource::Processed => self.output().cloned(),
+            PlaybackSource::Reblend => self.reblend(reblend_amount),
+            PlaybackSource::Difference => self.difference(),
+        }
+    }
+
     /// Re-analyze the rendered output and return the bottom-strip Vocal Isolation
     /// Check verdict. This intentionally depends on the current processed buffer:
     /// changing cards/macros invalidates the output, and the next check reflects
@@ -1581,6 +1600,62 @@ mod tests {
 
         let _ = std::fs::remove_file(&in_path);
         let _ = std::fs::remove_file(&written);
+    }
+
+    #[test]
+    fn playback_buffer_maps_each_source_to_its_monitor_buffer() {
+        // #23 source selection: every A/B source resolves to the right monitor
+        // buffer, all same length, so a shared playhead is valid.
+        let in_path = temp("playback-in");
+        degraded_fixture(&in_path);
+        let mut s = Session::new();
+        s.open(&in_path).expect("open");
+        s.render().expect("render");
+
+        let frames = s.input().unwrap().frames();
+
+        let original = s
+            .playback_buffer(PlaybackSource::Original, false, 0.0)
+            .unwrap();
+        assert_eq!(original.channel(0), s.input().unwrap().channel(0));
+
+        let matched = s
+            .playback_buffer(PlaybackSource::Original, true, 0.0)
+            .unwrap();
+        assert_eq!(matched.channel(0), s.ab_matched_input().unwrap().channel(0));
+
+        let processed = s
+            .playback_buffer(PlaybackSource::Processed, false, 0.0)
+            .unwrap();
+        assert_eq!(processed.channel(0), s.output().unwrap().channel(0));
+
+        let reblend = s
+            .playback_buffer(PlaybackSource::Reblend, false, 0.4)
+            .unwrap();
+        assert_eq!(reblend.channel(0), s.reblend(0.4).unwrap().channel(0));
+
+        let difference = s
+            .playback_buffer(PlaybackSource::Difference, false, 0.0)
+            .unwrap();
+        assert_eq!(difference.channel(0), s.difference().unwrap().channel(0));
+
+        // All sources share one length → one playhead is valid.
+        for b in [&original, &matched, &processed, &reblend, &difference] {
+            assert_eq!(b.frames(), frames, "source length diverged");
+        }
+
+        let _ = std::fs::remove_file(&in_path);
+    }
+
+    #[test]
+    fn playback_buffer_is_none_before_render() {
+        let s = Session::new();
+        assert!(s
+            .playback_buffer(PlaybackSource::Processed, false, 0.0)
+            .is_none());
+        assert!(s
+            .playback_buffer(PlaybackSource::Difference, false, 0.0)
+            .is_none());
     }
 
     #[test]

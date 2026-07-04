@@ -23,6 +23,7 @@ pub mod loudness;
 pub mod modules;
 pub mod monitor;
 pub mod neural;
+pub mod playback;
 pub mod preset;
 pub mod processor;
 pub mod quality;
@@ -53,6 +54,7 @@ pub use modules::{
     BleedVerdict, BreathControl, DeBleed, DeClick, DeClip, DeEss, DeEssMode, DeHum, DePop,
     DeReverb, FinishStage, LoudnessTarget,
 };
+pub use playback::{PlaybackSource, Transport};
 pub use preset::Preset;
 pub use processor::{Passthrough, VocalProcessor};
 pub use quality::{
