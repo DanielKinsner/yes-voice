@@ -83,21 +83,28 @@ this order (each TDD'd, each its own green commit):
   required gate step; docs realigned. Also cleared a pre-existing red
   (quick-xml RUSTSEC-2026-0194/-0195 scope-ignore).
 
-1. **#22 background threading + real progress** (render/export/batch off the UI
-   thread — today they freeze the window). ← **current**
-3. **#23 playback trust loop** — cpal transport, volume-matched A/B at a shared
-   playhead, reblend/difference audition. **Decided: v1 ship-blocker.**
-4. **#24 Standard wiring sweep + chrome triage** (wire-or-remove policy; preset
+- ✅ **#22 background threading + real progress** (done 2026-07-03). Added
+  `yesvox_core::worker` (spawn → monotonic progress → Done/Failed, panic
+  caught as a friendly error, cooperative cancel); proved a worker render is
+  byte-identical to sync and batch cancel leaves rows pending
+  (`tests/worker_jobs.rs`); added `Session::prepare_export` (detached `Send`
+  export unit). The GUI runs render/export/batch off the UI thread, polls
+  events each frame, and the 0/0.55/1.0 progress heuristic is gone.
+
+1. **#23 playback trust loop** — cpal transport, volume-matched A/B at a shared
+   playhead, reblend/difference audition. **Decided: v1 ship-blocker.** ←
+   **current**
+2. **#24 Standard wiring sweep + chrome triage** (wire-or-remove policy; preset
    picker, card dials, loudness target, file fields; drop PNG-only chrome).
-5. **#25 undo/redo** — bounded settings snapshot stack (G18 decided).
-6. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
+3. **#25 undo/redo** — bounded settings snapshot stack (G18 decided).
+4. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
    filesystem/atomic export, resource guards, model-load validation,
    determinism. Interleavable AFK filler.
-7. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
+5. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
    separate screen, Standard visual language, mock-first approval).
-8. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
+6. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
    (commerce/signing/activation split to a v1.1 lane).
-9. **#21** — perf budget gates + real-stem no-regression corpus (Dan supplies
+7. **#21** — perf budget gates + real-stem no-regression corpus (Dan supplies
    stems) + optional non-blocking listen.
 
 ## Decisions on record
