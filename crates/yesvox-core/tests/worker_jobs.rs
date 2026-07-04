@@ -171,7 +171,7 @@ fn cancel_mid_batch_leaves_unprocessed_rows_pending() {
             if p.current_index.is_some() && p.done == 0 {
                 waiting_job.store(1, Ordering::SeqCst);
                 while !ctx.is_canceled() {
-                    std::hint::spin_loop();
+                    std::thread::yield_now(); // parked, not pinning a core
                 }
             }
             if ctx.is_canceled() {
@@ -183,8 +183,15 @@ fn cancel_mid_batch_leaves_unprocessed_rows_pending() {
         Ok((summary, q))
     });
 
-    // Wait until the observer is parked on the first file, then cancel.
+    // Wait until the observer is parked on the first file, then cancel. The
+    // deadline keeps a worker that dies before its first callback from hanging
+    // the whole test binary.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while waiting.load(Ordering::SeqCst) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never reached the first pre-file callback"
+        );
         std::thread::yield_now();
     }
     handle.cancel();

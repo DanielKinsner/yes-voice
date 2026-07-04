@@ -118,7 +118,11 @@ impl Transport {
         if !self.playing || out_frames == 0 {
             return 0;
         }
-        let readable = self.len.min(source.frames()).saturating_sub(self.position);
+        // The end is the shorter of the timeline and the source: if a shorter
+        // source is ever swapped in past its end, the transport auto-stops
+        // instead of wedging at `playing == true` with a frozen playhead.
+        let end = self.len.min(source.frames());
+        let readable = end.saturating_sub(self.position);
         let n = out_frames.min(readable);
         for f in 0..n {
             let src_frame = self.position + f;
@@ -127,8 +131,7 @@ impl Transport {
             }
         }
         self.position += n;
-        if self.position >= self.len {
-            self.position = self.len;
+        if self.position >= end {
             self.playing = false; // auto-stop at end (no looping in v1)
         }
         n
@@ -226,6 +229,19 @@ mod tests {
         assert!(out[5..].iter().all(|&s| s == 0.0), "tail is silence");
         assert_eq!(t.position(), 100);
         assert!(!t.is_playing(), "auto-stops at the end");
+    }
+
+    #[test]
+    fn a_shorter_source_auto_stops_instead_of_wedging() {
+        // Defensive: sources are same-length by guarantee, but if a shorter one
+        // ever appears the transport must stop, not freeze at playing==true.
+        let short = ramp(50);
+        let mut t = Transport::new(100);
+        t.seek(60); // already past the short source's end
+        t.play();
+        let mut out = [0.0f32; 10];
+        assert_eq!(t.fill(&short, &mut out), 0);
+        assert!(!t.is_playing(), "must auto-stop past a short source's end");
     }
 
     #[test]

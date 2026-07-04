@@ -7,7 +7,9 @@
 //! **terminal** event (`Done`/`Failed`) over one channel the caller polls once
 //! per frame. A job-body panic is caught ([`std::panic::catch_unwind`]) and
 //! surfaced as a friendly `Failed` event, never a process abort. Cancellation
-//! is cooperative: the job polls [`JobContext::is_canceled`].
+//! is cooperative: the job polls [`JobContext::is_canceled`] — today the batch
+//! job honors it between files; render/export run to completion once started
+//! (`Session::render` has no stage-boundary cancel polling yet).
 //!
 //! The worker is payload-agnostic — render/export/batch specifics live in the
 //! job closure — so it is testable in `yesvox-core` without a GUI.
@@ -16,9 +18,10 @@ use std::any::Any;
 use std::cell::Cell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// A progress or terminal event from a running job.
 #[derive(Debug, Clone, PartialEq)]
@@ -49,11 +52,15 @@ pub struct JobContext<T> {
 impl<T> JobContext<T> {
     /// Report fractional progress. Clamped to `[0, 1]` and forced monotonic
     /// non-decreasing (a regression is pinned to the last value), so consumers
-    /// can drive a progress bar without sanity-checking.
+    /// can drive a progress bar without sanity-checking. Sub-0.1% increments are
+    /// coalesced: a job reporting per-sample progress would otherwise queue
+    /// millions of events between UI polls (the channel is unbounded).
     pub fn progress(&self, fraction: f32) {
         let clamped = fraction.clamp(0.0, 1.0).max(self.last.get());
-        self.last.set(clamped);
-        let _ = self.tx.send(JobEvent::Progress(clamped));
+        if clamped - self.last.get() >= 1e-3 || (clamped >= 1.0 && self.last.get() < 1.0) {
+            self.last.set(clamped);
+            let _ = self.tx.send(JobEvent::Progress(clamped));
+        }
     }
 
     /// Whether the caller has requested cancellation. Long-running jobs should
@@ -174,12 +181,35 @@ impl<T> JobHandle<T> {
 
 impl<T> Drop for JobHandle<T> {
     fn drop(&mut self) {
-        // Never detach a live worker silently: request cancel and join so a
-        // dropped handle can't leak a thread that keeps mutating files after the
-        // GUI moved on.
+        // Request cancel, then give the worker a short grace period to finish.
+        // Joining unconditionally would freeze the dropping thread (the UI, on
+        // app close) for the full duration of a job that can't observe
+        // cancellation mid-DSP-call — the exact freeze #22 exists to eliminate.
+        // Past the grace period the worker is detached instead: that is safe
+        // because file writes are atomic (temp + rename, #31), so an orphaned
+        // worker can never leave a partial file at an export target, and
+        // process exit reaps the thread.
         self.cancel.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
+        let Some(h) = self.handle.take() else { return };
+        if self.finished {
+            let _ = h.join(); // terminal event already seen; the join is immediate
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_millis(200);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.events.recv_timeout(left) {
+                Ok(ev) if ev.is_terminal() => {
+                    let _ = h.join();
+                    return;
+                }
+                Ok(_) => continue, // progress; keep draining within the grace period
+                Err(RecvTimeoutError::Disconnected) => {
+                    let _ = h.join(); // worker is done sending; it exits imminently
+                    return;
+                }
+                Err(RecvTimeoutError::Timeout) => return, // detach (see above)
+            }
         }
     }
 }
@@ -229,6 +259,39 @@ mod tests {
         });
         let (progress, _) = handle.wait();
         assert!(progress.iter().all(|&p| (0.0..=1.0).contains(&p)));
+    }
+
+    #[test]
+    fn progress_floods_are_coalesced() {
+        let handle = spawn(|ctx| {
+            for i in 0..100_000u32 {
+                ctx.progress(i as f32 / 100_000.0);
+            }
+            Ok(())
+        });
+        let (progress, _) = handle.wait();
+        assert!(
+            progress.len() <= 1_001,
+            "a per-iteration progress flood must coalesce, got {} events",
+            progress.len()
+        );
+    }
+
+    #[test]
+    fn dropping_a_live_uncancelable_job_does_not_block() {
+        // A job that never observes cancellation (like a render mid-DSP-call)
+        // must not stall the dropping thread — the UI drops handles on app
+        // close. Grace period is 200 ms; 2 s is 10x headroom for slow runners.
+        let start = std::time::Instant::now();
+        let handle = spawn(|_ctx| -> Result<(), String> {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            Ok(())
+        });
+        drop(handle);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "Drop blocked on a job that ignores cancellation"
+        );
     }
 
     #[test]

@@ -110,6 +110,42 @@ fn core_source_contains_no_network_symbols() {
 }
 
 #[test]
+fn workspace_sources_contain_no_network_symbols() {
+    // The shipping binary is `yesvox-gui`, not `yesvox-core` — a network dep
+    // added to the GUI (telemetry, auto-update) would break the OFFLINE promise
+    // while the core-only scan stayed green. Scan every workspace crate we own.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("workspace root");
+    let mut offenders = Vec::new();
+    for crate_src in [
+        "crates/yesvox-gui/src",
+        "crates/yesvox-app/src",
+        "xtask/src",
+    ] {
+        let dir = root.join(crate_src);
+        assert!(
+            dir.is_dir(),
+            "scan target missing (crate moved? update this list): {}",
+            dir.display()
+        );
+        for file in rust_files(&dir) {
+            let code = std::fs::read_to_string(&file).expect("read source");
+            let hits = network_symbols_in(&code);
+            if !hits.is_empty() {
+                offenders.push(format!("{}: {:?}", file.display(), hits));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "workspace source references networking — OFFLINE guarantee broken:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
 fn the_network_scanner_actually_detects_network_code() {
     // Proof the scan is not a no-op: it must flag real networking code…
     let bad = r#"
