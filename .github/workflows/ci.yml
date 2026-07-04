@@ -52,3 +52,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy the neural feature (-D warnings)
         run: cargo clippy -p yesvox-core --features neural --all-targets -- -D warnings
+
+  # Cross-platform whole-chain determinism (#34): the same-machine + worker-count
+  # byte-identity checks are a HARD gate (they run inside `cargo test` above on
+  # all three OSes). This job additionally *records* the render fingerprint per
+  # OS so cross-platform agreement can be compared from the logs — informational
+  # first (see docs/TESTING.md); promote to a hard cross-OS golden once the three
+  # agree, or pin per-platform goldens if they drift. Scoped to yesvox-core so no
+  # GUI/audio system libs are needed.
+  determinism-fingerprint:
+    name: determinism fingerprint (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain (from rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - name: Render + print the determinism fingerprint
+        run: cargo test -p yesvox-core --test determinism cross_platform_fingerprint -- --nocapture
