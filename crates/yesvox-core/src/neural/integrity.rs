@@ -14,9 +14,13 @@
 use std::path::Path;
 
 /// Manifest of shipped weights: `(file name, expected lowercase-hex SHA-256)`.
-/// Populated when weights ship (#20); empty until then, so no bundled file
-/// exists to pin yet.
-const WEIGHT_MANIFEST: &[(&str, &str)] = &[];
+/// Every `bundled` row in `licenses/model-weights.tsv` must be pinned here
+/// (enforced by `xtask/tests/weights_license_audit.rs`). The MossFormer2 entry
+/// is the fp32 ONNX export the #10 golden test validates — the v1.0 payload.
+const WEIGHT_MANIFEST: &[(&str, &str)] = &[(
+    "mossformer2_se_48k.onnx",
+    "e1281db76f705da81641ded332752c5d95dc90f8b4eb6590e5cf7b2fdd20a51d",
+)];
 
 /// Verify `path` against the shipped-weight manifest. `Ok(())` when the file
 /// matches its pinned hash *or* is not a shipped weight (user-provided). `Err`

@@ -120,6 +120,56 @@ fn weights_license_manifest_is_complete() {
     }
 }
 
+/// #20: every `bundled` manifest row must be pinned in the runtime integrity
+/// manifest (`WEIGHT_MANIFEST` in yesvox-core), so a shipped weight is always
+/// hash-checked at load — and the v1.0 lane must have selected at least one
+/// shipped payload.
+#[test]
+fn bundled_rows_are_pinned_in_the_shipped_weight_integrity_manifest() {
+    let root = repo_root();
+    let manifest_path = root.join("licenses/model-weights.tsv");
+    let manifest = fs::read_to_string(&manifest_path).unwrap_or_else(|e| {
+        panic!(
+            "{} must exist and be readable: {e}",
+            manifest_path.display()
+        )
+    });
+    let integrity_path = root.join("crates/yesvox-core/src/neural/integrity.rs");
+    let integrity = fs::read_to_string(&integrity_path).unwrap_or_else(|e| {
+        panic!(
+            "{} must exist and be readable: {e}",
+            integrity_path.display()
+        )
+    });
+
+    let mut bundled_rows = 0usize;
+    for raw_line in manifest.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = raw_line.split('\t').collect();
+        let model = cols[0].trim();
+        let status = cols[1].trim();
+        let bundled_sha256 = cols[7].trim();
+        if status != "bundled" {
+            continue;
+        }
+        bundled_rows += 1;
+        assert!(
+            integrity.contains(&bundled_sha256.to_ascii_lowercase()),
+            "shipped hash for {model} must be pinned in WEIGHT_MANIFEST \
+             ({}) so the installed weight is integrity-checked at load",
+            integrity_path.display()
+        );
+    }
+
+    assert!(
+        bundled_rows >= 1,
+        "the v1.0 package lane must pin at least one bundled shipped weight (#20)"
+    );
+}
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
