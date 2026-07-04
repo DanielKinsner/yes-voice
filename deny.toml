@@ -35,11 +35,21 @@ wildcards = "allow"
 
 [advisories]
 yanked = "deny"
-# Accepted, documented advisories (not vulnerabilities; out of our control):
+# Accepted, documented advisories (not vulnerabilities *for us*; out of our
+# control). Each is scoped to a GUI-tree transitive dep and reasoned to be
+# unreachable in an offline desktop app that never parses untrusted input:
 # - RUSTSEC-2026-0192: `ttf-parser` (transitive egui font-parsing dep) was
 #   declared *unmaintained* by its author. Not a security hole; egui must migrate
 #   to `skrifa` upstream. Ignore rather than block the whole GUI tree (#17).
-ignore = ["RUSTSEC-2026-0192"]
+# - RUSTSEC-2026-0194 / -0195: `quick-xml 0.39.4` quadratic-attribute / unbounded
+#   namespace-allocation DoS. It is a *build-time* dep of `wayland-scanner`
+#   (rfd → wayland-client → wayland-scanner, Linux GUI only) that parses the
+#   local, trusted wayland-protocol XML shipped with the OS — never attacker-
+#   controlled network input, so neither DoS is reachable. The fix needs
+#   quick-xml >=0.41, but `wayland-scanner 0.31.10` pins `quick-xml = "^0.39"`,
+#   so a real bump means upgrading the whole wayland/winit/rfd stack; ignore
+#   until that upstream upgrade lands rather than block the GUI tree (#27).
+ignore = ["RUSTSEC-2026-0192", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
 
 [sources]
 unknown-registry = "deny"
