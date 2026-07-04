@@ -1303,11 +1303,6 @@ impl YesVoxApp {
             Tab::Polish => "POLISH",
         };
         self.section_label(painter, c, panel.left() + 20.0, panel.top() + 28.0, title);
-        self.help_dot(
-            painter,
-            c,
-            egui::pos2(panel.left() + 98.0, panel.top() + 20.0),
-        );
 
         let cards = match tab {
             Tab::Restore => CardId::RESTORE,
@@ -1499,7 +1494,6 @@ impl YesVoxApp {
         let preset = rect(1588.0, 70.0, 304.0, 292.0);
         paint_panel(painter, c, preset, 8, alpha(PANEL_2, 230), BORDER_DIM);
         self.section_label(painter, c, 1608.0, 100.0, "PRESET");
-        self.help_dot(painter, c, egui::pos2(1678.0, 93.0));
         paint_panel(
             painter,
             c,
@@ -1512,7 +1506,6 @@ impl YesVoxApp {
         if preset_gen_badge_visible(&self.session) {
             self.badge(painter, c, rect(1810.0, 142.0, 34.0, 22.0), "GEN", true);
         }
-        self.star_outline(painter, c, egui::pos2(1852.0, 153.0), 9.0);
         self.small_text(painter, c, 1608.0, 212.0, "DESCRIPTION", TEXT_MUTED);
         self.small_text(
             painter,
@@ -1534,7 +1527,6 @@ impl YesVoxApp {
         let out = rect(1588.0, 372.0, 304.0, 294.0);
         paint_panel(painter, c, out, 8, alpha(PANEL_2, 230), BORDER_DIM);
         self.section_label(painter, c, 1608.0, 404.0, "OUTPUT");
-        self.help_dot(painter, c, egui::pos2(1687.0, 397.0));
         self.field_row(
             ui,
             painter,
@@ -1592,7 +1584,6 @@ impl YesVoxApp {
         let file = rect(1588.0, 680.0, 304.0, 216.0);
         paint_panel(painter, c, file, 8, alpha(PANEL_2, 230), BORDER_DIM);
         self.section_label(painter, c, 1608.0, 714.0, "FILE");
-        self.help_dot(painter, c, egui::pos2(1658.0, 706.0));
         self.small_text(painter, c, 1608.0, 754.0, "Output File Name", TEXT_MUTED);
         paint_panel(
             painter,
@@ -2321,7 +2312,6 @@ impl YesVoxApp {
             r.top() + 30.0,
             "SPECTRAL MONITOR",
         );
-        self.help_dot(painter, c, egui::pos2(r.left() + 194.0, r.top() + 22.0));
         self.small_text(
             painter,
             c,
@@ -2360,7 +2350,6 @@ impl YesVoxApp {
             egui::Stroke::new(c.v(1.0), BORDER_DIM),
         );
         self.section_label(painter, c, r.left() + 620.0, r.top() + 30.0, "REBLEND");
-        self.help_dot(painter, c, egui::pos2(r.left() + 704.0, r.top() + 22.0));
         self.small_text(
             painter,
             c,
@@ -2430,7 +2419,6 @@ impl YesVoxApp {
             r.top() + 30.0,
             "Vocal Isolation Check",
         );
-        self.help_dot(painter, c, egui::pos2(r.right() - 26.0, r.top() + 22.0));
         let (line1, line2) = self
             .isolation_check
             .map(|check| {
@@ -3159,18 +3147,6 @@ impl YesVoxApp {
         painter.text(sc, egui::Align2::CENTER_CENTER, glyph, c.font(11.0), TEXT);
     }
 
-    fn help_dot(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2) {
-        let sc = c.pos(center.x, center.y);
-        painter.circle_stroke(sc, c.v(8.0), egui::Stroke::new(c.v(1.0), TEXT_MUTED));
-        painter.text(
-            sc,
-            egui::Align2::CENTER_CENTER,
-            "?",
-            c.font(10.0),
-            TEXT_MUTED,
-        );
-    }
-
     fn badge(
         &self,
         painter: &egui::Painter,
@@ -3220,18 +3196,6 @@ impl YesVoxApp {
             egui::Stroke::new(c.v(2.0), color),
         );
         painter.circle_filled(sc, c.v(4.0), color);
-    }
-
-    fn star_outline(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2, radius: f32) {
-        let sc = c.pos(center.x, center.y);
-        painter.circle_stroke(sc, c.v(radius), egui::Stroke::new(c.v(1.0), TEXT_MUTED));
-        painter.text(
-            sc,
-            egui::Align2::CENTER_CENTER,
-            "☆",
-            c.font(16.0),
-            TEXT_MUTED,
-        );
     }
 
     fn folder_icon(&self, painter: &egui::Painter, c: CanvasMap, pos: egui::Pos2) {
