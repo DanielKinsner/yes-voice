@@ -67,20 +67,32 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **#19i** | **Original-file metadata round-trip coverage** — decoded buffers now carry source container metadata through render/export; WAV `bext`/`iXML`/`LIST` plus unknown RIFF chunks and FLAC Vorbis/application blocks round-trip mechanically in `io_export` tests. |
 | **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
 
-## Next up (remaining mechanical gaps)
+## Next up (re-planned 2026-07-03 — grill session)
 
-Build order, mechanical-first, each TDD'd:
+A full GUI wiring audit + adversarial gate/core audits produced a re-cut plan.
+**All remaining v1 work is tracked as issues #18, #20–#21, #22–#34**; build in
+this order (each TDD'd, each its own green commit):
 
-1. **G18** — undo/redo. **Needs a scope decision from Dan** (unspec'd in
-   product.md/plan; ship Revert-only, or a real undo stack?).
-
-Then continue **#19** batch/export work if live issue review finds a remaining
-AFK gap beyond the completed FLAC-level and metadata-preservation lanes. GUI
-polish remains: finer pixel/spacing adjustments vs the mock and the real
-playback-backed transport + spectral-monitor/reblend (#18). The shell currently
-paints reference/deterministic placeholder waveforms, meters, spectrum, and
-transport controls when no file is loaded so the fresh launch matches the visual
-target. Native file import uses `rfd`.
+1. **#27 H0 — gate integrity repairs** (offline gate is tautological,
+   `YESVOX_BLESS`/`xtask bless` unimplemented, neural path outside NULL/SAME-LENGTH,
+   batch queue has no guarantee coverage, singing gate passes a no-op). First,
+   because everything else trusts the gates.
+2. **#22 background threading + real progress** (render/export/batch off the UI
+   thread — today they freeze the window).
+3. **#23 playback trust loop** — cpal transport, volume-matched A/B at a shared
+   playhead, reblend/difference audition. **Decided: v1 ship-blocker.**
+4. **#24 Standard wiring sweep + chrome triage** (wire-or-remove policy; preset
+   picker, card dials, loudness target, file fields; drop PNG-only chrome).
+5. **#25 undo/redo** — bounded settings snapshot stack (G18 decided).
+6. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
+   filesystem/atomic export, resource guards, model-load validation,
+   determinism. Interleavable AFK filler.
+7. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
+   separate screen, Standard visual language, mock-first approval).
+8. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
+   (commerce/signing/activation split to a v1.1 lane).
+9. **#21** — perf budget gates + real-stem no-regression corpus (Dan supplies
+   stems) + optional non-blocking listen.
 
 ## Decisions on record
 
@@ -89,10 +101,27 @@ target. Native file import uses `rfd`.
   only binds the denoiser; polish has no engine binding).
 - **Sample rate = read-only** (export SR locked to input — hard guardrail + the
   same-length CI gate). No SR-override API; the OUTPUT panel shows it as a chip.
-- **Deferred:** real playback transport, live spectral monitor + reblend audio
-  preview (#18 Advanced), background-thread progress, native save/location
-  picker, "Save as New Preset" + "Add to Suite Library" persistence (stubbed —
-  no user-preset store; suite handoff is a designed-for seam, not built-in).
+- **2026-07-03 (grill session):** v1 target = Dan-usable/demo-able **and** on
+  the sellable trajectory (commerce plumbing itself is v1.1). **Playback is a
+  v1 ship-blocker** (#23). **Undo = bounded settings snapshot stack** (#25,
+  resolves G18). **The reference PNG is visual guidance, not a feature
+  contract** — product.md decides features; dead chrome is wire-or-remove
+  (#24). **Advanced = a separate screen** mirroring yes-master's pattern, in
+  the Standard reference's visual language, mock-first (#26 → #18). **#16
+  closed (GO)** — mechanical singing gate stands; real-stem no-regression
+  corpus moved to #21. **#20 split** — v1.0 unsigned Windows installer +
+  weights-license audit now; signing + merchant-of-record activation at v1.1.
+  Declip/de-bleed stay card-less/automatic (by design, answers the product.md
+  de-bleed-trigger question).
+- **Known-good / known-weak (2026-07-03 audits):** DSP core verdict = real,
+  competent work (BS.1770-4 loudness, RBJ biquads, adaptive notch cascade,
+  split-band de-ess with de-ess→breath HF handoff, torch-golden-pinned
+  MossFormer2 host chain). Weak spots now tracked: gate integrity (#27),
+  NaN/panic hygiene (#28/#29), no resource caps (#32), neural expect-crashes
+  (#33), streaming is denoise-only (docs honesty in #32).
+- **Still stubbed/deferred:** "Save as New Preset" + "Add to Suite Library"
+  (no user-preset store; suite handoff is a designed-for seam, not built-in) —
+  now slated for removal from the shell in #24.
 
 ## GUI dependency note (read before touching the shell)
 
