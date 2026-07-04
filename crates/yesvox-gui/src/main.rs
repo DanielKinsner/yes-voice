@@ -19,9 +19,13 @@ use audio::Player;
 use eframe::egui;
 use yesvox_core::worker::{spawn, JobEvent, JobHandle};
 use yesvox_core::{
-    AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, JobStatus,
-    LoudnessTarget, OutputFormat, Preset, RenderQueue, Session, VocalIsolationCheck,
+    AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, History,
+    JobStatus, LoudnessTarget, OutputFormat, Preset, RenderQueue, Session, SessionSnapshot,
+    VocalIsolationCheck,
 };
+
+/// Undo/redo depth cap (#25).
+const HISTORY_CAP: usize = 100;
 
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
 const MIN_VIEWPORT_SIZE: [f32; 2] = [1280.0, 720.0];
@@ -295,6 +299,8 @@ struct YesVoxApp {
     player: Option<Player>,
     /// Whether the top-bar preset dropdown is showing (#24).
     preset_menu_open: bool,
+    /// Bounded undo/redo over settings snapshots (#25).
+    history: History<SessionSnapshot>,
 }
 
 impl YesVoxApp {
@@ -338,6 +344,7 @@ impl YesVoxApp {
             }
         }
 
+        let history = History::new(session.snapshot(), HISTORY_CAP);
         YesVoxApp {
             session,
             tab: Tab::Restore,
@@ -357,6 +364,32 @@ impl YesVoxApp {
             job_progress: 0.0,
             player: None,
             preset_menu_open: false,
+            history,
+        }
+    }
+
+    /// Record the current settings state as an undo step (#25). `key` is the
+    /// control's identity so rapid same-control drags coalesce into one step.
+    fn commit_edit(&mut self, key: &str) {
+        let snapshot = self.session.snapshot();
+        self.history.record(snapshot, Some(key));
+    }
+
+    /// Undo the last settings edit (if any), restoring the session.
+    fn undo(&mut self) {
+        if let Some(snapshot) = self.history.undo().cloned() {
+            self.session.restore_snapshot(&snapshot);
+            self.stop_playback();
+            self.status = "Undo".to_owned();
+        }
+    }
+
+    /// Redo the last undone edit (if any).
+    fn redo(&mut self) {
+        if let Some(snapshot) = self.history.redo().cloned() {
+            self.session.restore_snapshot(&snapshot);
+            self.stop_playback();
+            self.status = "Redo".to_owned();
         }
     }
 
@@ -393,6 +426,7 @@ impl YesVoxApp {
         }
         if let Some(preset) = pick {
             self.session.select_preset(preset);
+            self.commit_edit("preset");
             self.stop_playback(); // preset changes the render
             self.preset_menu_open = false;
             self.status = format!("Preset - {}", preset.name);
@@ -789,6 +823,21 @@ impl eframe::App for YesVoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Drain background-job events and repaint while work is in flight (#22).
         self.pump_jobs(ui.ctx());
+        // Undo/redo shortcuts (#25): Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y.
+        let (do_undo, do_redo) = ui.input(|i| {
+            let cmd = i.modifiers.command;
+            let undo = cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z);
+            let redo = cmd
+                && ((i.modifiers.shift && i.key_pressed(egui::Key::Z))
+                    || i.key_pressed(egui::Key::Y));
+            (undo, redo)
+        });
+        if do_undo {
+            self.undo();
+        }
+        if do_redo {
+            self.redo();
+        }
         let available = ui.max_rect();
         let canvas = CanvasMap::new(available);
         let layout = ReferenceLayout::new();
@@ -841,15 +890,27 @@ impl YesVoxApp {
             self.tab = Tab::Polish;
         }
 
-        for (i, label) in ["Undo", "Redo"].iter().enumerate() {
-            self.icon_button(
-                ui,
-                painter,
-                c,
-                rect(1386.0 + i as f32 * 48.0, 14.0, 38.0, 40.0),
-                label,
-                i == 0,
-            );
+        // Undo/redo (#25): enabled state reflects real stack depth; clicks drive
+        // the tested History.
+        if self.icon_button(
+            ui,
+            painter,
+            c,
+            rect(1386.0, 14.0, 38.0, 40.0),
+            "Undo",
+            self.history.can_undo(),
+        ) {
+            self.undo();
+        }
+        if self.icon_button(
+            ui,
+            painter,
+            c,
+            rect(1434.0, 14.0, 38.0, 40.0),
+            "Redo",
+            self.history.can_redo(),
+        ) {
+            self.redo();
         }
         if self.outline_button(
             ui,
@@ -1084,6 +1145,7 @@ impl YesVoxApp {
         );
         if (flow - self.session.flow_amount()).abs() > f32::EPSILON {
             self.session.set_flow_amount(flow);
+            self.commit_edit("flow");
         }
         self.body_text(painter, c, 1288.0, 120.0, "x1.00", TEXT);
 
@@ -1200,6 +1262,7 @@ impl YesVoxApp {
                 );
                 if (value - self.session.restoration_focus()).abs() > f32::EPSILON {
                     self.session.set_restoration_focus(value);
+                    self.commit_edit("restoration_focus");
                 }
                 self.micro_text(
                     painter,
@@ -1254,6 +1317,7 @@ impl YesVoxApp {
                 );
                 if (value - self.session.polish_intensity()).abs() > f32::EPSILON {
                     self.session.set_polish_intensity(value);
+                    self.commit_edit("polish");
                 }
                 self.micro_text(
                     painter,
@@ -1311,6 +1375,7 @@ impl YesVoxApp {
         ) {
             on = !on;
             self.session.set_card_enabled(card, on);
+            self.commit_edit(&format!("card_toggle:{}", card.label()));
         }
         let (a, b) = card_blurb(card);
         self.micro_text(painter, c, r.left() + 12.0, r.top() + 68.0, a, TEXT_MUTED);
@@ -1332,6 +1397,7 @@ impl YesVoxApp {
             );
             if (next - current).abs() > 1e-6 {
                 self.session.set_card_amount(card, next);
+                self.commit_edit(&format!("card_amount:{}", card.label()));
             }
         }
         // Per-card "Advanced" buttons removed (#24): the Advanced screen is a
@@ -1436,6 +1502,7 @@ impl YesVoxApp {
         ) {
             let next = !self.session.settings().export.dither;
             self.session.set_dither(next);
+            self.commit_edit("dither");
         }
 
         let file = rect(1588.0, 680.0, 304.0, 216.0);
@@ -2660,6 +2727,7 @@ impl YesVoxApp {
                         OutputFormat::Wav
                     };
                     self.session.set_output_format(next);
+                    self.commit_edit("format");
                 }
                 "Bit Depth" => {
                     let current = self
@@ -2671,10 +2739,12 @@ impl YesVoxApp {
                         .unwrap_or(24);
                     self.session
                         .set_bit_depth(Some(if current >= 24 { 16 } else { 24 }));
+                    self.commit_edit("bit_depth");
                 }
                 "Loudness Target" => {
                     let next = cycle_loudness(self.session.loudness_target());
                     self.session.set_loudness_target(next);
+                    self.commit_edit("loudness");
                     self.stop_playback(); // target change invalidates the render
                 }
                 // Sample Rate is a read-only chip (locked to the input — decided).
