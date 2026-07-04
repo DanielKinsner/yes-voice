@@ -18,6 +18,7 @@ pub mod denoise;
 pub mod dsp;
 #[cfg(test)]
 pub(crate) mod golden;
+pub mod history;
 pub mod io;
 pub mod loudness;
 pub mod modules;
@@ -47,6 +48,7 @@ pub use denoise::{
     build_denoiser, BuiltEngine, ChunkPolicy, Denoise, Denoiser, RamPreflight, SpectralDenoiser,
     WorkerPool,
 };
+pub use history::History;
 pub use io::{
     export, read_audio, read_flac, read_wav, write_flac_with, write_wav, write_wav_with, IoError,
 };
