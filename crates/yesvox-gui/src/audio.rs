@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
-use yesvox_core::{AudioBuffer, Transport};
+use yesvox_core::{neural::Resampler, AudioBuffer, Transport};
 
 /// State shared between the UI thread and the audio callback.
 struct Shared {
@@ -40,27 +40,44 @@ impl Player {
             .default_output_device()
             .ok_or_else(|| "no output audio device".to_string())?;
 
-        let sample_rate = source.sample_rate();
-        // Prefer an f32 config that supports the source's sample rate, so no
-        // resampling is needed and the callback stays a plain copy.
-        let supported = device
+        let source_sample_rate = source.sample_rate();
+        // Prefer an f32 config that supports the source's sample rate. If the
+        // device is locked elsewhere (common WASAPI shared-mode case: 48 kHz),
+        // fall back to a supported f32 stream rate and resample the audition
+        // buffer only; export remains at the source rate.
+        let supported: Vec<_> = device
             .supported_output_configs()
-            .map_err(|e| format!("query output configs: {e}"))?;
-        let chosen = supported
+            .map_err(|e| format!("query output configs: {e}"))?
             .filter(|c| c.sample_format() == SampleFormat::F32)
-            .find(|c| c.min_sample_rate().0 <= sample_rate && sample_rate <= c.max_sample_rate().0)
-            .map(|c| c.with_sample_rate(cpal::SampleRate(sample_rate)))
+            .collect();
+        let chosen = supported
+            .iter()
+            .find(|c| {
+                c.min_sample_rate().0 <= source_sample_rate
+                    && source_sample_rate <= c.max_sample_rate().0
+            })
+            .map(|c| (*c).with_sample_rate(cpal::SampleRate(source_sample_rate)))
+            .or_else(|| {
+                device
+                    .default_output_config()
+                    .ok()
+                    .filter(|c| c.sample_format() == SampleFormat::F32)
+            })
+            .or_else(|| {
+                supported
+                    .first()
+                    .map(|c| (*c).with_sample_rate(c.max_sample_rate()))
+            })
             .ok_or_else(|| {
-                format!(
-                    "this output device has no f32 config at {sample_rate} Hz - \
-                     set the device's sample rate to {sample_rate} Hz to preview \
-                     (export is unaffected)"
-                )
+                "this output device has no f32 output config - preview requires f32 output \
+                 (export is unaffected)"
+                    .to_string()
             })?;
 
+        let sample_rate = chosen.sample_rate().0;
         let channels = chosen.channels() as usize;
         let config: cpal::StreamConfig = chosen.into();
-        let adapted = adapt_channels(source, channels);
+        let adapted = prepare_source_for_stream(source, sample_rate, channels);
         let transport = Transport::new(adapted.frames());
         let shared = Arc::new(Mutex::new(Shared {
             transport,
@@ -153,7 +170,7 @@ impl Player {
     /// the callback lock: freeing a multi-minute buffer while holding it stalls
     /// the audio callback and audibly glitches the switch.
     pub fn set_source(&self, source: &AudioBuffer) {
-        let adapted = adapt_channels(source, self.channels);
+        let adapted = prepare_source_for_stream(source, self.sample_rate, self.channels);
         let old = self.with(|s| std::mem::replace(&mut s.source, adapted));
         drop(old);
     }
@@ -186,13 +203,42 @@ fn adapt_channels(src: &AudioBuffer, target: usize) -> AudioBuffer {
     )
 }
 
+fn prepare_source_for_stream(
+    source: &AudioBuffer,
+    stream_sample_rate: u32,
+    channels: usize,
+) -> AudioBuffer {
+    let stream_sample_rate = stream_sample_rate.max(1);
+    let resampled;
+    let rate_matched = if source.sample_rate() == stream_sample_rate {
+        source
+    } else {
+        let resampler = Resampler::new(source.sample_rate(), stream_sample_rate);
+        let channels = (0..source.channel_count())
+            .map(|ch| resampler.process(source.channel(ch)))
+            .collect();
+        resampled = AudioBuffer::new(
+            stream_sample_rate,
+            source.bits_per_sample(),
+            source.encoding(),
+            channels,
+        );
+        &resampled
+    };
+    adapt_channels(rate_matched, channels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use yesvox_core::SampleEncoding;
 
+    fn buf_at(sample_rate: u32, channels: Vec<Vec<f32>>) -> AudioBuffer {
+        AudioBuffer::new(sample_rate, 24, SampleEncoding::Int, channels)
+    }
+
     fn buf(channels: Vec<Vec<f32>>) -> AudioBuffer {
-        AudioBuffer::new(48_000, 24, SampleEncoding::Int, channels)
+        buf_at(48_000, channels)
     }
 
     #[test]
@@ -217,5 +263,16 @@ mod tests {
         let mono = buf(vec![vec![0.0; 512]]);
         assert_eq!(adapt_channels(&mono, 4).frames(), 512);
         assert_eq!(adapt_channels(&mono, 1).frames(), 512);
+    }
+
+    #[test]
+    fn prepare_source_resamples_to_the_stream_rate() {
+        let src = buf_at(44_100, vec![vec![0.0; 4_410]]);
+        let out = prepare_source_for_stream(&src, 48_000, 2);
+
+        assert_eq!(out.sample_rate(), 48_000);
+        assert_eq!(out.channel_count(), 2);
+        assert_eq!(out.frames(), 4_800);
+        assert_eq!(out.channel(0), out.channel(1));
     }
 }
