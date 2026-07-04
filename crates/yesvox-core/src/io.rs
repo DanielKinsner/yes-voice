@@ -167,7 +167,13 @@ fn deinterleave(
     for (i, sample) in interleaved.into_iter().enumerate() {
         channels[i % nch].push(sample);
     }
-    AudioBuffer::with_metadata(sample_rate, bits, encoding, channels, metadata)
+    let mut buffer = AudioBuffer::with_metadata(sample_rate, bits, encoding, channels, metadata);
+    // Decode-time numeric hygiene (#28): a float WAV can carry NaN/±Inf or
+    // wildly out-of-range samples that would poison RMS/loudness accumulators
+    // and panic the analyzer's sorts. Flush them here so nothing downstream sees
+    // a hostile sample; the count rides along in the analysis report.
+    buffer.sanitize();
+    buffer
 }
 
 /// Encode an [`AudioBuffer`] to a WAV file atomically (temp file + rename),

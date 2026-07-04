@@ -138,6 +138,23 @@ pub struct AudioBuffer {
     encoding: SampleEncoding,
     channels: Vec<Vec<f32>>,
     metadata: ContainerMetadata,
+    /// Count of non-finite samples flushed by [`AudioBuffer::sanitize`] (#28),
+    /// surfaced in the analysis report as a defect.
+    non_finite_samples: u64,
+}
+
+/// Absolute sample ceiling enforced by [`AudioBuffer::sanitize`]: anything beyond
+/// ±4.0 (a wildly out-of-range float sample) is clamped so it cannot poison
+/// downstream RMS/loudness accumulators (#28).
+pub const SAMPLE_CEILING: f32 = 4.0;
+
+/// Outcome of [`AudioBuffer::sanitize`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SanitizeStats {
+    /// Non-finite samples (NaN/±Inf) flushed to 0.0.
+    pub non_finite: u64,
+    /// Finite samples clamped into ±[`SAMPLE_CEILING`].
+    pub clamped: u64,
 }
 
 impl AudioBuffer {
@@ -163,7 +180,39 @@ impl AudioBuffer {
             encoding,
             channels,
             metadata: ContainerMetadata::empty(),
+            non_finite_samples: 0,
         }
+    }
+
+    /// Flush non-finite samples (NaN/±Inf) to 0.0 and clamp anything beyond
+    /// ±[`SAMPLE_CEILING`] into range, counting both (#28). Accumulates the
+    /// non-finite total so [`AudioBuffer::non_finite_samples`] can surface it in
+    /// the analysis report. Called at decode so no hostile float sample reaches
+    /// the DSP/analysis path.
+    pub fn sanitize(&mut self) -> SanitizeStats {
+        let mut stats = SanitizeStats::default();
+        for channel in &mut self.channels {
+            for sample in channel.iter_mut() {
+                if !sample.is_finite() {
+                    *sample = 0.0;
+                    stats.non_finite += 1;
+                } else if *sample > SAMPLE_CEILING {
+                    *sample = SAMPLE_CEILING;
+                    stats.clamped += 1;
+                } else if *sample < -SAMPLE_CEILING {
+                    *sample = -SAMPLE_CEILING;
+                    stats.clamped += 1;
+                }
+            }
+        }
+        self.non_finite_samples += stats.non_finite;
+        stats
+    }
+
+    /// Number of non-finite samples flushed by [`AudioBuffer::sanitize`] over
+    /// this buffer's life — a decode-time defect count.
+    pub fn non_finite_samples(&self) -> u64 {
+        self.non_finite_samples
     }
 
     /// Build a buffer with source-container metadata attached.
@@ -239,6 +288,19 @@ impl AudioBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_flushes_non_finite_and_clamps_out_of_range() {
+        let ch = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 5.0, -9.0, 0.5];
+        let mut b = AudioBuffer::new(48_000, 24, SampleEncoding::Int, vec![ch]);
+        let stats = b.sanitize();
+        assert_eq!(stats.non_finite, 3, "NaN + ±Inf flushed");
+        assert_eq!(stats.clamped, 2, "5.0 and -9.0 clamped");
+        assert_eq!(b.non_finite_samples(), 3);
+        let out = b.channel(0);
+        assert!(out.iter().all(|s| s.is_finite()), "no non-finite remains");
+        assert_eq!(out, &[0.0, 0.0, 0.0, SAMPLE_CEILING, -SAMPLE_CEILING, 0.5]);
+    }
 
     #[test]
     fn layout_round_trips_supported_channel_counts() {

@@ -68,6 +68,10 @@ pub struct AnalysisReport {
     /// (plan §2.2; #10). The UI surfaces this so the internal rate conversion is
     /// transparent; export still matches the source rate.
     pub resampled_for_batch: bool,
+    /// Count of non-finite (NaN/±Inf) samples flushed at decode by
+    /// [`crate::audio::AudioBuffer::sanitize`] (#28) — a "your file had corrupt
+    /// samples, we fixed them" defect the UI can surface. 0 for clean input.
+    pub non_finite_samples: u64,
 }
 
 /// Why an input was rejected — each variant renders an actionable message.
@@ -168,6 +172,8 @@ pub fn analyze(buffer: &AudioBuffer) -> Result<AnalysisReport, AnalysisError> {
         residual_nonvocal,
         // The 48 kHz-only batch engine resamples any non-48 kHz source.
         resampled_for_batch: buffer.sample_rate() != 48_000,
+        // Decode-time numeric-hygiene defect count (#28).
+        non_finite_samples: buffer.non_finite_samples(),
     })
 }
 

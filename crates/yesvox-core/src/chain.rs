@@ -394,6 +394,7 @@ mod tests {
             },
             residual_nonvocal: 0.0,
             resampled_for_batch: false,
+            non_finite_samples: 0,
         };
         let mut chain = Chain::voiceover_default(1);
         chain.tune_from_report(&report);

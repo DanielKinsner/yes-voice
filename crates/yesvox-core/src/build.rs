@@ -99,6 +99,7 @@ mod tests {
             },
             residual_nonvocal: 0.0,
             resampled_for_batch: false,
+            non_finite_samples: 0,
         }
     }
 

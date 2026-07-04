@@ -1447,6 +1447,7 @@ mod tests {
             content: ContentGuess { mode, confidence },
             residual_nonvocal,
             resampled_for_batch: false,
+            non_finite_samples: 0,
         }
     }
 
@@ -2001,6 +2002,7 @@ mod tests {
             },
             residual_nonvocal: 0.08,
             resampled_for_batch: false,
+            non_finite_samples: 0,
         };
         let check = VocalIsolationCheck {
             report,
