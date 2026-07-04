@@ -888,7 +888,13 @@ fn audible_cache_key(
     AudibleCacheKey {
         ab,
         volume_match,
-        reblend_bits: reblend_amount.clamp(0.0, 1.0).to_bits(),
+        // Only the Reblend source renders the blend — folding the slider into
+        // every key made A/B drags rebuild the buffer + LUFS per frame (#36).
+        reblend_bits: if auditioning_reblend {
+            reblend_amount.clamp(0.0, 1.0).to_bits()
+        } else {
+            0
+        },
         auditioning_reblend,
         generation,
     }
@@ -6703,10 +6709,6 @@ mod tests {
         );
         assert_ne!(
             base,
-            audible_cache_key(AbView::Processed, false, 0.50, false, 7)
-        );
-        assert_ne!(
-            base,
             audible_cache_key(AbView::Processed, false, 0.25, false, 8)
         );
 
@@ -6717,6 +6719,20 @@ mod tests {
         let audition = audible_cache_key(AbView::Original, false, 0.25, true, 7);
         assert_eq!(audition.playback_source(), PlaybackSource::Reblend);
         assert_ne!(base, audition);
+    }
+
+    #[test]
+    fn reblend_drags_only_invalidate_the_reblend_source() {
+        // #36: dragging the reblend slider while auditing Original/Processed
+        // must not rebuild the audible buffer (and its LUFS) every drag frame —
+        // the slider only shapes the Reblend source's mix.
+        let a = audible_cache_key(AbView::Processed, false, 0.25, false, 7);
+        let b = audible_cache_key(AbView::Processed, false, 0.50, false, 7);
+        assert_eq!(a, b, "A/B/C sources must ignore reblend drags");
+
+        let mix_a = audible_cache_key(AbView::Processed, false, 0.25, true, 7);
+        let mix_b = audible_cache_key(AbView::Processed, false, 0.50, true, 7);
+        assert_ne!(mix_a, mix_b, "the audible reblend mix follows the slider");
     }
 
     #[test]
