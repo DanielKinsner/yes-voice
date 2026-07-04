@@ -32,6 +32,8 @@ pub enum SessionError {
     NotLoaded,
     /// `render` has not run, so there is nothing to export.
     NotRendered,
+    /// The render was canceled cooperatively between DSP stages.
+    Canceled,
     /// Decode/IO failure.
     Io(IoError),
     /// The whole-file analyzer rejected the input.
@@ -54,6 +56,7 @@ impl std::fmt::Display for SessionError {
         match self {
             SessionError::NotLoaded => write!(f, "no vocal is open yet"),
             SessionError::NotRendered => write!(f, "nothing to export — render first"),
+            SessionError::Canceled => write!(f, "render canceled"),
             SessionError::Io(e) => write!(f, "{e}"),
             SessionError::Analysis(e) => write!(f, "{e}"),
             SessionError::BleedBlocked(m) => write!(f, "{m}"),
@@ -1306,6 +1309,15 @@ impl Session {
     /// Run the bound chain on the open vocal, caching the processed result.
     /// Refuses a mix (de-bleed `Block`) with an actionable error.
     pub fn render(&mut self) -> Result<(), SessionError> {
+        self.render_with_cancel(|| false)
+    }
+
+    /// Run the bound chain, polling `should_cancel` between DSP stages.
+    /// A canceled render leaves the prior output state unchanged.
+    pub fn render_with_cancel<F>(&mut self, mut should_cancel: F) -> Result<(), SessionError>
+    where
+        F: FnMut() -> bool,
+    {
         let input = self.input.as_ref().ok_or(SessionError::NotLoaded)?;
         let report = self.report.as_ref().ok_or(SessionError::NotLoaded)?;
 
@@ -1403,7 +1415,10 @@ impl Session {
             buffer.layout(),
         );
         built.chain.reset();
-        built.chain.process(&mut buffer);
+        built
+            .chain
+            .process_with_cancel(&mut buffer, &mut should_cancel)
+            .map_err(|_| SessionError::Canceled)?;
         self.output = Some(buffer);
         self.engine_note = engine_note;
         Ok(())
@@ -1806,6 +1821,25 @@ mod tests {
 
         let _ = std::fs::remove_file(&in_path);
         let _ = std::fs::remove_file(&written);
+    }
+
+    #[test]
+    fn render_with_cancel_returns_canceled_without_caching_output() {
+        let path = temp("render-cancel");
+        quiet_tone_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+
+        let err = s
+            .render_with_cancel(|| true)
+            .expect_err("render should cancel");
+
+        assert!(matches!(err, SessionError::Canceled));
+        assert!(
+            s.output().is_none(),
+            "a canceled render must not publish output"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

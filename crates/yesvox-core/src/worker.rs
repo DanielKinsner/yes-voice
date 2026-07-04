@@ -8,8 +8,8 @@
 //! per frame. A job-body panic is caught ([`std::panic::catch_unwind`]) and
 //! surfaced as a friendly `Failed` event, never a process abort. Cancellation
 //! is cooperative: the job polls [`JobContext::is_canceled`] — today the batch
-//! job honors it between files; render/export run to completion once started
-//! (`Session::render` has no stage-boundary cancel polling yet).
+//! job honors it between files and render honors it between DSP stages; export
+//! runs to completion once started.
 //!
 //! The worker is payload-agnostic — render/export/batch specifics live in the
 //! job closure — so it is testable in `yesvox-core` without a GUI.

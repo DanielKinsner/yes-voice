@@ -70,6 +70,10 @@ impl Stage {
     ];
 }
 
+/// Cooperative render cancellation observed between chain stages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChainCanceled;
+
 /// The host-side repair/finish rack: every module in canonical order, run as one
 /// [`VocalProcessor`].
 pub struct Chain {
@@ -218,27 +222,23 @@ impl Chain {
     pub fn tune_from_report(&mut self, report: &crate::analysis::AnalysisReport) {
         self.dereverb.set_rt60(report.reverb_time_s);
     }
-}
 
-impl VocalProcessor for Chain {
-    fn prepare(&mut self, sample_rate: u32, max_block: usize, layout: ChannelLayout) {
-        self.debleed.prepare(sample_rate, max_block, layout);
-        self.declip.prepare(sample_rate, max_block, layout);
-        self.declick.prepare(sample_rate, max_block, layout);
-        self.depop.prepare(sample_rate, max_block, layout);
-        self.dehum.prepare(sample_rate, max_block, layout);
-        self.denoise.prepare(sample_rate, max_block, layout);
-        self.dereverb.prepare(sample_rate, max_block, layout);
-        self.deess.prepare(sample_rate, max_block, layout);
-        self.breath.prepare(sample_rate, max_block, layout);
-        self.finish.prepare(sample_rate, max_block, layout);
-    }
-
-    fn process(&mut self, buffer: &mut AudioBuffer) {
+    /// Run the chain, polling `should_cancel` before each stage boundary.
+    pub fn process_with_cancel<F>(
+        &mut self,
+        buffer: &mut AudioBuffer,
+        mut should_cancel: F,
+    ) -> Result<(), ChainCanceled>
+    where
+        F: FnMut() -> bool,
+    {
         // Run a stage and blend it back toward dry by its per-stage mix (1 = full
         // effect, 0 = dialed out → identity). Canonical order (plan §649).
         macro_rules! run {
             ($field:ident, $stage:expr) => {{
+                if should_cancel() {
+                    return Err(ChainCanceled);
+                }
                 let m = self.mix[$stage as usize];
                 if m >= 1.0 {
                     self.$field.process(buffer);
@@ -270,6 +270,27 @@ impl VocalProcessor for Chain {
             .set_shared_hf_reduction_db(self.last_shared_hf_db);
         run!(breath, Stage::Breath);
         run!(finish, Stage::Finish);
+        Ok(())
+    }
+}
+
+impl VocalProcessor for Chain {
+    fn prepare(&mut self, sample_rate: u32, max_block: usize, layout: ChannelLayout) {
+        self.debleed.prepare(sample_rate, max_block, layout);
+        self.declip.prepare(sample_rate, max_block, layout);
+        self.declick.prepare(sample_rate, max_block, layout);
+        self.depop.prepare(sample_rate, max_block, layout);
+        self.dehum.prepare(sample_rate, max_block, layout);
+        self.denoise.prepare(sample_rate, max_block, layout);
+        self.dereverb.prepare(sample_rate, max_block, layout);
+        self.deess.prepare(sample_rate, max_block, layout);
+        self.breath.prepare(sample_rate, max_block, layout);
+        self.finish.prepare(sample_rate, max_block, layout);
+    }
+
+    fn process(&mut self, buffer: &mut AudioBuffer) {
+        let result = self.process_with_cancel(buffer, || false);
+        debug_assert!(result.is_ok(), "never canceled");
     }
 
     fn reset(&mut self) {
@@ -416,6 +437,26 @@ mod tests {
         for (a, b) in buf.channel(0).iter().zip(&x) {
             assert!((a - b).abs() <= f32::EPSILON, "all-bypass must be identity");
         }
+    }
+
+    #[test]
+    fn process_with_cancel_polls_between_stages() {
+        let mut buf = mono(degraded_signal(20_000));
+        let mut chain = Chain::all_bypassed(2);
+        chain.prepare(SR, 4096, buf.layout());
+        chain.reset();
+
+        let mut polls = 0;
+        let result = chain.process_with_cancel(&mut buf, || {
+            polls += 1;
+            polls >= 2
+        });
+
+        assert_eq!(result, Err(ChainCanceled));
+        assert_eq!(
+            polls, 2,
+            "cancel should be observed at the next stage boundary"
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ use yesvox_core::worker::{spawn, JobEvent, JobHandle};
 use yesvox_core::{
     AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, History,
     JobStatus, LoudnessTarget, OutputFormat, PlaybackSource, Preset, RenderQueue, Session,
-    SessionSnapshot, VocalIsolationCheck,
+    SessionError, SessionSnapshot, VocalIsolationCheck,
 };
 
 /// Undo/redo depth cap (#25).
@@ -665,11 +665,12 @@ impl YesVoxApp {
         self.render_job = Some(spawn(move |ctx| {
             ctx.progress(0.05);
             let mut session = session;
-            let (ok, status) = match session.render() {
+            let (ok, status) = match session.render_with_cancel(|| ctx.is_canceled()) {
                 Ok(()) => {
                     let lufs = session.output_lufs().unwrap_or(f32::NAN);
                     (true, format!("Rendered - OUT {lufs:.1} LUFS"))
                 }
+                Err(SessionError::Canceled) => (false, "Render canceled".to_owned()),
                 Err(e) => (false, format!("Render failed: {e}")),
             };
             ctx.progress(1.0);
@@ -679,6 +680,15 @@ impl YesVoxApp {
                 status,
             })
         }));
+    }
+
+    fn cancel_render(&mut self) {
+        if let Some(job) = self.render_job.as_ref() {
+            job.cancel();
+            self.status = "Render cancel requested".to_owned();
+        } else {
+            self.status = "No render running".to_owned();
+        }
     }
 
     /// Rebuild the session after a render-worker panic (the session was moved
@@ -1153,11 +1163,27 @@ impl YesVoxApp {
         self.small_text(
             painter,
             c,
-            218.0,
+            if self.render_job.is_some() {
+                190.0
+            } else {
+                218.0
+            },
             918.0,
             &format!("{:.0}%", progress * 100.0),
             CYAN,
         );
+        if self.render_job.is_some()
+            && self.outline_button(
+                ui,
+                painter,
+                c,
+                rect(230.0, 902.0, 22.0, 22.0),
+                "x",
+                "render_cancel",
+            )
+        {
+            self.cancel_render();
+        }
         self.progress_bar(painter, c, rect(34.0, 934.0, 218.0, 6.0), progress);
         if self.gradient_button(
             ui,
