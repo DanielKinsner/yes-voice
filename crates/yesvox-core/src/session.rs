@@ -554,6 +554,16 @@ impl DeHumAdvanced {
     }
 }
 
+fn machine_max_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().max(1))
+        .unwrap_or(1)
+}
+
+fn default_worker_count() -> usize {
+    machine_max_worker_count().saturating_sub(1).max(1)
+}
+
 /// A stateful vocal-editing session.
 pub struct Session {
     settings: Settings,
@@ -616,6 +626,7 @@ pub struct SessionSnapshot {
     declip: DeClipAdvanced,
     depop: DePopAdvanced,
     dehum: DeHumAdvanced,
+    workers: usize,
     flow: f32,
     polish: f32,
     loudness_override: Option<LoudnessTarget>,
@@ -634,9 +645,7 @@ impl Session {
     pub fn new() -> Self {
         let settings = Settings::default();
         let preset = Preset::default_for(settings.content_mode);
-        let workers = std::thread::available_parallelism()
-            .map(|n| n.get().saturating_sub(1).max(1))
-            .unwrap_or(1);
+        let workers = default_worker_count();
         Session {
             settings,
             preset,
@@ -676,6 +685,23 @@ impl Session {
     /// explicit "I know, proceed anyway" override).
     pub fn set_allow_over_budget(&mut self, allow: bool) {
         self.allow_over_budget = allow;
+    }
+
+    /// Maximum worker threads this machine should expose for the Advanced
+    /// denoise worker-count control.
+    pub fn max_worker_count() -> usize {
+        machine_max_worker_count()
+    }
+
+    /// Current denoise worker-count budget.
+    pub fn worker_count(&self) -> usize {
+        self.workers
+    }
+
+    /// Set the denoise worker-count budget, clamped to `1..=max_worker_count`.
+    pub fn set_worker_count(&mut self, workers: usize) {
+        self.workers = workers.clamp(1, Self::max_worker_count());
+        self.output = None;
     }
 
     /// A session seeded with specific settings + preset (used by the batch queue
@@ -1509,6 +1535,7 @@ impl Session {
             declip: self.declip,
             depop: self.depop,
             dehum: self.dehum,
+            workers: self.workers,
             flow: self.flow,
             polish: self.polish,
             loudness_override: self.loudness_override,
@@ -1529,6 +1556,7 @@ impl Session {
         self.declip = snapshot.declip;
         self.depop = snapshot.depop;
         self.dehum = snapshot.dehum;
+        self.workers = snapshot.workers.clamp(1, Self::max_worker_count());
         self.flow = snapshot.flow;
         self.polish = snapshot.polish;
         self.loudness_override = snapshot.loudness_override;
@@ -3191,6 +3219,28 @@ mod tests {
 
         s.set_quality_mode(QualityMode::RestorationHq);
         assert!(s.generative_reconstruction_badge());
+    }
+
+    #[test]
+    fn advanced_worker_count_clamps_and_restores() {
+        let max_workers = Session::max_worker_count();
+        let preferred = if max_workers >= 2 { 2 } else { 1 };
+        let mut s = Session::new();
+
+        assert!(s.worker_count() >= 1);
+        assert!(s.worker_count() <= max_workers);
+
+        s.set_worker_count(preferred);
+        let snapshot = s.snapshot();
+        assert_eq!(s.worker_count(), preferred);
+
+        s.set_worker_count(0);
+        assert_eq!(s.worker_count(), 1);
+        s.set_worker_count(max_workers + 100);
+        assert_eq!(s.worker_count(), max_workers);
+
+        s.restore_snapshot(&snapshot);
+        assert_eq!(s.worker_count(), preferred);
     }
 
     #[test]
