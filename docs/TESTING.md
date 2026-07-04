@@ -80,6 +80,14 @@ commit.
   `YESVOX_PERF_RENDER_BUDGET_SECONDS` when calibrating a reference machine.
   Criterion benches (`cargo bench -p yesvox-core --bench render_bench`) cover
   local precision tracking for the <60 s drop-to-export budget (plan §8.4).
+- **Real-stem eval lane** (#21) — `cargo xtask eval` is skip-safe when
+  `YESVOX_EVAL_CORPUS` is unset. When set, the corpus must be an uncommitted
+  local directory with at least 12 voiceover and 12 singing `.wav`/`.flac`
+  stems, either under `voiceover/` and `singing/` folders or listed in
+  `manifest.tsv` as `path<TAB>mode`. The command writes a diffable JSON report
+  to `target/eval/report.json` (override with `YESVOX_EVAL_REPORT`) and fails
+  on length, loudness/true-peak, F0 continuity, HNR, spectral-envelope, or
+  singing-tail/vibrato regressions.
 - **Neural lane** (`--features neural`) — the `ort` ONNX engine is off by default, so the fast lane never builds it. A compile-only CI job (`cargo clippy -p yesvox-core --features neural -D warnings`, `load-dynamic` ⇒ no native download) stops the feature-gated code from rotting. Its real end-to-end parity check is an **`#[ignore]`d** integration test (`ort_mask_matches_golden`) — it needs the fetched ONNX weights (`YESVOX_MODEL_PATH`) and the onnxruntime shared lib (`ORT_DYLIB_PATH`), so it runs on a developer machine, not CI. The always-on host DSP (fbank/STFT/engine/resample/chunk) **is** golden-tested in the fast lane; goldens are blessed by the `spikes/mossformer2-onnx/*_golden.py` scripts.
 - **Singing lane** — `tests/singing_gate.rs` runs the synthetic sung-character preservation checks in CI: F0 cents, vibrato rate/depth, HNR, spectral-envelope cosine, and tail survival.
 - **Determinism lane** (#34) — `tests/determinism.rs` is a **hard same-machine gate** (part of `cargo test`, so it runs on every OS): the full rack rendered twice, and rendered with 1 vs N worker-pool threads, must be **byte-identical** (the pool reassembles chunks by index, so thread-count can't change the output). Cross-*platform* byte-agreement is **not yet a gate**: the separate `determinism-fingerprint` CI job renders a fixture and prints a `DETERMINISM_FINGERPRINT … sha256=…` line per OS. Compare those three logs — if they agree, promote the hash to a hard cross-OS golden; if float drift (SIMD/libm) makes them diverge, document where and pin per-platform goldens. Informational first, by design.
