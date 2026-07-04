@@ -85,6 +85,7 @@ enum ViewMode {
 enum AbView {
     Original,
     Processed,
+    CompareSnapshot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,6 +347,7 @@ impl AudibleCacheKey {
             match self.ab {
                 AbView::Original => PlaybackSource::Original,
                 AbView::Processed => PlaybackSource::Processed,
+                AbView::CompareSnapshot => PlaybackSource::CompareSnapshot,
             }
         }
     }
@@ -639,6 +641,44 @@ impl YesVoxApp {
             .map(|cache| cache.metrics)
     }
 
+    fn set_ab_view(&mut self, ab: AbView) {
+        self.ab = ab;
+        self.auditioning_reblend = false;
+        self.refresh_playback_source();
+    }
+
+    fn toggle_ab_view(&mut self) {
+        let next = match self.ab {
+            AbView::Original => AbView::Processed,
+            AbView::Processed | AbView::CompareSnapshot => AbView::Original,
+        };
+        self.set_ab_view(next);
+    }
+
+    fn pin_compare_snapshot(&mut self) {
+        if self.session.pin_compare_snapshot() {
+            self.bump_audio_generation();
+            self.set_ab_view(AbView::CompareSnapshot);
+            self.status = "Pinned C snapshot".to_owned();
+        } else {
+            self.status = "Render before pinning C".to_owned();
+        }
+    }
+
+    fn clear_compare_snapshot(&mut self) {
+        if self.session.compare_snapshot().is_none() {
+            return;
+        }
+        self.session.clear_compare_snapshot();
+        self.bump_audio_generation();
+        if self.ab == AbView::CompareSnapshot {
+            self.set_ab_view(AbView::Processed);
+        } else {
+            self.refresh_playback_source();
+        }
+        self.status = "Cleared C snapshot".to_owned();
+    }
+
     /// Play/pause the current audible source, opening the cpal device on first use. A device
     /// failure becomes a status line, never a panic (#23). Switching the source
     /// on an existing player preserves the playhead (instant A/B).
@@ -842,6 +882,7 @@ impl YesVoxApp {
                 if let Some(parent) = path.parent() {
                     self.session.set_output_location(parent);
                 }
+                self.ab = AbView::Processed;
                 self.bump_audio_generation();
                 self.render_now();
             }
@@ -1236,12 +1277,7 @@ impl YesVoxApp {
             "A / B",
             "top_ab",
         ) {
-            self.ab = match self.ab {
-                AbView::Original => AbView::Processed,
-                AbView::Processed => AbView::Original,
-            };
-            self.auditioning_reblend = false; // A/B compares pure output, not the mix
-            self.refresh_playback_source(); // instant A/B at the shared playhead
+            self.toggle_ab_view(); // instant A/B at the shared playhead
         }
         // Preset picker (#24): the top-bar dropdown is the only way to change
         // preset. Gear/Help/"Back to Suite" were PNG-only dead chrome — removed.
@@ -1497,9 +1533,7 @@ impl YesVoxApp {
             self.ab == AbView::Original,
             "ab_original",
         ) {
-            self.ab = AbView::Original;
-            self.auditioning_reblend = false;
-            self.refresh_playback_source();
+            self.set_ab_view(AbView::Original);
         }
         if self.segment_button(
             ui,
@@ -1510,9 +1544,7 @@ impl YesVoxApp {
             self.ab == AbView::Processed,
             "ab_processed",
         ) {
-            self.ab = AbView::Processed;
-            self.auditioning_reblend = false;
-            self.refresh_playback_source();
+            self.set_ab_view(AbView::Processed);
         }
 
         let wave_rect = rect(322.0, 148.0, 1032.0, 160.0);
@@ -1546,7 +1578,7 @@ impl YesVoxApp {
 
     fn draw_advanced(
         &mut self,
-        _ui: &mut egui::Ui,
+        ui: &mut egui::Ui,
         painter: &egui::Painter,
         c: CanvasMap,
         l: AdvancedLayout,
@@ -1615,19 +1647,98 @@ impl YesVoxApp {
             self.advanced_module_card(painter, c, *card, module);
         }
 
-        self.body_text(
+        let compare_pinned = self.session.compare_snapshot().is_some();
+        let monitor_y = l.monitor.top() + 78.0;
+        if self.segment_button(
+            ui,
             painter,
             c,
-            l.monitor.left() + 24.0,
-            l.monitor.top() + 88.0,
-            "A  Original        B  Processed        C  Difference",
-            TEXT,
-        );
+            rect(l.monitor.left() + 24.0, monitor_y, 108.0, 32.0),
+            "A Original",
+            self.ab == AbView::Original,
+            "advanced_ab_original",
+        ) {
+            self.set_ab_view(AbView::Original);
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            rect(l.monitor.left() + 132.0, monitor_y, 116.0, 32.0),
+            "B Processed",
+            self.ab == AbView::Processed,
+            "advanced_ab_processed",
+        ) {
+            self.set_ab_view(AbView::Processed);
+        }
+        let compare_rect = rect(l.monitor.left() + 248.0, monitor_y, 116.0, 32.0);
+        if compare_pinned {
+            if self.segment_button(
+                ui,
+                painter,
+                c,
+                compare_rect,
+                "C Snapshot",
+                self.ab == AbView::CompareSnapshot,
+                "advanced_ab_compare",
+            ) {
+                self.set_ab_view(AbView::CompareSnapshot);
+            }
+        } else {
+            paint_panel(painter, c, compare_rect, 5, FIELD, BORDER_DIM);
+            self.small_text(
+                painter,
+                c,
+                compare_rect.left() + 18.0,
+                compare_rect.top() + 21.0,
+                "C Empty",
+                TEXT_DIM,
+            );
+        }
+        if self.outline_button(
+            ui,
+            painter,
+            c,
+            rect(l.monitor.left() + 378.0, monitor_y, 72.0, 32.0),
+            "Pin C",
+            "advanced_pin_c",
+        ) {
+            self.pin_compare_snapshot();
+        }
+        if compare_pinned {
+            if self.outline_button(
+                ui,
+                painter,
+                c,
+                rect(l.monitor.left() + 462.0, monitor_y, 68.0, 32.0),
+                "Clear",
+                "advanced_clear_c",
+            ) {
+                self.clear_compare_snapshot();
+            }
+        } else {
+            paint_panel(
+                painter,
+                c,
+                rect(l.monitor.left() + 462.0, monitor_y, 68.0, 32.0),
+                5,
+                alpha(FIELD, 100),
+                BORDER_DIM,
+            );
+            self.micro_text(
+                painter,
+                c,
+                l.monitor.left() + 481.0,
+                monitor_y + 20.0,
+                "Clear",
+                TEXT_DIM,
+            );
+        }
         self.small_text(
             painter,
             c,
             l.monitor.left() + 24.0,
-            l.monitor.top() + 128.0,
+            l.monitor.top() + 132.0,
             "Volume Match",
             if self.volume_match { CYAN } else { TEXT_MUTED },
         );
@@ -1635,13 +1746,13 @@ impl YesVoxApp {
             painter,
             c,
             l.monitor.left() + 24.0,
-            l.monitor.top() + 160.0,
+            l.monitor.top() + 164.0,
             "Reblend",
             TEXT_MUTED,
         );
         let reblend_bar = rect(
             l.monitor.left() + 108.0,
-            l.monitor.top() + 154.0,
+            l.monitor.top() + 158.0,
             260.0,
             8.0,
         );
@@ -4109,6 +4220,10 @@ mod tests {
             base,
             audible_cache_key(AbView::Processed, false, 0.25, false, 8)
         );
+
+        let compare = audible_cache_key(AbView::CompareSnapshot, false, 0.25, false, 7);
+        assert_eq!(compare.playback_source(), PlaybackSource::CompareSnapshot);
+        assert_ne!(base, compare);
 
         let audition = audible_cache_key(AbView::Original, false, 0.25, true, 7);
         assert_eq!(audition.playback_source(), PlaybackSource::Reblend);
