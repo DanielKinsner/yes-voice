@@ -349,21 +349,29 @@ struct FinishCards {
     loudness_enabled: Option<bool>,
     presence_air_amount: f32,
     leveling_amount: f32,
+    presence_db: f32,
+    air_db: f32,
 }
 
 impl Default for FinishCards {
     fn default() -> Self {
+        Self::for_preset(Preset::PODCAST)
+    }
+}
+
+impl FinishCards {
+    fn for_preset(preset: Preset) -> Self {
         FinishCards {
             presence_air_enabled: None,
             leveling_enabled: None,
             loudness_enabled: None,
             presence_air_amount: 1.0,
             leveling_amount: 1.0,
+            presence_db: preset.presence_db,
+            air_db: preset.air_db,
         }
     }
-}
 
-impl FinishCards {
     fn set_enabled(&mut self, card: CardId, on: bool) -> bool {
         match card {
             CardId::PresenceAir => self.presence_air_enabled = Some(on),
@@ -399,6 +407,15 @@ impl FinishCards {
             _ => return false,
         }
         true
+    }
+
+    fn set_eq(&mut self, presence_db: f32, air_db: f32) {
+        self.presence_db = presence_db.clamp(0.0, 3.0);
+        self.air_db = air_db.clamp(0.0, 3.0);
+    }
+
+    fn eq(&self) -> (f32, f32) {
+        (self.presence_db, self.air_db)
     }
 }
 
@@ -752,7 +769,7 @@ impl Session {
             output: None,
             compare_snapshot: None,
             cards: [Card::default(); STAGE_COUNT],
-            finish_cards: FinishCards::default(),
+            finish_cards: FinishCards::for_preset(preset),
             transient_cards: TransientCards::default(),
             debleed: DeBleedAdvanced::default(),
             declip: DeClipAdvanced::default(),
@@ -1159,6 +1176,18 @@ impl Session {
         self.finish_cards.presence_air_amount
     }
 
+    /// Set the Presence/Air EQ patch directly, in dB. This remains a bounded
+    /// positive polish control, not a general-purpose EQ.
+    pub fn set_presence_air_eq(&mut self, presence_db: f32, air_db: f32) {
+        self.finish_cards.set_eq(presence_db, air_db);
+        self.output = None;
+    }
+
+    /// The active Presence/Air EQ patch in dB.
+    pub fn presence_air_eq(&self) -> (f32, f32) {
+        self.finish_cards.eq()
+    }
+
     /// Enable or bypass the Leveling card's program-level gain rider.
     pub fn set_leveling_enabled(&mut self, on: bool) {
         self.finish_cards.leveling_enabled = Some(on);
@@ -1320,7 +1349,7 @@ impl Session {
     /// Polish Intensity) persist across preset changes.
     fn reset_cards(&mut self) {
         self.cards = [Card::default(); STAGE_COUNT];
-        self.finish_cards = FinishCards::default();
+        self.finish_cards = FinishCards::for_preset(self.preset);
         self.transient_cards = TransientCards::default();
         self.dereverb = DeReverbAdvanced::for_content(self.settings.content_mode);
         self.deess = DeEssAdvanced::for_preset(self.preset);
@@ -1848,6 +1877,8 @@ impl Session {
         // over the preset's finish target; with no override this re-asserts the
         // preset's own target, so it is a no-op.
         built.chain.finish.set_target(self.loudness_target());
+        let (presence_db, air_db) = self.presence_air_eq();
+        built.chain.finish.set_eq(presence_db, air_db);
         built
             .chain
             .finish
@@ -3310,6 +3341,74 @@ mod tests {
                 .zip(&dry_amount)
                 .any(|(a, b)| (a - b).abs() > 1e-5),
             "Presence/Air amount 1 must reach the rendered EQ"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn advanced_presence_air_eq_clamps_restores_and_resets_to_preset() {
+        let mut s = Session::new();
+        assert_eq!(s.presence_air_eq(), (1.5, 0.0));
+
+        s.set_presence_air_eq(2.25, 0.75);
+        let snapshot = s.snapshot();
+        assert_eq!(s.presence_air_eq(), (2.25, 0.75));
+
+        s.set_presence_air_eq(99.0, -1.0);
+        assert_eq!(
+            s.presence_air_eq(),
+            (3.0, 0.0),
+            "advanced boosts stay positive and bounded"
+        );
+
+        s.restore_snapshot(&snapshot);
+        assert_eq!(s.presence_air_eq(), (2.25, 0.75));
+
+        s.select_preset(Preset::NARRATION);
+        assert_eq!(
+            s.presence_air_eq(),
+            (0.0, 1.0),
+            "preset changes reset the advanced finish EQ patch"
+        );
+
+        s.set_content_mode(ContentMode::Singing);
+        assert_eq!(s.presence_air_eq(), (0.0, 1.0));
+    }
+
+    #[test]
+    fn advanced_presence_air_eq_reaches_rendered_finish_eq() {
+        let path = temp("advanced-presence-air-eq");
+        let n = SR as usize * 2;
+        let x: Vec<f32> = (0..n)
+            .map(|i| 0.08 * (2.0 * PI * 5000.0 * i as f32 / SR as f32).sin())
+            .collect();
+        let input = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(&path, &input).expect("write fixture");
+
+        let render = |presence_db: f32, air_db: f32| {
+            let mut s = Session::new();
+            s.open(&path).unwrap();
+            for stage in Stage::ALL {
+                s.set_stage_enabled(stage, false);
+            }
+            s.set_stage_enabled(Stage::Finish, true);
+            s.set_presence_air_enabled(true);
+            s.set_leveling_enabled(false);
+            s.set_loudness_enabled(false);
+            s.set_presence_air_amount(1.0);
+            s.set_presence_air_eq(presence_db, air_db);
+            s.render().unwrap();
+            s.output().unwrap().channel(0).to_vec()
+        };
+
+        let dry = render(0.0, 0.0);
+        let wet = render(3.0, 0.0);
+        let dry_presence = goertzel_power(&dry[2000..], SR as f32, 5000.0);
+        let wet_presence = goertzel_power(&wet[2000..], SR as f32, 5000.0);
+        assert!(
+            wet_presence > dry_presence * 1.5,
+            "advanced presence boost should reach the rendered EQ: {dry_presence} -> {wet_presence}"
         );
 
         let _ = std::fs::remove_file(&path);
