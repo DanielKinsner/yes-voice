@@ -1419,7 +1419,14 @@ impl YesVoxApp {
             FIELD,
             BORDER_DIM,
         );
-        self.body_text(painter, c, 1622.0, 798.0, &self.name_input, TEXT);
+        // Editable name (#24): a transparent TextEdit over the painted field.
+        let name_resp = ui.put(
+            c.rect(rect(1620.0, 780.0, 244.0, 24.0)),
+            egui::TextEdit::singleline(&mut self.name_input).text_color(TEXT),
+        );
+        if name_resp.changed() {
+            self.session.set_output_name(&self.name_input);
+        }
         self.small_text(painter, c, 1608.0, 822.0, "Location", TEXT_MUTED);
         paint_panel(
             painter,
@@ -1434,9 +1441,21 @@ impl YesVoxApp {
             .output_location()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "/Users/You/Music/YesVox".to_owned());
-        let location = truncate_middle(&location, 30);
-        self.body_text(painter, c, 1622.0, 858.0, &location, TEXT);
+        let location_short = truncate_middle(&location, 30);
+        self.body_text(painter, c, 1622.0, 858.0, &location_short, TEXT);
         self.folder_icon(painter, c, egui::pos2(1850.0, 856.0));
+        // Click the Location field to pick an output folder (#24, rfd).
+        if self
+            .response(ui, c, rect(1608.0, 840.0, 264.0, 34.0), "location_pick")
+            .clicked()
+        {
+            if let Some(dir) = rfd::FileDialog::new()
+                .set_title("Output Location")
+                .pick_folder()
+            {
+                self.session.set_output_location(&dir);
+            }
+        }
         // "Add to Yes Suite Library" removed (#24): the suite handoff is a
         // designed-for seam, not a built-in v1 feature.
 
