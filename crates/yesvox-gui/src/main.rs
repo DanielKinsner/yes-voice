@@ -27,6 +27,9 @@ use yesvox_core::{
 /// Undo/redo depth cap (#25).
 const HISTORY_CAP: usize = 100;
 
+/// Status line shown when a settings edit is refused mid-job (#36).
+const SETTINGS_LOCKED_STATUS: &str = "Working - settings unlock when the job finishes";
+
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
 const MIN_VIEWPORT_SIZE: [f32; 2] = [1280.0, 720.0];
 
@@ -1010,6 +1013,26 @@ struct YesVoxApp {
 impl YesVoxApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_theme(&cc.egui_ctx);
+        let mut session = Self::default_session();
+
+        // Persistence-lite (#24): restore the last output dir + format from
+        // eframe storage. Degrades to defaults when there is no stored value.
+        if let Some(storage) = cc.storage {
+            if let Some(dir) = storage.get_string(STORAGE_LAST_DIR) {
+                if !dir.is_empty() {
+                    session.set_output_location(PathBuf::from(dir));
+                }
+            }
+            if storage.get_string(STORAGE_LAST_FORMAT).as_deref() == Some("FLAC") {
+                session.set_output_format(OutputFormat::Flac);
+            }
+        }
+
+        Self::from_session(session)
+    }
+
+    /// The product-default session `new` starts from (before storage restore).
+    fn default_session() -> Session {
         let mut session = Session::new();
         session.select_preset(Preset::LEAD_VOCAL);
         session.set_flow_amount(1.0);
@@ -1034,20 +1057,12 @@ impl YesVoxApp {
             session.set_card_amount(card, amount);
         }
         session.set_card_enabled(CardId::Loudness, true);
+        session
+    }
 
-        // Persistence-lite (#24): restore the last output dir + format from
-        // eframe storage. Degrades to defaults when there is no stored value.
-        if let Some(storage) = cc.storage {
-            if let Some(dir) = storage.get_string(STORAGE_LAST_DIR) {
-                if !dir.is_empty() {
-                    session.set_output_location(PathBuf::from(dir));
-                }
-            }
-            if storage.get_string(STORAGE_LAST_FORMAT).as_deref() == Some("FLAC") {
-                session.set_output_format(OutputFormat::Flac);
-            }
-        }
-
+    /// Fresh app state over `session` (theme/storage are `new`'s concern —
+    /// this is also the test constructor).
+    fn from_session(session: Session) -> Self {
         let history = History::new(session.snapshot(), HISTORY_CAP);
         YesVoxApp {
             session,
@@ -1088,6 +1103,29 @@ impl YesVoxApp {
         self.bump_audio_generation();
     }
 
+    /// Whether settings edits are locked (#36). The render path moves the
+    /// session onto the worker and leaves a placeholder behind — an edit made
+    /// now would write to the placeholder and silently vanish when the
+    /// rendered session is adopted back, with a bogus history entry left over.
+    /// Export/batch keep the session in place but share the lock so the
+    /// settings that produced an in-flight job can't drift under it.
+    fn edits_locked(&self) -> bool {
+        self.busy()
+    }
+
+    /// The single gate for settings edits (#36): apply `edit` to the session
+    /// and record the undo step, or refuse with a status line while a job is
+    /// in flight. Returns whether the edit landed.
+    fn apply_edit(&mut self, key: &str, edit: impl FnOnce(&mut Session)) -> bool {
+        if self.edits_locked() {
+            self.status = SETTINGS_LOCKED_STATUS.to_owned();
+            return false;
+        }
+        edit(&mut self.session);
+        self.commit_edit(key);
+        true
+    }
+
     fn bump_audio_generation(&mut self) {
         self.audio_generation = self.audio_generation.wrapping_add(1);
         self.audible_cache = None;
@@ -1097,6 +1135,12 @@ impl YesVoxApp {
 
     /// Undo the last settings edit (if any), restoring the session.
     fn undo(&mut self) {
+        if self.edits_locked() {
+            // A restore is a settings edit — it would land on the render
+            // placeholder and vanish on adopt-back, desyncing history (#36).
+            self.status = SETTINGS_LOCKED_STATUS.to_owned();
+            return;
+        }
         if let Some(snapshot) = self.history.undo().cloned() {
             self.session.restore_snapshot(&snapshot);
             self.stop_playback();
@@ -1110,6 +1154,10 @@ impl YesVoxApp {
 
     /// Redo the last undone edit (if any).
     fn redo(&mut self) {
+        if self.edits_locked() {
+            self.status = SETTINGS_LOCKED_STATUS.to_owned();
+            return;
+        }
         if let Some(snapshot) = self.history.redo().cloned() {
             self.session.restore_snapshot(&snapshot);
             self.stop_playback();
@@ -1122,6 +1170,10 @@ impl YesVoxApp {
     /// Draw the preset dropdown (when open) over everything else, and apply a
     /// selection. Rendered last in `ui()` so it sits above the panels (#24).
     fn draw_preset_menu(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, c: CanvasMap) {
+        if self.preset_menu_open && self.edits_locked() {
+            // A job started with the menu open — presets are settings (#36).
+            self.preset_menu_open = false;
+        }
         if !self.preset_menu_open {
             return;
         }
@@ -1151,11 +1203,11 @@ impl YesVoxApp {
             }
         }
         if let Some(preset) = pick {
-            self.session.select_preset(preset);
-            self.commit_edit("preset");
-            self.stop_playback(); // preset changes the render
+            if self.apply_edit("preset", |s| s.select_preset(preset)) {
+                self.stop_playback(); // preset changes the render
+                self.status = format!("Preset - {}", preset.name);
+            }
             self.preset_menu_open = false;
-            self.status = format!("Preset - {}", preset.name);
         }
     }
 
@@ -1835,7 +1887,7 @@ impl YesVoxApp {
             c,
             rect(1386.0, 14.0, 38.0, 40.0),
             "Undo",
-            self.history.can_undo(),
+            self.history.can_undo() && !self.edits_locked(),
         ) {
             self.undo();
         }
@@ -1845,7 +1897,7 @@ impl YesVoxApp {
             c,
             rect(1434.0, 14.0, 38.0, 40.0),
             "Redo",
-            self.history.can_redo(),
+            self.history.can_redo() && !self.edits_locked(),
         ) {
             self.redo();
         }
@@ -1930,9 +1982,12 @@ impl YesVoxApp {
             mode == ContentMode::Voiceover,
             "mode_voice",
         ) {
-            self.session.set_content_mode(ContentMode::Voiceover);
-            self.commit_edit("content_mode"); // undoable — it resets the rack (#25)
-            self.stop_playback();
+            // Undoable — it resets the rack (#25).
+            if self.apply_edit("content_mode", |s| {
+                s.set_content_mode(ContentMode::Voiceover)
+            }) {
+                self.stop_playback();
+            }
         }
         if self.mode_button(
             ui,
@@ -1944,9 +1999,10 @@ impl YesVoxApp {
             mode == ContentMode::Singing,
             "mode_sing",
         ) {
-            self.session.set_content_mode(ContentMode::Singing);
-            self.commit_edit("content_mode"); // undoable — it resets the rack (#25)
-            self.stop_playback();
+            // Undoable — it resets the rack (#25).
+            if self.apply_edit("content_mode", |s| s.set_content_mode(ContentMode::Singing)) {
+                self.stop_playback();
+            }
         }
 
         paint_panel(
@@ -2097,8 +2153,7 @@ impl YesVoxApp {
             PURPLE,
         );
         if (flow - self.session.flow_amount()).abs() > f32::EPSILON {
-            self.session.set_flow_amount(flow);
-            self.commit_edit("flow");
+            self.apply_edit("flow", |s| s.set_flow_amount(flow));
         }
         self.body_text(painter, c, 1288.0, 120.0, "x1.00", TEXT);
 
@@ -2534,8 +2589,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_debleed");
+            self.apply_edit("advanced_debleed", |s| panel.apply_to_session(s));
         }
     }
 
@@ -2607,8 +2661,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_declip");
+            self.apply_edit("advanced_declip", |s| panel.apply_to_session(s));
         }
     }
 
@@ -2712,8 +2765,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_declick");
+            self.apply_edit("advanced_declick", |s| panel.apply_to_session(s));
         }
     }
 
@@ -2787,8 +2839,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_depop");
+            self.apply_edit("advanced_depop", |s| panel.apply_to_session(s));
         }
     }
 
@@ -2928,8 +2979,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_dehum");
+            self.apply_edit("advanced_dehum", |s| panel.apply_to_session(s));
         }
     }
 
@@ -3060,8 +3110,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_denoise");
+            self.apply_edit("advanced_denoise", |s| panel.apply_to_session(s));
         }
     }
 
@@ -3144,8 +3193,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_dereverb");
+            self.apply_edit("advanced_dereverb", |s| panel.apply_to_session(s));
         }
     }
 
@@ -3263,8 +3311,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_deess");
+            self.apply_edit("advanced_deess", |s| panel.apply_to_session(s));
         }
     }
 
@@ -3342,8 +3389,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_breath");
+            self.apply_edit("advanced_breath", |s| panel.apply_to_session(s));
         }
     }
 
@@ -3537,8 +3583,7 @@ impl YesVoxApp {
         );
 
         if panel != original {
-            panel.apply_to_session(&mut self.session);
-            self.commit_edit("advanced_finish");
+            self.apply_edit("advanced_finish", |s| panel.apply_to_session(s));
         }
     }
 
@@ -3620,8 +3665,7 @@ impl YesVoxApp {
                     "restore_focus",
                 );
                 if (value - self.session.restoration_focus()).abs() > f32::EPSILON {
-                    self.session.set_restoration_focus(value);
-                    self.commit_edit("restoration_focus");
+                    self.apply_edit("restoration_focus", |s| s.set_restoration_focus(value));
                 }
                 self.micro_text(
                     painter,
@@ -3675,8 +3719,7 @@ impl YesVoxApp {
                     "polish_intensity",
                 );
                 if (value - self.session.polish_intensity()).abs() > f32::EPSILON {
-                    self.session.set_polish_intensity(value);
-                    self.commit_edit("polish");
+                    self.apply_edit("polish", |s| s.set_polish_intensity(value));
                 }
                 self.micro_text(
                     painter,
@@ -3723,7 +3766,7 @@ impl YesVoxApp {
             card.label(),
             TEXT,
         );
-        let mut on = self.session.card_enabled(card);
+        let on = self.session.card_enabled(card);
         if self.toggle(
             ui,
             painter,
@@ -3732,9 +3775,10 @@ impl YesVoxApp {
             on,
             ("card_toggle", card.label()),
         ) {
-            on = !on;
-            self.session.set_card_enabled(card, on);
-            self.commit_edit(&format!("card_toggle:{}", card.label()));
+            let next = !on;
+            self.apply_edit(&format!("card_toggle:{}", card.label()), |s| {
+                s.set_card_enabled(card, next)
+            });
         }
         let (a, b) = card_blurb(card);
         self.micro_text(painter, c, r.left() + 12.0, r.top() + 68.0, a, TEXT_MUTED);
@@ -3755,8 +3799,9 @@ impl YesVoxApp {
                 ("card_amount", card.label()),
             );
             if (next - current).abs() > 1e-6 {
-                self.session.set_card_amount(card, next);
-                self.commit_edit(&format!("card_amount:{}", card.label()));
+                self.apply_edit(&format!("card_amount:{}", card.label()), |s| {
+                    s.set_card_amount(card, next)
+                });
             }
         }
         // Per-card "Advanced" buttons removed (#24): the Advanced screen is a
@@ -3857,8 +3902,7 @@ impl YesVoxApp {
             "dither_toggle",
         ) {
             let next = !self.session.settings().export.dither;
-            self.session.set_dither(next);
-            self.commit_edit("dither");
+            self.apply_edit("dither", |s| s.set_dither(next));
         }
 
         let file = rect(1588.0, 680.0, 304.0, 216.0);
@@ -3874,12 +3918,18 @@ impl YesVoxApp {
             BORDER_DIM,
         );
         // Editable name (#24): a transparent TextEdit over the painted field.
-        let name_resp = ui.put(
-            c.rect(rect(1620.0, 780.0, 244.0, 24.0)),
-            egui::TextEdit::singleline(&mut self.name_input).text_color(TEXT),
-        );
-        if name_resp.changed() {
-            self.session.set_output_name(&self.name_input);
+        // While a job runs the session may be a worker-side placeholder, so the
+        // name paints read-only instead of accepting doomed edits (#36).
+        if self.edits_locked() {
+            self.body_text(painter, c, 1620.0, 792.0, &self.name_input, TEXT_MUTED);
+        } else {
+            let name_resp = ui.put(
+                c.rect(rect(1620.0, 780.0, 244.0, 24.0)),
+                egui::TextEdit::singleline(&mut self.name_input).text_color(TEXT),
+            );
+            if name_resp.changed() {
+                self.session.set_output_name(&self.name_input);
+            }
         }
         self.small_text(painter, c, 1608.0, 822.0, "Location", TEXT_MUTED);
         paint_panel(
@@ -3903,7 +3953,9 @@ impl YesVoxApp {
             .response(ui, c, rect(1608.0, 840.0, 264.0, 34.0), "location_pick")
             .clicked()
         {
-            if let Some(dir) = rfd::FileDialog::new()
+            if self.edits_locked() {
+                self.status = SETTINGS_LOCKED_STATUS.to_owned();
+            } else if let Some(dir) = rfd::FileDialog::new()
                 .set_title("Output Location")
                 .pick_folder()
             {
@@ -4371,13 +4423,15 @@ impl YesVoxApp {
             );
             self.progress_bar(painter, c, bar, progress);
         }
-        if self.checkbox(
+        // Volume Match is playback-only state — it stays live mid-job (#36).
+        if self.live_checkbox(
             ui,
             painter,
             c,
             rect(1136.0, 374.0, 18.0, 18.0),
             self.volume_match,
             "volume_match",
+            true,
         ) {
             self.volume_match = !self.volume_match;
             self.refresh_playback_source();
@@ -4623,8 +4677,9 @@ impl YesVoxApp {
             "Blend removed signal back in",
             TEXT_MUTED,
         );
+        // Reblend is a playback audition blend, not a setting — live mid-job (#36).
         let mut reblend = self.reblend_amount;
-        reblend = self.slider(
+        reblend = self.live_slider(
             ui,
             painter,
             c,
@@ -4633,6 +4688,7 @@ impl YesVoxApp {
             "reblend",
             BLUE,
             BLUE,
+            true,
         );
         let reblend_changed = (reblend - self.reblend_amount).abs() > 1e-6;
         self.reblend_amount = reblend;
@@ -4952,6 +5008,7 @@ impl YesVoxApp {
         selected: bool,
         id: impl Hash + Debug,
     ) -> bool {
+        let enabled = !self.edits_locked(); // content mode is a setting (#36)
         let resp = self.response(ui, c, r, id);
         if selected {
             paint_h_gradient(painter, c, r, VIOLET, BLUE, 24, 6);
@@ -4989,7 +5046,10 @@ impl YesVoxApp {
             c.font(14.0),
             TEXT,
         );
-        resp.clicked()
+        if !enabled {
+            self.paint_locked_scrim(painter, c, r);
+        }
+        enabled && resp.clicked()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5016,8 +5076,7 @@ impl YesVoxApp {
                             } else {
                                 OutputFormat::Wav
                             };
-                            self.session.set_output_format(next);
-                            self.commit_edit("format");
+                            self.apply_edit("format", |s| s.set_output_format(next));
                         }
                         "Bit Depth" => {
                             let current = self
@@ -5027,15 +5086,14 @@ impl YesVoxApp {
                                 .bit_depth_override
                                 .or_else(|| self.session.input().map(|b| b.bits_per_sample()))
                                 .unwrap_or(24);
-                            self.session
-                                .set_bit_depth(Some(if current >= 24 { 16 } else { 24 }));
-                            self.commit_edit("bit_depth");
+                            let next = Some(if current >= 24 { 16 } else { 24 });
+                            self.apply_edit("bit_depth", |s| s.set_bit_depth(next));
                         }
                         "Loudness Target" => {
                             let next = cycle_loudness(self.session.loudness_target());
-                            self.session.set_loudness_target(next);
-                            self.commit_edit("loudness");
-                            self.stop_playback(); // target change invalidates the render
+                            if self.apply_edit("loudness", |s| s.set_loudness_target(next)) {
+                                self.stop_playback(); // target change invalidates the render
+                            }
                         }
                         _ => {}
                     }
@@ -5064,6 +5122,13 @@ impl YesVoxApp {
 }
 
 impl YesVoxApp {
+    /// Dim a control whose edits are locked while a job runs (#36).
+    fn paint_locked_scrim(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+        painter.rect_filled(c.rect(r), 4, egui::Color32::from_black_alpha(110));
+    }
+
+    /// A settings slider: locked (pointer ignored, painted dimmed) while a job
+    /// is in flight (#36). Playback-only sliders use [`live_slider`](Self::live_slider).
     #[allow(clippy::too_many_arguments)]
     fn slider(
         &self,
@@ -5076,6 +5141,32 @@ impl YesVoxApp {
         start: egui::Color32,
         end: egui::Color32,
     ) -> f32 {
+        self.live_slider(
+            ui,
+            painter,
+            c,
+            r,
+            value,
+            id,
+            start,
+            end,
+            !self.edits_locked(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn live_slider(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        value: f32,
+        id: impl Hash + Debug,
+        start: egui::Color32,
+        end: egui::Color32,
+        enabled: bool,
+    ) -> f32 {
         let hit = r.expand(10.0);
         let resp = ui.interact(
             c.rect(hit),
@@ -5083,7 +5174,7 @@ impl YesVoxApp {
             egui::Sense::click_and_drag(),
         );
         let mut next = value.clamp(0.0, 1.0);
-        if (resp.clicked() || resp.dragged()) && resp.interact_pointer_pos().is_some() {
+        if enabled && (resp.clicked() || resp.dragged()) && resp.interact_pointer_pos().is_some() {
             let pos = resp.interact_pointer_pos().unwrap();
             let sr = c.rect(r);
             next = ((pos.x - sr.left()) / sr.width()).clamp(0.0, 1.0);
@@ -5100,6 +5191,9 @@ impl YesVoxApp {
         paint_h_gradient(painter, c, filled, start, end, 20, 3);
         let knob = c.pos(r.left() + r.width() * next, r.center().y);
         painter.circle_filled(knob, c.v(6.0), egui::Color32::from_rgb(190, 168, 255));
+        if !enabled {
+            self.paint_locked_scrim(painter, c, r.expand(6.0));
+        }
         next
     }
 
@@ -5112,13 +5206,14 @@ impl YesVoxApp {
         value: f32,
         id: impl Hash + Debug,
     ) -> f32 {
+        let enabled = !self.edits_locked(); // settings dial — locked mid-job (#36)
         let resp = ui.interact(
             c.rect(r),
             ui.make_persistent_id(id),
             egui::Sense::click_and_drag(),
         );
         let mut next = value.clamp(0.0, 1.0);
-        if (resp.clicked() || resp.dragged()) && resp.interact_pointer_pos().is_some() {
+        if enabled && (resp.clicked() || resp.dragged()) && resp.interact_pointer_pos().is_some() {
             let p = resp.interact_pointer_pos().unwrap();
             let center = c.pos(r.center().x, r.top() + 80.0);
             let angle = (p.y - center.y).atan2(p.x - center.x);
@@ -5167,6 +5262,9 @@ impl YesVoxApp {
             c.font(17.0),
             TEXT,
         );
+        if !enabled {
+            self.paint_locked_scrim(painter, c, r);
+        }
         next
     }
 
@@ -5179,6 +5277,7 @@ impl YesVoxApp {
         on: bool,
         id: impl Hash + Debug,
     ) -> bool {
+        let enabled = !self.edits_locked(); // settings toggle — locked mid-job (#36)
         let resp = self.response(ui, c, r, id);
         let sr = c.rect(r);
         paint_panel(
@@ -5199,9 +5298,14 @@ impl YesVoxApp {
             sr.left() + sr.height() / 2.0
         };
         painter.circle_filled(egui::pos2(x, sr.center().y), sr.height() * 0.40, TEXT);
-        resp.clicked()
+        if !enabled {
+            self.paint_locked_scrim(painter, c, r);
+        }
+        enabled && resp.clicked()
     }
 
+    /// A settings checkbox: locked while a job is in flight (#36). The
+    /// playback-only Volume Match box uses [`live_checkbox`](Self::live_checkbox).
     fn checkbox(
         &self,
         ui: &mut egui::Ui,
@@ -5210,6 +5314,20 @@ impl YesVoxApp {
         r: egui::Rect,
         checked: bool,
         id: impl Hash + Debug,
+    ) -> bool {
+        self.live_checkbox(ui, painter, c, r, checked, id, !self.edits_locked())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn live_checkbox(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        checked: bool,
+        id: impl Hash + Debug,
+        enabled: bool,
     ) -> bool {
         let resp = self.response(ui, c, r, id);
         paint_panel(painter, c, r, 3, if checked { BLUE } else { FIELD }, BORDER);
@@ -5229,7 +5347,10 @@ impl YesVoxApp {
                 egui::Stroke::new(c.v(2.0), TEXT),
             );
         }
-        resp.clicked()
+        if !enabled {
+            self.paint_locked_scrim(painter, c, r);
+        }
+        enabled && resp.clicked()
     }
 }
 
@@ -5292,6 +5413,7 @@ impl YesVoxApp {
         value: f32,
         id: impl Hash + Debug,
     ) -> f32 {
+        let enabled = !self.edits_locked(); // settings knob — locked mid-job (#36)
         let hit = rect(center.x - 30.0, center.y - 30.0, 60.0, 60.0);
         let resp = ui.interact(
             c.rect(hit),
@@ -5299,11 +5421,14 @@ impl YesVoxApp {
             egui::Sense::click_and_drag(),
         );
         let mut next = value.clamp(0.0, 1.0);
-        if resp.dragged() {
+        if enabled && resp.dragged() {
             // Screen-space vertical drag; ~250 px sweeps the full range.
             next = (next - resp.drag_delta().y * 0.004).clamp(0.0, 1.0);
         }
         self.percent_knob(painter, c, center, next);
+        if !enabled {
+            self.paint_locked_scrim(painter, c, hit.shrink(2.0));
+        }
         next
     }
 
@@ -6684,5 +6809,92 @@ mod tests {
     fn middle_truncation_keeps_both_ends() {
         assert_eq!(truncate_middle("short", 12), "short");
         assert_eq!(truncate_middle("C:/very/long/location", 12), "C:/v...ation");
+    }
+
+    /// Move the app's session onto a worker held live by the returned sender —
+    /// exactly what `render_now` does — so tests can exercise the mid-job
+    /// settings lock (#36).
+    fn hold_render_job(app: &mut YesVoxApp) -> std::sync::mpsc::Sender<()> {
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let moved = std::mem::replace(&mut app.session, Session::new());
+        app.render_job = Some(spawn(move |_ctx| {
+            gate.recv().ok(); // hold the job live until the test releases it
+            Ok(RenderDone {
+                session: moved,
+                ok: true,
+                status: "Rendered".to_owned(),
+            })
+        }));
+        release
+    }
+
+    /// Pump job events until the render job finishes (bounded wait).
+    fn pump_until_idle(app: &mut YesVoxApp) {
+        let ctx = egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.render_job.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "render job never finished"
+            );
+            app.pump_jobs(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn edits_while_render_job_live_are_refused_and_not_recorded() {
+        // #36: while a render runs, `session` is a `Session::new()` placeholder
+        // (the real session moved onto the worker). An edit made then must not
+        // survive adopt-back and must not leave a history entry.
+        let mut app = YesVoxApp::from_session(YesVoxApp::default_session());
+        let flow_before = app.session.flow_amount();
+        assert_eq!(app.history.undo_depth(), 0);
+
+        let release = hold_render_job(&mut app);
+        assert!(app.edits_locked());
+
+        assert!(!app.apply_edit("flow", |s| s.set_flow_amount(0.11)));
+        assert_eq!(app.history.undo_depth(), 0, "refused edit left history");
+        assert_eq!(app.status, SETTINGS_LOCKED_STATUS);
+
+        release.send(()).ok();
+        pump_until_idle(&mut app);
+
+        // The refused edit did not land on the adopted session.
+        assert_eq!(app.session.flow_amount(), flow_before);
+        assert_eq!(app.history.undo_depth(), 0);
+
+        // Edits work again once the job is gone.
+        assert!(app.apply_edit("flow", |s| s.set_flow_amount(0.3)));
+        assert_eq!(app.session.flow_amount(), 0.3);
+        assert_eq!(app.history.undo_depth(), 1);
+    }
+
+    #[test]
+    fn undo_and_redo_lock_while_a_render_job_is_live() {
+        // Undo/redo restore settings snapshots — onto the placeholder, mid-job
+        // (#36): the restore would vanish on adopt-back while the history
+        // cursor moved, desyncing the two. Both must refuse while locked.
+        let mut app = YesVoxApp::from_session(YesVoxApp::default_session());
+        assert!(app.apply_edit("flow", |s| s.set_flow_amount(0.4)));
+        assert_eq!(app.history.undo_depth(), 1);
+
+        let release = hold_render_job(&mut app);
+
+        app.undo();
+        assert_eq!(app.history.undo_depth(), 1, "locked undo moved the cursor");
+        assert_eq!(app.status, SETTINGS_LOCKED_STATUS);
+        app.status.clear();
+        app.redo();
+        assert_eq!(app.status, SETTINGS_LOCKED_STATUS);
+
+        release.send(()).ok();
+        pump_until_idle(&mut app);
+        assert_eq!(app.session.flow_amount(), 0.4);
+
+        // Unlocked again: undo restores the pre-edit flow.
+        app.undo();
+        assert_eq!(app.session.flow_amount(), 1.0);
     }
 }
