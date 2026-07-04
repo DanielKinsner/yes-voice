@@ -6,7 +6,7 @@
 //! position state machine and which buffer each A/B source maps to — lives here
 //! so it is tested without an audio device, keeping CI headless-green.
 //!
-//! All A/B sources (Original, Processed, Reblend, Difference) are the *same
+//! All A/B/C sources (Original, Processed, CompareSnapshot, Reblend, Difference) are the *same
 //! length* (same take — the SAME-LENGTH guarantee), so a single frame position
 //! is shared across them: switching Original↔Processed continues from the exact
 //! same playhead, no restart.
@@ -21,6 +21,8 @@ pub enum PlaybackSource {
     Original,
     /// The processed output.
     Processed,
+    /// A user-pinned processed output snapshot for Advanced A/B/C compare.
+    CompareSnapshot,
     /// A reblend of processed + removed signal.
     Reblend,
     /// The difference monitor — what was removed.

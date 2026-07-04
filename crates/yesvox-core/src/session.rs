@@ -457,6 +457,7 @@ pub struct Session {
     input: Option<AudioBuffer>,
     report: Option<AnalysisReport>,
     output: Option<AudioBuffer>,
+    compare_snapshot: Option<AudioBuffer>,
     cards: [Card; STAGE_COUNT],
     finish_cards: FinishCards,
     transient_cards: TransientCards,
@@ -528,6 +529,7 @@ impl Session {
             input: None,
             report: None,
             output: None,
+            compare_snapshot: None,
             cards: [Card::default(); STAGE_COUNT],
             finish_cards: FinishCards::default(),
             transient_cards: TransientCards::default(),
@@ -947,6 +949,7 @@ impl Session {
         self.input = Some(buffer);
         self.report = Some(report);
         self.output = None;
+        self.compare_snapshot = None;
         // Default the export target from the opened file (FILE panel), as the mock
         // shows ("Lead Vocal" → "Lead Vocal_YesVox" beside the source's folder).
         if self.output_dir.is_none() {
@@ -1197,6 +1200,26 @@ impl Session {
         self.output.as_ref()
     }
 
+    /// Pin the current processed output as Advanced compare slot C. A later render
+    /// becomes B while C stays fixed until replaced or a new file is opened.
+    pub fn pin_compare_snapshot(&mut self) -> bool {
+        let Some(output) = self.output.as_ref() else {
+            return false;
+        };
+        self.compare_snapshot = Some(output.clone());
+        true
+    }
+
+    /// Clear Advanced compare slot C.
+    pub fn clear_compare_snapshot(&mut self) {
+        self.compare_snapshot = None;
+    }
+
+    /// The pinned Advanced compare slot C, if one exists.
+    pub fn compare_snapshot(&self) -> Option<&AudioBuffer> {
+        self.compare_snapshot.as_ref()
+    }
+
     /// The dry input — the "A" / "Original" side of the A/B compare.
     pub fn input(&self) -> Option<&AudioBuffer> {
         self.input.as_ref()
@@ -1253,6 +1276,7 @@ impl Session {
             PlaybackSource::Original if volume_match => self.ab_matched_input(),
             PlaybackSource::Original => self.input().cloned(),
             PlaybackSource::Processed => self.output().cloned(),
+            PlaybackSource::CompareSnapshot => self.compare_snapshot().cloned(),
             PlaybackSource::Reblend => self.reblend(reblend_amount),
             PlaybackSource::Difference => self.difference(),
         }
@@ -1932,6 +1956,43 @@ mod tests {
         for b in [&original, &matched, &processed, &reblend, &difference] {
             assert_eq!(b.frames(), frames, "source length diverged");
         }
+
+        let _ = std::fs::remove_file(&in_path);
+    }
+
+    #[test]
+    fn pinned_compare_snapshot_is_independent_playback_source_c() {
+        let in_path = temp("compare-c-in");
+        degraded_fixture(&in_path);
+        let mut s = Session::new();
+        s.open(&in_path).expect("open");
+        s.render().expect("first render");
+
+        let first_render = s.output().expect("first output").channel(0).to_vec();
+        assert!(
+            s.pin_compare_snapshot(),
+            "rendered output can be pinned as C"
+        );
+
+        s.set_flow_amount(0.0);
+        s.render().expect("second render");
+        let second_render = s.output().expect("second output").channel(0).to_vec();
+        assert!(
+            first_render
+                .iter()
+                .zip(&second_render)
+                .any(|(a, b)| (a - b).abs() > 1e-4),
+            "second render should differ from the pinned C snapshot"
+        );
+
+        let processed = s
+            .playback_buffer(PlaybackSource::Processed, false, 0.0)
+            .expect("processed playback");
+        let snapshot = s
+            .playback_buffer(PlaybackSource::CompareSnapshot, false, 0.0)
+            .expect("snapshot playback");
+        assert_eq!(processed.channel(0), &second_render);
+        assert_eq!(snapshot.channel(0), &first_render);
 
         let _ = std::fs::remove_file(&in_path);
     }
