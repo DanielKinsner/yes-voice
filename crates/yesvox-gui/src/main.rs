@@ -1567,6 +1567,21 @@ impl YesVoxApp {
         }
     }
 
+    /// Apply the global keyboard shortcuts: undo/redo (#25) and Esc = cancel
+    /// the live render (#36). Esc is a no-op when no render is running so the
+    /// key doesn't spray status noise.
+    fn apply_shortcuts(&mut self, do_undo: bool, do_redo: bool, do_cancel: bool) {
+        if do_undo {
+            self.undo();
+        }
+        if do_redo {
+            self.redo();
+        }
+        if do_cancel && self.render_job.is_some() {
+            self.cancel_render();
+        }
+    }
+
     /// Rebuild the session after a render-worker panic (the session was moved
     /// onto the worker and died with it): re-open the source file and restore
     /// the pre-render settings snapshot, so the user loses the crashed render —
@@ -1769,20 +1784,16 @@ impl eframe::App for YesVoxApp {
         // Drain background-job events and repaint while work is in flight (#22).
         self.pump_jobs(ui.ctx());
         // Undo/redo shortcuts (#25): Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y.
-        let (do_undo, do_redo) = ui.input(|i| {
+        // Esc cancels a live render from any view (#36).
+        let (do_undo, do_redo, do_cancel) = ui.input(|i| {
             let cmd = i.modifiers.command;
             let undo = cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z);
             let redo = cmd
                 && ((i.modifiers.shift && i.key_pressed(egui::Key::Z))
                     || (!i.modifiers.shift && i.key_pressed(egui::Key::Y)));
-            (undo, redo)
+            (undo, redo, i.key_pressed(egui::Key::Escape))
         });
-        if do_undo {
-            self.undo();
-        }
-        if do_redo {
-            self.redo();
-        }
+        self.apply_shortcuts(do_undo, do_redo, do_cancel);
         let available = ui.max_rect();
         let canvas = CanvasMap::new(available);
         let painter = ui.painter().clone();
@@ -1809,6 +1820,18 @@ impl eframe::App for YesVoxApp {
 }
 
 impl YesVoxApp {
+    /// Top-bar render progress readout (#36). Lives in the bar drawn by every
+    /// view, so a render is visibly in flight from Advanced too.
+    fn top_bar_render_progress_rect() -> egui::Rect {
+        rect(1566.0, 14.0, 152.0, 40.0)
+    }
+
+    /// Top-bar render cancel button (#36) — the view-independent way to stop
+    /// a render (the Standard sidebar keeps its own affordance).
+    fn top_bar_render_cancel_rect() -> egui::Rect {
+        rect(1726.0, 14.0, 38.0, 40.0)
+    }
+
     fn draw_top_bar(
         &mut self,
         ui: &mut egui::Ui,
@@ -1910,6 +1933,29 @@ impl YesVoxApp {
             "top_ab",
         ) {
             self.toggle_ab_view(); // instant A/B at the shared playhead
+        }
+        // View-independent render progress + cancel (#36): the Standard
+        // sidebar's cancel is unreachable from Advanced; this one is not.
+        if self.render_job.is_some() {
+            let progress_rect = Self::top_bar_render_progress_rect();
+            paint_panel(painter, c, progress_rect, 6, FIELD, BORDER_DIM);
+            painter.text(
+                c.rect(progress_rect).center(),
+                egui::Align2::CENTER_CENTER,
+                format!("Rendering {:.0}%", self.processing_progress() * 100.0),
+                c.font(13.0),
+                CYAN,
+            );
+            if self.outline_button(
+                ui,
+                painter,
+                c,
+                Self::top_bar_render_cancel_rect(),
+                "x",
+                "top_render_cancel",
+            ) {
+                self.cancel_render();
+            }
         }
         // Preset picker (#24): the top-bar dropdown is the only way to change
         // preset. Gear/Help/"Back to Suite" were PNG-only dead chrome — removed.
@@ -6840,6 +6886,48 @@ mod tests {
             app.pump_jobs(&ctx);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn escape_cancels_the_live_render_from_any_view() {
+        // #36: the Standard sidebar's cancel button is unreachable from
+        // Advanced — Esc (and the top-bar button wired to the same
+        // `cancel_render`) must work regardless of the active view.
+        let mut app = YesVoxApp::from_session(YesVoxApp::default_session());
+        let idle_status = app.status.clone();
+
+        // Esc with no render running is a no-op, not a status complaint.
+        app.apply_shortcuts(false, false, true);
+        assert_eq!(app.status, idle_status);
+
+        let release = hold_render_job(&mut app);
+        app.view_mode = ViewMode::Advanced;
+        app.apply_shortcuts(false, false, true);
+        assert_eq!(app.status, "Render cancel requested");
+
+        release.send(()).ok();
+        pump_until_idle(&mut app);
+    }
+
+    #[test]
+    fn top_bar_render_cancel_stays_inside_the_bar_and_clear_of_neighbors() {
+        let top = ReferenceLayout::new().top;
+        let progress = YesVoxApp::top_bar_render_progress_rect();
+        let cancel = YesVoxApp::top_bar_render_cancel_rect();
+        let ab_button = rect(1485.0, 14.0, 68.0, 40.0);
+        let presets_button = rect(1775.0, 14.0, 130.0, 40.0);
+
+        for r in [progress, cancel] {
+            assert!(
+                top.contains(r.min) && top.contains(r.max),
+                "render chrome must stay inside the top bar"
+            );
+            assert!(
+                !r.intersects(ab_button) && !r.intersects(presets_button),
+                "render chrome must not crowd the A/B or Presets buttons"
+            );
+        }
+        assert!(!progress.intersects(cancel));
     }
 
     #[test]
