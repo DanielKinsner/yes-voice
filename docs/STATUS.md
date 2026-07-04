@@ -117,9 +117,9 @@ this order (each TDD'd, each its own green commit):
   toolbar arrows (real enabled state) + Ctrl/Cmd+Z/Shift+Z/Y drive it. This
   also wired the last dead controls from #24 → zero dead chrome.
 
-1. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
-   filesystem/atomic export, resource guards, model-load validation,
-   determinism. Interleavable AFK filler. ← **current (#34)**
+- ✅ **#28–#34 hardening H1–H7 all done** (2026-07-03) — numerics, panic-safety,
+   decoder fuzz-lite, filesystem/atomic export, resource guards, model-load
+   validation, determinism. Details below.
    - ✅ **#28 H1 numeric hygiene** (done 2026-07-03): decode-time
      `AudioBuffer::sanitize` (NaN/±Inf→0, clamp ±4, counted →
      `AnalysisReport::non_finite_samples`), biquad denormal flush-to-zero,
@@ -153,11 +153,21 @@ this order (each TDD'd, each its own green commit):
      manifest integrity gate. (`ort`'s dylib probe *hangs* without
      ORT_DYLIB_PATH — the corrupt-model test is #[ignore]d; the fallback
      mechanism is tested without the feature.)
-3. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
+   - ✅ **#34 H7 whole-chain determinism** (done 2026-07-03): hard
+     same-machine gate — full rack rendered twice, and with 1 vs 8 worker
+     threads, is byte-identical (pool reassembly is order-independent) — runs
+     on every CI OS; a `determinism-fingerprint` CI job records each
+     platform's SHA-256 for the informational cross-platform comparison
+     (TESTING.md).
+
+**All AFK issues #22–#25 and #27–#34 are done.** Remaining v1 work is the
+**hitl** items only:
+
+1. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
    separate screen, Standard visual language, mock-first approval).
-4. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
+2. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
    (commerce/signing/activation split to a v1.1 lane).
-5. **#21** — perf budget gates + real-stem no-regression corpus (Dan supplies
+3. **#21** — perf budget gates + real-stem no-regression corpus (Dan supplies
    stems) + optional non-blocking listen.
 
 ## Decisions on record
