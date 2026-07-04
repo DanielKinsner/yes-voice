@@ -388,6 +388,10 @@ impl XorShift64 {
 
 /// `2^(bits-1)`, the full-scale magnitude for integer PCM at `bits`.
 fn int_scale(bits: u16) -> f32 {
+    // A malformed file can declare bits = 0 (underflows `bits - 1`) or an absurd
+    // depth (overflows the shift). Clamp to a sane PCM range so a bit-depth lie
+    // never panics the decoder (#30).
+    let bits = bits.clamp(1, 32);
     (1u64 << (bits - 1)) as f32
 }
 
