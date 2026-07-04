@@ -16,6 +16,8 @@ pub mod card;
 pub mod chain;
 pub mod denoise;
 pub mod dsp;
+#[cfg(test)]
+pub(crate) mod golden;
 pub mod io;
 pub mod loudness;
 pub mod modules;

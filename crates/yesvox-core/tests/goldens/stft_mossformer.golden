@@ -1,0 +1,7 @@
+# golden: stft_mossformer
+# Blessed reference values (regenerate only via `cargo xtask bless`
+# / YESVOX_BLESS=1). Per-value tolerances live in the test, not here.
+spec2_40_norm = 258.89838
+spec3_20_norm = 0.45077762
+spec1_100_norm = 0.060252953
+energy = 746792.25

@@ -259,39 +259,40 @@ mod tests {
 
     #[test]
     fn matches_torchaudio_fbank_golden() {
-        // Goldens from spikes/mossformer2-onnx/fbank_golden.py (dither=0) on a
-        // deterministic 3-formant signal. Pins the Rust front-end byte-faithful
-        // to torchaudio.compliance.kaldi.fbank + compute_deltas×2.
+        // Reference values live in tests/goldens/fbank_mossformer.golden (blessed
+        // from spikes/mossformer2-onnx/fbank_golden.py); this pins the Rust
+        // front-end byte-faithful to torchaudio kaldi.fbank + compute_deltas×2.
+        use crate::golden::{check, golden};
         let fb = MossformerFbank::new();
         let x = speech_like(WIN_LEN + 6 * HOP);
         let feats = fb.features(&x);
         assert_eq!(feats.len(), 7);
         assert_eq!(feats[0].len(), 180);
 
-        let approx = |a: f32, b: f32, tol: f32, what: &str| {
-            assert!((a - b).abs() < tol, "{what}: got {a}, want {b}");
-        };
-        // Point samples (frame, col). Literals trimmed to f32-clean digits
-        // well inside the 2e-3 tolerance.
-        approx(feats[0][0], -3.9634, 2e-3, "f0 c0");
-        approx(feats[0][30], -6.1833, 2e-3, "f0 c30");
-        approx(feats[0][59], -7.7328, 2e-3, "f0 c59");
-        approx(feats[3][0], -3.9118, 2e-3, "f3 c0");
-        approx(feats[3][30], -7.7857, 2e-3, "f3 c30");
-        approx(feats[3][70], 0.0, 2e-3, "f3 c70 (Δ)");
-        approx(feats[3][130], 0.0, 2e-3, "f3 c130 (ΔΔ)");
-        approx(feats[6][59], -8.366, 2e-3, "f6 c59");
-        approx(feats[6][119], -0.1624, 2e-3, "f6 c119 (Δ)");
-        approx(feats[6][179], -0.2266, 2e-3, "f6 c179 (ΔΔ)");
-
-        // Block checksums (whole-array pins).
         let sum = |lo: usize, hi: usize| -> f32 {
             feats.iter().map(|r| r[lo..hi].iter().sum::<f32>()).sum()
         };
-        approx(sum(0, 60), -2326.54, 0.5, "Σ fbank");
-        approx(sum(60, 120), -1.9625, 0.05, "Σ Δ");
-        approx(sum(120, 180), 14.8883, 0.05, "Σ ΔΔ");
-        approx(sum(0, 180), -2313.61, 0.5, "Σ all");
+        check(
+            "fbank_mossformer",
+            &[
+                // Point samples (frame, col).
+                golden("f0_c0", feats[0][0], 2e-3),
+                golden("f0_c30", feats[0][30], 2e-3),
+                golden("f0_c59", feats[0][59], 2e-3),
+                golden("f3_c0", feats[3][0], 2e-3),
+                golden("f3_c30", feats[3][30], 2e-3),
+                golden("f3_c70", feats[3][70], 2e-3),
+                golden("f3_c130", feats[3][130], 2e-3),
+                golden("f6_c59", feats[6][59], 2e-3),
+                golden("f6_c119", feats[6][119], 2e-3),
+                golden("f6_c179", feats[6][179], 2e-3),
+                // Block checksums (whole-array pins).
+                golden("sum_fbank", sum(0, 60), 0.5),
+                golden("sum_delta", sum(60, 120), 0.05),
+                golden("sum_deltadelta", sum(120, 180), 0.05),
+                golden("sum_all", sum(0, 180), 0.5),
+            ],
+        );
     }
 
     #[test]

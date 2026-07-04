@@ -214,24 +214,18 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(peak, 40, "1 kHz peak bin");
-        assert!(
-            (spec[2][40].norm() - 258.898_38).abs() < 0.1,
-            "{}",
-            spec[2][40].norm()
-        );
-        assert!(
-            (spec[3][20].norm() - 0.450_779).abs() < 2.0e-3,
-            "{}",
-            spec[3][20].norm()
-        );
-        assert!(
-            (spec[1][100].norm() - 0.060_253).abs() < 2.0e-3,
-            "{}",
-            spec[1][100].norm()
-        );
 
+        // Reference magnitudes/energy live in tests/goldens/stft_mossformer.golden.
         let energy: f32 = spec.iter().flatten().map(|c| c.norm_sqr()).sum();
-        assert!((energy - 746_797.75).abs() < 50.0, "energy {energy}");
+        crate::golden::check(
+            "stft_mossformer",
+            &[
+                crate::golden::golden("spec2_40_norm", spec[2][40].norm(), 0.1),
+                crate::golden::golden("spec3_20_norm", spec[3][20].norm(), 2.0e-3),
+                crate::golden::golden("spec1_100_norm", spec[1][100].norm(), 2.0e-3),
+                crate::golden::golden("energy", energy, 50.0),
+            ],
+        );
     }
 
     #[test]

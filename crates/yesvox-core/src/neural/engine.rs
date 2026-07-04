@@ -215,20 +215,24 @@ mod tests {
         let y = eng.enhance(&x);
         assert_eq!(y.len(), 6144);
 
-        let approx = |a: f32, b: f32, what: &str| {
-            assert!((a - b).abs() < 1.5e-3, "{what}: got {a}, want {b}");
-        };
-        approx(y[0], 0.050313, "out[0] (edge)");
-        approx(y[1], 0.008893, "out[1]");
-        approx(y[1000], 0.001219, "out[1000]");
-        approx(y[3000], 0.002459, "out[3000]");
-        approx(y[3072], -0.016220, "out[3072]");
-        approx(y[5000], 0.001233, "out[5000]");
-        approx(y[6143], -0.142222, "out[6143] (edge)");
-
+        // Reference samples/energy/sum live in
+        // tests/goldens/decode_chain_clearvoice.golden.
+        use crate::golden::{check, golden};
         let energy: f32 = y.iter().map(|v| v * v).sum();
-        approx(energy, 0.491893, "energy");
         let sum: f32 = y.iter().sum();
-        approx(sum, 0.003998, "sum");
+        check(
+            "decode_chain_clearvoice",
+            &[
+                golden("out_0", y[0], 1.5e-3),
+                golden("out_1", y[1], 1.5e-3),
+                golden("out_1000", y[1000], 1.5e-3),
+                golden("out_3000", y[3000], 1.5e-3),
+                golden("out_3072", y[3072], 1.5e-3),
+                golden("out_5000", y[5000], 1.5e-3),
+                golden("out_6143", y[6143], 1.5e-3),
+                golden("energy", energy, 1.5e-3),
+                golden("sum", sum, 1.5e-3),
+            ],
+        );
     }
 }

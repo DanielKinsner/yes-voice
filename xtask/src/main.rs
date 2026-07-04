@@ -10,9 +10,39 @@ fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     match task.as_str() {
         "gate" => gate(),
+        "bless" => bless(),
         other => {
-            eprintln!("unknown xtask: {other:?}\n\ntasks:\n  gate   fmt --check + clippy -D warnings + test + deny");
+            eprintln!("unknown xtask: {other:?}\n\ntasks:\n  gate    fmt --check + clippy -D warnings + test + deny\n  bless   deliberately regenerate goldens (YESVOX_BLESS=1 cargo test)");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// Deliberately regenerate golden reference files. This is the ONLY sanctioned
+/// way to rewrite a golden: it sets `YESVOX_BLESS=1` for a `cargo test` run, so
+/// the golden harness (`yesvox_core::golden`) overwrites the `.golden` files
+/// instead of asserting against them. The normal gate never sets the variable,
+/// so an autonomous loop cannot re-bless a red golden as a side-effect. Review
+/// and commit the resulting golden diff as its own deliberate change.
+fn bless() -> ExitCode {
+    eprintln!("=== cargo xtask bless (YESVOX_BLESS=1) ===");
+    eprintln!("Regenerating goldens — this is a deliberate action; commit the diff explicitly.");
+    match Command::new("cargo")
+        .args(["test", "--all"])
+        .env("YESVOX_BLESS", "1")
+        .status()
+    {
+        Ok(status) if status.success() => {
+            eprintln!("\nbless: goldens regenerated");
+            ExitCode::SUCCESS
+        }
+        Ok(status) => {
+            eprintln!("bless run failed ({status})");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("bless could not run cargo test: {e}");
+            ExitCode::FAILURE
         }
     }
 }

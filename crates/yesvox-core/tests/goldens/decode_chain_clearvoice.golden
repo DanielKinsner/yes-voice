@@ -1,0 +1,12 @@
+# golden: decode_chain_clearvoice
+# Blessed reference values (regenerate only via `cargo xtask bless`
+# / YESVOX_BLESS=1). Per-value tolerances live in the test, not here.
+out_0 = 0.05031276
+out_1 = 0.008893089
+out_1000 = 0.0012201546
+out_3000 = 0.0024592553
+out_3072 = -0.016220674
+out_5000 = 0.0012317961
+out_6143 = -0.14221674
+energy = 0.49189207
+sum = 0.003998637

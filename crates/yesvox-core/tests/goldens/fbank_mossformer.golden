@@ -1,0 +1,17 @@
+# golden: fbank_mossformer
+# Blessed reference values (regenerate only via `cargo xtask bless`
+# / YESVOX_BLESS=1). Per-value tolerances live in the test, not here.
+f0_c0 = -3.9634252
+f0_c30 = -6.1833262
+f0_c59 = -7.7329745
+f3_c0 = -3.9117937
+f3_c30 = -7.785615
+f3_c70 = 0.000015354157
+f3_c130 = -0.00007831574
+f6_c59 = -8.365306
+f6_c119 = -0.16232805
+f6_c179 = -0.22631581
+sum_fbank = -2326.487
+sum_delta = -1.9650965
+sum_deltadelta = 14.882334
+sum_all = -2313.5696
