@@ -7,15 +7,15 @@
 
 ## Where we are
 
-**#17 — the Standard view is closed.** The engine (`yesvox-core` rack) already
-existed; this phase built the agent-callable, mechanically-tested `Session`
-surface the UI needs, then a custom-painted **egui shell** over it. The current
-pick-up item is **#35 playback/worker polish**, then **#18 Advanced build**.
+**#18 — Advanced build is next.** The engine (`yesvox-core` rack) already
+existed; #17 built the agent-callable, mechanically-tested `Session` surface the
+UI needs, then a custom-painted **egui shell** over it. #26 supplied the
+approved Advanced reference and #35 closed the deferred playback/worker polish.
 
 - **Workspace:** `yesvox-core` (lib), `yesvox-app` (headless CLI, bin `yesvox`),
   **`yesvox-gui`** (the egui app, bin `yesvox-gui`, **new**), `xtask`.
 - **The gate is green.** `cargo xtask gate` = fmt → clippy `-D warnings` → test →
-  `cargo deny check`. 180 core tests + the GUI compile/tests pass.
+  `cargo deny check`. Core unit tests, integration tests, and GUI tests pass.
 
 ## Build / run / verify (any machine)
 
@@ -67,12 +67,13 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **#19i** | **Original-file metadata round-trip coverage** — decoded buffers now carry source container metadata through render/export; WAV `bext`/`iXML`/`LIST` plus unknown RIFF chunks and FLAC Vorbis/application blocks round-trip mechanically in `io_export` tests. |
 | **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
 | **#17 close-out** | **Zero-dead-chrome shell pass** — verified the drawn controls against the current shell, fixed the read-only Sample Rate row so it no longer paints as a selector, and removed static help/favorite icons that looked actionable but had no wired behavior. |
+| **#35** | **Playback/worker polish close-out** — render jobs now poll cancel between DSP stages and expose a render-cancel affordance; playback resamples preview buffers to the output device rate without touching export; the monitor strip caches the audible buffer/metrics and avoids resetting an unchanged playback source; memory-budget coverage now includes an opt-in two-minute render measurement (`YESVOX_LONG_MEMORY_BUDGET=1`). |
 
 ## Next up (re-planned 2026-07-03 — grill session)
 
 A full GUI wiring audit + adversarial gate/core audits produced a re-cut plan.
-**All remaining v1 work is tracked as issues #18, #20–#21, #22–#34**; build in
-this order (each TDD'd, each its own green commit):
+The done AFK issues (#22–#25, #27–#35) are listed below; remaining v1 work is
+#18, #20, and #21. Build in this order (each TDD'd, each its own green commit):
 
 - ✅ **#27 H0 — gate integrity repairs** (done 2026-07-03). All 8 findings
   landed as green commits: OFFLINE now enforced by a source-level net-symbol
@@ -161,7 +162,7 @@ this order (each TDD'd, each its own green commit):
      platform's SHA-256 for the informational cross-platform comparison
      (TESTING.md).
 
-**All AFK issues #22–#25 and #27–#34 are done and adversarially reviewed.**
+**All AFK issues #22–#25 and #27–#35 are done and adversarially reviewed.**
 A four-reviewer pass (2026-07-03, after the AFK build) verified the work and
 landed two fix commits (`fix(#22)`, `fix(#23)`): honest A/B (Processed = pure
 output via the tested `Session::playback_buffer`; the reblend mix auditions
@@ -170,8 +171,9 @@ the callback lock), render-panic session recovery (source path + pre-render
 snapshot), non-blocking `JobHandle::drop` (cancel + 200 ms grace → detach;
 safe because exports are atomic), undoable content-mode switches, progress
 coalescing, workspace-wide offline scan, and dead-code cleanup. Deferred
-polish is tracked in **#35** (render cancel polling, device-SR resample
-fallback, monitor-strip per-frame perf, long-file K validation).
+polish from that review is closed in **#35**: render cancel polling,
+device-SR preview resampling, monitor-strip cache/source reuse, and opt-in
+long-file memory-budget validation.
 
 > **CI note:** GitHub Actions minutes are exhausted on this account — pushes
 > do NOT get a CI run right now. `cargo xtask gate` locally **is the merge
@@ -187,8 +189,14 @@ fallback, monitor-strip per-frame perf, long-file K validation).
 2. ✅ **#17 Standard view close-out:** shell chrome verified; every remaining
    drawn control either mutates state, starts a real job/playback action, seeks,
    imports/exports, or is static display text/chip.
-3. **#35 playback/worker polish (afk):** small, well-scoped — good filler.
-4. **#18 Advanced build:** only after the #26 mock is approved.
+3. ✅ **#35 playback/worker polish (afk):** done 2026-07-04. Render cancel,
+   device-rate preview resampling, monitor cache/source reuse, and opt-in
+   long-file memory-budget validation are landed and locally gated.
+4. **#18 Advanced build:** current pickup. Use
+   `docs/ui/advanced-parameter-inventory.md` as the control contract and
+   `docs/ui/yesvox-v1-advanced-reference.png` as the approved style/structure
+   reference; preserve the dense Advanced capability while avoiding crowded
+   dense-card layouts.
 5. **#20 v1.0 lane:** weights license audit (redistribution rights for every
    bundled weight, recorded in docs) → unsigned Windows installer (Inno/NSIS,
    bundled weights + ORT, ≤2 GB, clean-VM smoke test).
