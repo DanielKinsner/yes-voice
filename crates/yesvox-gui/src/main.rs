@@ -295,6 +295,64 @@ fn advanced_depop_control_rects(card: egui::Rect) -> AdvancedDePopControlRects {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedDeHumPanel {
+    nominal: Option<f32>,
+    harmonics: u32,
+    q: f32,
+    track: bool,
+    amount: f32,
+}
+
+impl AdvancedDeHumPanel {
+    fn from_session(session: &Session) -> Self {
+        let (nominal, harmonics, q, track) = session.dehum_settings();
+        AdvancedDeHumPanel {
+            nominal,
+            harmonics,
+            q,
+            track,
+            amount: session.stage_mix(Stage::DeHum),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_dehum_settings(self.nominal, self.harmonics, self.q, self.track);
+        session.set_stage_mix(Stage::DeHum, self.amount);
+    }
+
+    fn nominal_label(self) -> &'static str {
+        match self.nominal {
+            None => "Auto",
+            Some(f) if f < 55.0 => "50 Hz",
+            Some(_) => "60 Hz",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedDeHumControlRects {
+    auto_button: egui::Rect,
+    hz50_button: egui::Rect,
+    hz60_button: egui::Rect,
+    track_toggle: egui::Rect,
+    harmonics_slider: egui::Rect,
+    q_slider: egui::Rect,
+    amount_knob: egui::Rect,
+}
+
+fn advanced_dehum_control_rects(card: egui::Rect) -> AdvancedDeHumControlRects {
+    AdvancedDeHumControlRects {
+        auto_button: rect(card.left() + 12.0, card.top() + 42.0, 50.0, 20.0),
+        hz50_button: rect(card.left() + 66.0, card.top() + 42.0, 34.0, 20.0),
+        hz60_button: rect(card.left() + 104.0, card.top() + 42.0, 34.0, 20.0),
+        track_toggle: rect(card.left() + 144.0, card.top() + 42.0, 34.0, 20.0),
+        harmonics_slider: rect(card.left() + 82.0, card.top() + 76.0, 72.0, 5.0),
+        q_slider: rect(card.left() + 82.0, card.top() + 99.0, 72.0, 5.0),
+        amount_knob: rect(card.right() - 68.0, card.top() + 52.0, 56.0, 56.0),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BatchQueueRow {
     input: PathBuf,
@@ -1824,6 +1882,8 @@ impl YesVoxApp {
                 self.advanced_declick_card(ui, painter, c, *card);
             } else if i == 3 {
                 self.advanced_depop_card(ui, painter, c, *card);
+            } else if i == 4 {
+                self.advanced_dehum_card(ui, painter, c, *card);
             } else {
                 self.advanced_module_card(painter, c, *card, module);
             }
@@ -2415,6 +2475,147 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_depop");
+        }
+    }
+
+    fn advanced_dehum_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "5", "De-hum");
+        let controls = advanced_dehum_control_rects(r);
+        let original = AdvancedDeHumPanel::from_session(&self.session);
+        let mut panel = original;
+        let tracked_hz = self.session.dehum_tracked_frequency();
+        let tracked_label = if tracked_hz > 0.0 {
+            format!("{tracked_hz:.1} Hz")
+        } else {
+            panel.nominal_label().to_string()
+        };
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 156.0,
+            r.top() + 25.0,
+            &tracked_label,
+            if tracked_hz > 0.0 || panel.nominal.is_some() {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.auto_button,
+            "Auto",
+            panel.nominal.is_none(),
+            "advanced_dehum_auto",
+        ) {
+            panel.nominal = None;
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.hz50_button,
+            "50",
+            matches!(panel.nominal, Some(f) if f < 55.0),
+            "advanced_dehum_50",
+        ) {
+            panel.nominal = Some(50.0);
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.hz60_button,
+            "60",
+            matches!(panel.nominal, Some(f) if f >= 55.0),
+            "advanced_dehum_60",
+        ) {
+            panel.nominal = Some(60.0);
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.track_toggle,
+            "Trk",
+            panel.track,
+            "advanced_dehum_track",
+        ) {
+            panel.track = !panel.track;
+        }
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 79.0,
+            &format!("Harm {}", panel.harmonics),
+            TEXT_MUTED,
+        );
+        let harmonics_t = ((panel.harmonics.saturating_sub(1)) as f32 / 11.0).clamp(0.0, 1.0);
+        let next_harmonics_t = self.slider(
+            ui,
+            painter,
+            c,
+            controls.harmonics_slider,
+            harmonics_t,
+            "advanced_dehum_harmonics",
+            BLUE,
+            CYAN,
+        );
+        panel.harmonics = (1.0 + next_harmonics_t * 11.0).round().clamp(1.0, 12.0) as u32;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 102.0,
+            &format!("Q {:.0}", panel.q),
+            TEXT_MUTED,
+        );
+        let q_t = ((panel.q - 5.0) / 75.0).clamp(0.0, 1.0);
+        let next_q_t = self.slider(
+            ui,
+            painter,
+            c,
+            controls.q_slider,
+            q_t,
+            "advanced_dehum_q",
+            BLUE,
+            CYAN,
+        );
+        panel.q = 5.0 + next_q_t * 75.0;
+
+        self.micro_text(
+            painter,
+            c,
+            controls.amount_knob.left() + 5.0,
+            controls.amount_knob.top() - 5.0,
+            "Amount",
+            TEXT_MUTED,
+        );
+        panel.amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.amount_knob.center(),
+            panel.amount,
+            "advanced_dehum_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_dehum");
         }
     }
 
@@ -4888,6 +5089,66 @@ mod tests {
         for (i, a) in rects.iter().enumerate() {
             for b in rects.iter().skip(i + 1) {
                 assert!(!a.intersects(*b), "De-pop controls must not crowd");
+            }
+        }
+    }
+
+    #[test]
+    fn advanced_dehum_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedDeHumPanel::from_session(&session);
+
+        assert_eq!(panel.nominal_label(), "Auto");
+        assert_eq!(panel.nominal, None);
+        assert_eq!(panel.harmonics, 6);
+        assert_eq!(panel.q, 30.0);
+        assert!(panel.track);
+        assert_eq!(panel.amount, session.stage_mix(Stage::DeHum));
+
+        let edited = AdvancedDeHumPanel {
+            nominal: Some(60.0),
+            harmonics: 8,
+            q: 42.0,
+            track: false,
+            amount: 0.52,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert_eq!(session.dehum_settings(), (Some(60.0), 8, 42.0, false));
+        assert_eq!(session.stage_mix(Stage::DeHum), 0.52);
+        assert_eq!(
+            AdvancedDeHumPanel::from_session(&session).nominal_label(),
+            "60 Hz"
+        );
+        assert_eq!(AdvancedDeHumPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_dehum_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[4];
+        let controls = advanced_dehum_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.auto_button,
+            controls.hz50_button,
+            controls.hz60_button,
+            controls.track_toggle,
+            controls.harmonics_slider,
+            controls.q_slider,
+            controls.amount_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "De-hum controls must not crowd");
             }
         }
     }
