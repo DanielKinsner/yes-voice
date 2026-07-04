@@ -160,15 +160,39 @@ this order (each TDD'd, each its own green commit):
      platform's SHA-256 for the informational cross-platform comparison
      (TESTING.md).
 
-**All AFK issues #22–#25 and #27–#34 are done.** Remaining v1 work is the
-**hitl** items only:
+**All AFK issues #22–#25 and #27–#34 are done and adversarially reviewed.**
+A four-reviewer pass (2026-07-03, after the AFK build) verified the work and
+landed two fix commits (`fix(#22)`, `fix(#23)`): honest A/B (Processed = pure
+output via the tested `Session::playback_buffer`; the reblend mix auditions
+only via the strip button), glitch-free source swap (old buffer freed outside
+the callback lock), render-panic session recovery (source path + pre-render
+snapshot), non-blocking `JobHandle::drop` (cancel + 200 ms grace → detach;
+safe because exports are atomic), undoable content-mode switches, progress
+coalescing, workspace-wide offline scan, and dead-code cleanup. Deferred
+polish is tracked in **#35** (render cancel polling, device-SR resample
+fallback, monitor-strip per-frame perf, long-file K validation).
 
-1. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
-   separate screen, Standard visual language, mock-first approval).
-2. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
-   (commerce/signing/activation split to a v1.1 lane).
-3. **#21** — perf budget gates + real-stem no-regression corpus (Dan supplies
-   stems) + optional non-blocking listen.
+> **CI note:** GitHub Actions minutes are exhausted on this account — pushes
+> do NOT get a CI run right now. `cargo xtask gate` locally **is the merge
+> bar**; run it before every push and never push red.
+
+## Next steps (in order)
+
+1. **#26 Advanced screen mock (hitl gate for #18):** enumerate the real
+   per-module engine parameters, draft a 1920×1080 mock in the Standard
+   reference's visual language (docs/ui/yesvox-v1-reference.png), get Dan's
+   approval, commit it as docs/ui/yesvox-v1-advanced-reference.png. An agent
+   can do everything except the approval.
+2. **Close out #17:** verify zero dead chrome remains in the shell (every
+   drawn control mutates state or is gone), update the issue, close it.
+3. **#35 playback/worker polish (afk):** small, well-scoped — good filler.
+4. **#18 Advanced build:** only after the #26 mock is approved.
+5. **#20 v1.0 lane:** weights license audit (redistribution rights for every
+   bundled weight, recorded in docs) → unsigned Windows installer (Inno/NSIS,
+   bundled weights + ORT, ≤2 GB, clean-VM smoke test).
+6. **#21 eval lanes:** CI-safe perf ceiling + local Criterion; `cargo xtask
+   eval` real-stem no-regression harness (corpus dir via env var, never
+   committed; Dan supplies stems); optional non-blocking listen.
 
 ## Decisions on record
 
