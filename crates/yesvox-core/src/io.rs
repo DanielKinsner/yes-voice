@@ -210,33 +210,32 @@ pub fn write_wav_with(
         },
     };
 
-    let tmp = sibling_temp(path);
-    {
-        let mut writer = hound::WavWriter::create(&tmp, spec)?;
-        let nch = buffer.channel_count();
-        let frames = buffer.frames();
-        match opts.encoding {
-            SampleEncoding::Float => {
-                for frame in 0..frames {
-                    for ch in 0..nch {
-                        writer.write_sample(buffer.channel(ch)[frame])?;
+    atomic_write(path, |tmp| {
+        {
+            let mut writer = hound::WavWriter::create(tmp, spec)?;
+            let nch = buffer.channel_count();
+            let frames = buffer.frames();
+            match opts.encoding {
+                SampleEncoding::Float => {
+                    for frame in 0..frames {
+                        for ch in 0..nch {
+                            writer.write_sample(buffer.channel(ch)[frame])?;
+                        }
+                    }
+                }
+                SampleEncoding::Int => {
+                    let mut q = Quantizer::new(opts.bit_depth, opts.dither);
+                    for frame in 0..frames {
+                        for ch in 0..nch {
+                            writer.write_sample(q.quantize(buffer.channel(ch)[frame]))?;
+                        }
                     }
                 }
             }
-            SampleEncoding::Int => {
-                let mut q = Quantizer::new(opts.bit_depth, opts.dither);
-                for frame in 0..frames {
-                    for ch in 0..nch {
-                        writer.write_sample(q.quantize(buffer.channel(ch)[frame]))?;
-                    }
-                }
-            }
+            writer.finalize()?;
         }
-        writer.finalize()?;
-    }
-    preserve_wav_metadata(&tmp, buffer.metadata())?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+        preserve_wav_metadata(tmp, buffer.metadata())
+    })
 }
 
 /// Encode an [`AudioBuffer`] to FLAC atomically (integer PCM). Float buffers are
@@ -284,10 +283,7 @@ pub fn write_flac_with(
         .write(&mut sink)
         .map_err(|e| IoError::FlacEncode(format!("{e:?}")))?;
 
-    let tmp = sibling_temp(path);
-    std::fs::write(&tmp, sink.as_slice())?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    atomic_write(path, |tmp| Ok(std::fs::write(tmp, sink.as_slice())?))
 }
 
 fn flac_encoder_config(level: u8) -> flacenc::config::Encoder {
@@ -504,6 +500,71 @@ fn sibling_temp(path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// Removes a temp file on drop unless [`commit`](TempCleanup::commit)ted — so a
+/// failed export never leaves a stray `.yesvox-tmp` behind (#31).
+struct TempCleanup<'a> {
+    tmp: &'a Path,
+    armed: bool,
+}
+
+impl<'a> TempCleanup<'a> {
+    fn new(tmp: &'a Path) -> Self {
+        TempCleanup { tmp, armed: true }
+    }
+    fn commit(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(self.tmp);
+        }
+    }
+}
+
+/// Bounded retries for a transient rename lock (OneDrive sync, an AV scanner, or
+/// a DAW briefly holding the target). Non-transient errors surface immediately.
+const RENAME_RETRIES: u32 = 3;
+
+fn rename_with_retry(tmp: &Path, path: &Path) -> Result<(), IoError> {
+    let mut last: Option<std::io::Error> = None;
+    for attempt in 0..RENAME_RETRIES {
+        match std::fs::rename(tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let transient = e.kind() == std::io::ErrorKind::PermissionDenied;
+                last = Some(e);
+                if transient && attempt + 1 < RENAME_RETRIES {
+                    std::thread::sleep(std::time::Duration::from_millis(40 * (attempt as u64 + 1)));
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+    Err(IoError::Io(last.unwrap_or_else(|| {
+        std::io::Error::other("rename failed with no reported error")
+    })))
+}
+
+/// Write to a temp sibling via `write_to`, then **atomically** rename onto
+/// `path`. The target is never left partial (rename is atomic), the temp is
+/// removed on any failure, and a transient rename lock is retried with backoff
+/// before a friendly error (#31).
+fn atomic_write(
+    path: &Path,
+    write_to: impl FnOnce(&Path) -> Result<(), IoError>,
+) -> Result<(), IoError> {
+    let tmp = sibling_temp(path);
+    let mut cleanup = TempCleanup::new(&tmp);
+    write_to(&tmp)?;
+    rename_with_retry(&tmp, path)?;
+    cleanup.commit();
+    Ok(())
+}
+
 /// First non-colliding variant of `desired`: `desired` itself if free, else
 /// `stem_1.ext`, `stem_2.ext`, … This is the never-overwrite guarantee.
 fn unique_path(desired: &Path) -> PathBuf {
@@ -530,4 +591,44 @@ fn unique_path(desired: &Path) -> PathBuf {
         }
     }
     unreachable!("u32 range exhausted resolving a unique export path")
+}
+
+#[cfg(test)]
+mod atomic_tests {
+    use super::*;
+
+    fn temp_target(tag: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("yesvox-atomic-{tag}-{}.wav", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(sibling_temp(&p));
+        p
+    }
+
+    #[test]
+    fn atomic_write_cleans_the_temp_and_leaves_no_target_on_failure() {
+        // Inject a write that creates a *partial* temp then fails: no truncated
+        // artifact may remain at the target, and the temp must be removed (#31).
+        let target = temp_target("fail");
+        let tmp = sibling_temp(&target);
+        let result = atomic_write(&target, |t| {
+            std::fs::write(t, b"partial bytes").unwrap();
+            assert!(t.exists(), "the temp was created");
+            Err(IoError::Io(std::io::Error::other("injected write failure")))
+        });
+        assert!(result.is_err(), "failure propagates");
+        assert!(!target.exists(), "no partial file at the target");
+        assert!(!tmp.exists(), "the temp was cleaned up");
+    }
+
+    #[test]
+    fn atomic_write_commits_and_leaves_no_temp_on_success() {
+        let target = temp_target("ok");
+        let tmp = sibling_temp(&target);
+        atomic_write(&target, |t| Ok(std::fs::write(t, b"final bytes")?)).unwrap();
+        assert!(target.exists(), "the target was written");
+        assert_eq!(std::fs::read(&target).unwrap(), b"final bytes");
+        assert!(!tmp.exists(), "no temp left after a successful commit");
+        let _ = std::fs::remove_file(&target);
+    }
 }
