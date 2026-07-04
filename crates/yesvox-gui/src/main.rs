@@ -527,6 +527,49 @@ fn advanced_deess_control_rects(card: egui::Rect) -> AdvancedDeEssControlRects {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedBreathPanel {
+    strength_db: f32,
+    shared_hf_reduction_db: f32,
+    amount: f32,
+}
+
+impl AdvancedBreathPanel {
+    fn from_session(session: &Session) -> Self {
+        AdvancedBreathPanel {
+            strength_db: session.breath_strength_db(),
+            shared_hf_reduction_db: session.breath_shared_hf_reduction_db(),
+            amount: session.stage_mix(Stage::Breath),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_breath_strength_db(self.strength_db);
+        session.set_stage_mix(Stage::Breath, self.amount);
+    }
+
+    fn sidechain_label(self) -> String {
+        if self.shared_hf_reduction_db > 0.0 {
+            format!("HF {:.1} dB", self.shared_hf_reduction_db)
+        } else {
+            "HF --".to_owned()
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedBreathControlRects {
+    strength_slider: egui::Rect,
+    amount_knob: egui::Rect,
+}
+
+fn advanced_breath_control_rects(card: egui::Rect) -> AdvancedBreathControlRects {
+    AdvancedBreathControlRects {
+        strength_slider: rect(card.left() + 86.0, card.top() + 78.0, 90.0, 5.0),
+        amount_knob: rect(card.right() - 68.0, card.top() + 52.0, 56.0, 56.0),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BatchQueueRow {
     input: PathBuf,
@@ -2064,6 +2107,8 @@ impl YesVoxApp {
                 self.advanced_dereverb_card(ui, painter, c, *card);
             } else if i == 7 {
                 self.advanced_deess_card(ui, painter, c, *card);
+            } else if i == 8 {
+                self.advanced_breath_card(ui, painter, c, *card);
             } else {
                 self.advanced_module_card(painter, c, *card, module);
             }
@@ -3131,6 +3176,85 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_deess");
+        }
+    }
+
+    fn advanced_breath_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "9", "Breath");
+        let controls = advanced_breath_control_rects(r);
+        let original = AdvancedBreathPanel::from_session(&self.session);
+        let mut panel = original;
+        let sidechain_label = panel.sidechain_label();
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 178.0,
+            r.top() + 25.0,
+            &sidechain_label,
+            if panel.shared_hf_reduction_db > 0.0 {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 81.0,
+            &format!("Atten {:.1} dB", panel.strength_db),
+            TEXT_MUTED,
+        );
+        let strength_t = (panel.strength_db / 12.0).clamp(0.0, 1.0);
+        let next_strength_t = self.slider(
+            ui,
+            painter,
+            c,
+            controls.strength_slider,
+            strength_t,
+            "advanced_breath_strength",
+            BLUE,
+            CYAN,
+        );
+        panel.strength_db = next_strength_t * 12.0;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 104.0,
+            "De-ess guard",
+            TEXT_MUTED,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            controls.amount_knob.left() + 5.0,
+            controls.amount_knob.top() - 5.0,
+            "Amount",
+            TEXT_MUTED,
+        );
+        panel.amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.amount_knob.center(),
+            panel.amount,
+            "advanced_breath_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_breath");
         }
     }
 
@@ -5830,6 +5954,48 @@ mod tests {
                 assert!(!a.intersects(*b), "De-ess controls must not crowd");
             }
         }
+    }
+
+    #[test]
+    fn advanced_breath_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedBreathPanel::from_session(&session);
+
+        assert_eq!(panel.strength_db, 6.0);
+        assert_eq!(panel.sidechain_label(), "HF --");
+        assert_eq!(panel.amount, session.stage_mix(Stage::Breath));
+
+        let edited = AdvancedBreathPanel {
+            strength_db: 4.5,
+            shared_hf_reduction_db: panel.shared_hf_reduction_db,
+            amount: 0.37,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert_eq!(session.breath_strength_db(), 4.5);
+        assert_eq!(session.stage_mix(Stage::Breath), 0.37);
+        assert_eq!(AdvancedBreathPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_breath_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[8];
+        let controls = advanced_breath_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [controls.strength_slider, controls.amount_knob];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        assert!(
+            !controls.strength_slider.intersects(controls.amount_knob),
+            "Breath controls must not crowd"
+        );
     }
 
     #[test]
