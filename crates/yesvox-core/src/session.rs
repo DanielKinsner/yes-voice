@@ -1263,6 +1263,15 @@ impl Session {
         ))
     }
 
+    /// The pinned "C" snapshot scaled to the current processed "B"'s loudness.
+    /// `None` until both a snapshot and the current render exist.
+    pub fn ab_matched_compare_snapshot(&self) -> Option<AudioBuffer> {
+        let snapshot = self.compare_snapshot()?;
+        let gain =
+            crate::monitor::loudness_match_gain(integrated_lufs(snapshot)?, self.output_lufs()?);
+        Some(crate::monitor::apply_gain(snapshot, gain))
+    }
+
     /// The buffer to audition for a given [`PlaybackSource`] (#23) — the single
     /// mapping the transport/GUI use so A/B, reblend and difference all pull from
     /// the same monitor buffers. `None` until the relevant buffer exists.
@@ -1276,6 +1285,7 @@ impl Session {
             PlaybackSource::Original if volume_match => self.ab_matched_input(),
             PlaybackSource::Original => self.input().cloned(),
             PlaybackSource::Processed => self.output().cloned(),
+            PlaybackSource::CompareSnapshot if volume_match => self.ab_matched_compare_snapshot(),
             PlaybackSource::CompareSnapshot => self.compare_snapshot().cloned(),
             PlaybackSource::Reblend => self.reblend(reblend_amount),
             PlaybackSource::Difference => self.difference(),
@@ -1993,6 +2003,41 @@ mod tests {
             .expect("snapshot playback");
         assert_eq!(processed.channel(0), &second_render);
         assert_eq!(snapshot.channel(0), &first_render);
+
+        let _ = std::fs::remove_file(&in_path);
+    }
+
+    #[test]
+    fn volume_match_brings_compare_snapshot_to_current_processed_loudness() {
+        let in_path = temp("compare-c-vmatch");
+        degraded_fixture(&in_path);
+        let mut s = Session::new();
+        s.open(&in_path).expect("open");
+        s.set_loudness_target(LoudnessTarget::Custom(-28.0));
+        s.render().expect("first render");
+        assert!(s.pin_compare_snapshot());
+
+        let raw_snapshot = s
+            .playback_buffer(PlaybackSource::CompareSnapshot, false, 0.0)
+            .expect("raw snapshot");
+        let raw_lufs = integrated_lufs(&raw_snapshot).expect("raw lufs");
+
+        s.set_loudness_target(LoudnessTarget::Custom(-14.0));
+        s.render().expect("second render");
+        let current_lufs = s.output_lufs().expect("current lufs");
+        assert!(
+            (raw_lufs - current_lufs).abs() > 6.0,
+            "test setup needs a meaningful C-vs-B loudness offset: {raw_lufs} vs {current_lufs}"
+        );
+
+        let matched_snapshot = s
+            .playback_buffer(PlaybackSource::CompareSnapshot, true, 0.0)
+            .expect("matched snapshot");
+        let matched_lufs = integrated_lufs(&matched_snapshot).expect("matched lufs");
+        assert!(
+            (matched_lufs - current_lufs).abs() <= 0.6,
+            "volume-matched C must sit at current B loudness: {matched_lufs} vs {current_lufs}"
+        );
 
         let _ = std::fs::remove_file(&in_path);
     }
