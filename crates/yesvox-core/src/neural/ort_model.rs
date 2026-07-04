@@ -18,12 +18,6 @@
 //! never downloads or links a native library; the runtime `libonnxruntime` is
 //! discovered at first use via `ORT_DYLIB_PATH`.
 
-// The `expect` chain here (tensor build / session poison / inference / extract)
-// is the model-load/inference failure surface — deliberately deferred to H5
-// (#33: graceful neural failure + weight-hash pinning), which replaces it with
-// real error handling. Waive the #29 panic-safety lint until then.
-#![cfg_attr(not(test), allow(clippy::unwrap_used, clippy::expect_used))]
-
 use super::engine::MaskModel;
 use ort::execution_providers::{ExecutionProviderDispatch, CPU, CUDA};
 use ort::session::Session;
@@ -88,12 +82,14 @@ fn preferred_providers() -> Vec<ExecutionProviderDispatch> {
     eps
 }
 
-impl MaskModel for OrtMaskModel {
-    fn run(&self, features: &[Vec<f32>]) -> Vec<Vec<f32>> {
+impl OrtMaskModel {
+    /// The fallible inference body: every ORT step maps to an error string, so
+    /// [`run`](MaskModel::run) can degrade to a passthrough mask instead of
+    /// panicking on a runtime/model failure (#33). A bad *model* is meant to be
+    /// caught at load; this covers a runtime (`ORT_DYLIB_PATH`) or session-level
+    /// failure that only surfaces at inference.
+    fn try_run(&self, features: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, String> {
         let t = features.len();
-        if t == 0 {
-            return Vec::new();
-        }
         // Flatten [T, 180] row-major into a [1, T, 180] tensor.
         let mut data = Vec::with_capacity(t * FEAT_DIM);
         for row in features {
@@ -101,19 +97,40 @@ impl MaskModel for OrtMaskModel {
             data.extend_from_slice(row);
         }
         let tensor = Tensor::from_array((vec![1i64, t as i64, FEAT_DIM as i64], data))
-            .expect("build features tensor");
+            .map_err(|e| format!("build features tensor: {e}"))?;
 
-        let mut session = self.session.lock().expect("ort session poisoned");
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| "ort session lock poisoned".to_string())?;
         let outputs = session
             .run(ort::inputs![self.input_name.as_str() => tensor])
-            .expect("ONNX inference failed (check ORT_DYLIB_PATH / model)");
+            .map_err(|e| format!("ONNX inference failed: {e}"))?;
         let (shape, flat) = outputs[self.output_name.as_str()]
             .try_extract_tensor::<f32>()
-            .expect("extract mask tensor");
+            .map_err(|e| format!("extract mask tensor: {e}"))?;
 
         // Mask is [1, T, 961] row-major; reshape into T rows of 961 gains.
         let bins = *shape.as_ref().last().unwrap_or(&(MASK_BINS as i64)) as usize;
-        flat.chunks_exact(bins).map(|row| row.to_vec()).collect()
+        Ok(flat.chunks_exact(bins).map(|row| row.to_vec()).collect())
+    }
+}
+
+impl MaskModel for OrtMaskModel {
+    fn run(&self, features: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        let t = features.len();
+        if t == 0 {
+            return Vec::new();
+        }
+        match self.try_run(features) {
+            Ok(mask) => mask,
+            // Passthrough (all-gain mask): degrade to no-denoise rather than
+            // panicking or corrupting the render (#33).
+            Err(msg) => {
+                eprintln!("neural inference failed, passing audio through: {msg}");
+                vec![vec![1.0; MASK_BINS]; t]
+            }
+        }
     }
 }
 
