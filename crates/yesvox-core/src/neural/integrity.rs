@@ -11,7 +11,7 @@
 //! against the NIST vectors, so this lane runs in the normal gate without the
 //! `neural` feature or any fetched weights.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Manifest of shipped weights: `(file name, expected lowercase-hex SHA-256)`.
 /// Every `bundled` row in `licenses/model-weights.tsv` must be pinned here
@@ -21,6 +21,33 @@ const WEIGHT_MANIFEST: &[(&str, &str)] = &[(
     "mossformer2_se_48k.onnx",
     "e1281db76f705da81641ded332752c5d95dc90f8b4eb6590e5cf7b2fdd20a51d",
 )];
+
+/// Resolve the neural model to load: the `YESVOX_MODEL_PATH` override wins;
+/// otherwise the first shipped model found in `models/` next to the running
+/// executable — the layout the Windows installer stages (#20). Without either,
+/// the engine falls back to light as before.
+pub fn default_model_path() -> Option<PathBuf> {
+    if let Some(overridden) = std::env::var_os("YESVOX_MODEL_PATH") {
+        return Some(PathBuf::from(overridden));
+    }
+    let exe = std::env::current_exe().ok()?;
+    bundled_model_in(&exe.parent()?.join("models"))
+}
+
+/// Locate a shipped model inside `dir` (the installed `models/` directory).
+/// Only manifest-pinned file names are discovered, so a stray file dropped
+/// next to the app can never silently become the engine.
+pub fn bundled_model_in(dir: &Path) -> Option<PathBuf> {
+    find_manifest_model(dir, WEIGHT_MANIFEST)
+}
+
+/// The testable core of bundled-model discovery.
+fn find_manifest_model(dir: &Path, manifest: &[(&str, &str)]) -> Option<PathBuf> {
+    manifest
+        .iter()
+        .map(|(name, _)| dir.join(name))
+        .find(|path| path.is_file())
+}
 
 /// Verify `path` against the shipped-weight manifest. `Ok(())` when the file
 /// matches its pinned hash *or* is not a shipped weight (user-provided). `Err`
@@ -181,7 +208,45 @@ mod tests {
 
     #[test]
     fn verify_model_integrity_trusts_unknown_user_models() {
-        // With an empty shipped manifest, any path (that need not exist) is OK.
+        // A name outside the shipped manifest (a user's own model) is trusted
+        // as-is — the path need not even exist.
         assert!(verify_model_integrity(Path::new("does-not-matter.onnx")).is_ok());
+    }
+
+    #[test]
+    fn find_manifest_model_only_discovers_manifest_names() {
+        let dir = std::env::temp_dir().join(format!("yesvox-discovery-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp models dir");
+        let manifest: &[(&str, &str)] = &[("shipped.onnx", "irrelevant-here")];
+
+        // Empty dir: nothing to discover.
+        assert_eq!(find_manifest_model(&dir, manifest), None);
+
+        // A stray file must never become the engine (#20).
+        std::fs::write(dir.join("stray.onnx"), b"not ours").expect("write stray");
+        assert_eq!(find_manifest_model(&dir, manifest), None);
+
+        // The manifest-pinned name is discovered.
+        std::fs::write(dir.join("shipped.onnx"), b"payload").expect("write shipped");
+        assert_eq!(
+            find_manifest_model(&dir, manifest),
+            Some(dir.join("shipped.onnx"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundled_model_discovery_finds_the_real_shipped_name() {
+        // The installed layout: {app}\models\<first manifest name> (#20).
+        let (name, _) = WEIGHT_MANIFEST[0];
+        let dir = std::env::temp_dir().join(format!("yesvox-bundle-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp models dir");
+
+        assert_eq!(bundled_model_in(&dir), None);
+        std::fs::write(dir.join(name), b"weights").expect("write model");
+        assert_eq!(bundled_model_in(&dir), Some(dir.join(name)));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

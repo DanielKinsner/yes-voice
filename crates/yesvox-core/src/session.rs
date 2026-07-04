@@ -785,7 +785,8 @@ impl Session {
             output_name: None,
             output_dir: None,
             workers,
-            neural_model: std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from),
+            // YESVOX_MODEL_PATH override, else the installed models/ dir (#20).
+            neural_model: crate::neural::default_model_path(),
             available_memory_override: None,
             allow_over_budget: false,
             engine_note: None,

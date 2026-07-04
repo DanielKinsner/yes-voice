@@ -63,7 +63,8 @@ fn run(input: &Path, output: &Path) -> Result<PathBuf, Box<dyn std::error::Error
     let workers = std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(1).max(1))
         .unwrap_or(1);
-    let model = std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from);
+    // YESVOX_MODEL_PATH override, else the installed models/ dir (#20).
+    let model = yesvox_core::neural::default_model_path();
     // The headless CLI has no preset gallery, so it renders the content mode's
     // default preset (the GUI passes the user's gallery selection instead).
     let preset = Preset::default_for(settings.content_mode);
