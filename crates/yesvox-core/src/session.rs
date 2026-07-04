@@ -38,6 +38,15 @@ pub enum SessionError {
     Analysis(AnalysisError),
     /// De-bleed refused the input as a mix (plan §4.5).
     BleedBlocked(String),
+    /// The opened file has zero samples (#32).
+    EmptyInput,
+    /// The sample rate exceeds the ingest cap (#32).
+    SampleRateTooHigh(u32),
+    /// The vocal is longer than the ingest duration cap (#32).
+    TooLong { seconds: f32 },
+    /// The render's estimated peak memory exceeds the available budget and the
+    /// over-budget override is off (#32).
+    MemoryBudgetExceeded { estimated_mb: u64, budget_mb: u64 },
 }
 
 impl std::fmt::Display for SessionError {
@@ -48,8 +57,95 @@ impl std::fmt::Display for SessionError {
             SessionError::Io(e) => write!(f, "{e}"),
             SessionError::Analysis(e) => write!(f, "{e}"),
             SessionError::BleedBlocked(m) => write!(f, "{m}"),
+            SessionError::EmptyInput => write!(f, "this file has no audio to process"),
+            SessionError::SampleRateTooHigh(sr) => write!(
+                f,
+                "{sr} Hz is above the {} kHz limit — resample the vocal first",
+                MAX_SAMPLE_RATE / 1000
+            ),
+            SessionError::TooLong { seconds } => write!(
+                f,
+                "this vocal is {:.0} min, over the {:.0} h limit — split it into shorter takes",
+                seconds / 60.0,
+                MAX_DURATION_SECS / 3600.0
+            ),
+            SessionError::MemoryBudgetExceeded {
+                estimated_mb,
+                budget_mb,
+            } => write!(
+                f,
+                "this vocal needs ~{estimated_mb} MB to process, over the ~{budget_mb} MB budget — close other apps, split the file, or allow over-budget in settings"
+            ),
         }
     }
+}
+
+/// Ingest caps (#32): reject files that would OOM or that are degenerate, with
+/// an actionable message, before the render's whole-buffer copies explode.
+const MAX_SAMPLE_RATE: u32 = 192_000;
+const MAX_DURATION_SECS: f32 = 2.0 * 3600.0; // 2 hours — generous for one vocal.
+
+/// Validate a decoded buffer's shape against the ingest caps (pure so it is
+/// tested without a giant fixture).
+fn check_ingest(sample_rate: u32, frames: usize) -> Result<(), SessionError> {
+    if frames == 0 {
+        return Err(SessionError::EmptyInput);
+    }
+    if sample_rate > MAX_SAMPLE_RATE {
+        return Err(SessionError::SampleRateTooHigh(sample_rate));
+    }
+    let seconds = frames as f32 / sample_rate.max(1) as f32;
+    if seconds > MAX_DURATION_SECS {
+        return Err(SessionError::TooLong { seconds });
+    }
+    Ok(())
+}
+
+/// Best-effort available physical memory in bytes (#32). Windows uses
+/// `GlobalMemoryStatusEx`; other platforms have no portable query, so
+/// enforcement there relies on an explicit override. `None` disables the
+/// preflight rather than guessing.
+#[cfg(windows)]
+fn available_memory_bytes() -> Option<u64> {
+    #[allow(dead_code)] // fields exist for the exact FFI layout, not to be read
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx {
+        length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        memory_load: 0,
+        total_phys: 0,
+        avail_phys: 0,
+        total_page_file: 0,
+        avail_page_file: 0,
+        total_virtual: 0,
+        avail_virtual: 0,
+        avail_extended_virtual: 0,
+    };
+    // SAFETY: `GlobalMemoryStatusEx` fills the correctly-sized, correctly-aligned
+    // struct we hand it and reports success via a nonzero return.
+    if unsafe { GlobalMemoryStatusEx(&mut status) } != 0 {
+        Some(status.avail_phys)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn available_memory_bytes() -> Option<u64> {
+    None
 }
 
 impl std::error::Error for SessionError {}
@@ -380,6 +476,12 @@ pub struct Session {
     output_dir: Option<PathBuf>,
     workers: usize,
     neural_model: Option<PathBuf>,
+    /// Override for the available-memory query used by the render RAM preflight
+    /// (#32); `None` uses the real system query.
+    available_memory_override: Option<u64>,
+    /// When true, render proceeds even if the preflight estimate is over budget
+    /// (the explicit user override).
+    allow_over_budget: bool,
 }
 
 /// An opaque snapshot of a [`Session`]'s **settings state** — the fields undo/redo
@@ -432,7 +534,21 @@ impl Session {
             output_dir: None,
             workers,
             neural_model: std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from),
+            available_memory_override: None,
+            allow_over_budget: false,
         }
+    }
+
+    /// Override the available-memory figure the render RAM preflight uses (#32),
+    /// mainly for tests/config; `None` restores the real system query.
+    pub fn set_available_memory_override(&mut self, bytes: Option<u64>) {
+        self.available_memory_override = bytes;
+    }
+
+    /// Allow a render whose estimated peak exceeds the memory budget (the
+    /// explicit "I know, proceed anyway" override).
+    pub fn set_allow_over_budget(&mut self, allow: bool) {
+        self.allow_over_budget = allow;
     }
 
     /// A session seeded with specific settings + preset (used by the batch queue
@@ -818,6 +934,9 @@ impl Session {
     /// not flip the mode. Clears any previous render.
     pub fn open(&mut self, path: &Path) -> Result<&AnalysisReport, SessionError> {
         let buffer = read_audio(path).map_err(SessionError::Io)?;
+        // Reject degenerate / oversized input before analysis or the render's
+        // whole-buffer copies (#32).
+        check_ingest(buffer.sample_rate(), buffer.frames())?;
         let report = analyze(&buffer).map_err(SessionError::Analysis)?;
         self.input = Some(buffer);
         self.report = Some(report);
@@ -1186,6 +1305,28 @@ impl Session {
     pub fn render(&mut self) -> Result<(), SessionError> {
         let input = self.input.as_ref().ok_or(SessionError::NotLoaded)?;
         let report = self.report.as_ref().ok_or(SessionError::NotLoaded)?;
+
+        // Enforcing RAM preflight (#32): the whole-buffer render makes several
+        // full-length copies, so estimate peak memory and refuse before it OOMs
+        // the process — unless the user opted out. `None` available memory (no
+        // portable query, no override) skips enforcement.
+        if let Some(available) = self
+            .available_memory_override
+            .or_else(available_memory_bytes)
+        {
+            let preflight = crate::denoise::ChunkPolicy::default().preflight(
+                input.frames(),
+                input.channel_count(),
+                input.sample_rate() as f32,
+                available,
+            );
+            if preflight.exceeds && !self.allow_over_budget {
+                return Err(SessionError::MemoryBudgetExceeded {
+                    estimated_mb: preflight.estimated_bytes / 1_000_000,
+                    budget_mb: preflight.budget_bytes / 1_000_000,
+                });
+            }
+        }
 
         // No SKU table at runtime, so est_render_s = 0.0 disables the downshift
         // here (the visible Fast-mode badge is a GUI concern).
@@ -1758,6 +1899,78 @@ mod tests {
         assert!(s
             .playback_buffer(PlaybackSource::Difference, false, 0.0)
             .is_none());
+    }
+
+    #[test]
+    fn ingest_caps_reject_empty_high_rate_and_too_long() {
+        // Pure caps — tested without a giant fixture (#32).
+        assert!(matches!(
+            check_ingest(48_000, 0),
+            Err(SessionError::EmptyInput)
+        ));
+        assert!(matches!(
+            check_ingest(200_000, 48_000),
+            Err(SessionError::SampleRateTooHigh(200_000))
+        ));
+        // 3 hours at 48 kHz exceeds the 2 h cap.
+        let long_frames = (3.0 * 3600.0 * 48_000.0) as usize;
+        assert!(matches!(
+            check_ingest(48_000, long_frames),
+            Err(SessionError::TooLong { .. })
+        ));
+        // A normal 1 s vocal is fine, and every message is non-empty.
+        assert!(check_ingest(48_000, 48_000).is_ok());
+        for err in [
+            SessionError::EmptyInput,
+            SessionError::SampleRateTooHigh(200_000),
+            SessionError::TooLong { seconds: 9000.0 },
+            SessionError::MemoryBudgetExceeded {
+                estimated_mb: 900,
+                budget_mb: 100,
+            },
+        ] {
+            assert!(!format!("{err}").is_empty());
+        }
+    }
+
+    #[test]
+    fn open_rejects_a_too_high_sample_rate_file() {
+        let path = temp("hi-rate");
+        // A tiny file, but with a sample rate above the cap.
+        let buf = AudioBuffer::new(200_000, 16, SampleEncoding::Int, vec![vec![0.1; 128]]);
+        write_wav(&path, &buf).expect("write hi-rate wav");
+        let mut s = Session::new();
+        assert!(matches!(
+            s.open(&path),
+            Err(SessionError::SampleRateTooHigh(200_000))
+        ));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn render_refuses_over_budget_unless_overridden() {
+        let path = temp("budget");
+        degraded_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+
+        // A tiny available-memory figure makes the preflight exceed the budget.
+        s.set_available_memory_override(Some(1_000));
+        assert!(
+            matches!(s.render(), Err(SessionError::MemoryBudgetExceeded { .. })),
+            "an over-budget render must refuse"
+        );
+
+        // The explicit override lets it through.
+        s.set_allow_over_budget(true);
+        assert!(s.render().is_ok(), "over-budget override renders");
+
+        // With enforcement off (no override figure), a normal render is fine.
+        s.set_allow_over_budget(false);
+        s.set_available_memory_override(None);
+        assert!(s.render().is_ok(), "unenforced render is fine");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
