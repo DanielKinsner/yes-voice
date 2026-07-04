@@ -30,6 +30,7 @@ pub mod render_queue;
 pub mod session;
 pub mod settings;
 pub mod singing;
+pub mod worker;
 
 pub use analysis::{
     analyze, analyze_file, AnalysisError, AnalysisReport, ContentGuess, HumEstimate,
