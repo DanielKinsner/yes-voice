@@ -63,9 +63,30 @@ fn run_singing(preset: &Preset, input: &[f32]) -> Vec<f32> {
     buf.channel(0).to_vec()
 }
 
+/// Whether `processed` actually differs from `input` — the mechanical guard that
+/// stops the singing gate from passing a no-op. The preservation metrics below
+/// are all level-invariant and identity-friendly (a chain that does *nothing*
+/// scores perfectly on every one), so without this check the gate would bless a
+/// pass-through. Mirrors the "the chain did not run" assertion in
+/// `yesvox-app/tests/cli.rs` and the dither-active check in `io_export.rs`.
+fn signal_changed(input: &[f32], processed: &[f32]) -> bool {
+    input
+        .iter()
+        .zip(processed)
+        .any(|(a, b)| (a - b).abs() > 1e-3)
+}
+
 /// Assert the §6.2 character-preservation tolerances for one preset on one note.
 fn assert_preserves(preset: &Preset, reference: &[f32]) {
-    let processed = level_match(reference, &run_singing(preset, reference));
+    let raw = run_singing(preset, reference);
+    // Guard the gate against a no-op: the *raw* (pre-normalization) output must
+    // differ from the input, or the preservation checks below are meaningless.
+    assert!(
+        signal_changed(reference, &raw),
+        "{}: processed output is identical to input — the singing chain did not run",
+        preset.name
+    );
+    let processed = level_match(reference, &raw);
 
     // F0 / vibrato / HNR / timbre are §6.2 "sustained voiced frame" metrics —
     // measure them on the sustained body (the dying decay tail is unreliable for
@@ -153,4 +174,43 @@ fn natural_vocal_preserves_sung_character() {
     // the most conservative preset.
     let note = sung_note(146.83, 5.0, 45.0, 96_000);
     assert_preserves(&Preset::NATURAL_VOCAL, &note);
+}
+
+#[test]
+fn no_op_chain_would_pass_preservation_but_the_difference_gate_rejects_it() {
+    // Mechanical proof the gate is no longer a no-op (#27, finding 5). A chain
+    // that does nothing returns the input untouched; every §6.2 preservation
+    // metric is level-invariant and identity-friendly, so identity scores
+    // *perfectly* on all of them — the metrics alone cannot tell a working chain
+    // from a pass-through.
+    let note = sung_note(196.0, 5.5, 70.0, 96_000);
+    let identity = note.clone(); // simulate a no-op chain
+    let sustain = note.len() * 5 / 6;
+    let matched = level_match(&note, &identity);
+    let cents = f0_cents_deviation(&note[..sustain], &matched[..sustain], SR);
+    assert!(
+        cents.median <= 3.0 && cents.p95 <= 5.0,
+        "identity trivially passes the F0 metric ({cents:?})"
+    );
+    assert!(
+        spectral_envelope_cosine(&note[..sustain], &matched[..sustain], SR) >= 0.95,
+        "identity trivially passes the timbre metric"
+    );
+    assert!(
+        tail_survival_db(&note, &matched, SR) >= -3.0,
+        "identity trivially passes the tail metric"
+    );
+
+    // The difference gate is the *only* thing that catches the no-op: it sees
+    // identity as unchanged (so `assert_preserves` would fail on it) …
+    assert!(
+        !signal_changed(&note, &identity),
+        "difference gate must treat identity as unchanged so the gate rejects it"
+    );
+    // … while a real preset's output is correctly seen as changed.
+    let real = run_singing(&Preset::LEAD_VOCAL, &note);
+    assert!(
+        signal_changed(&note, &real),
+        "a real singing preset must change the signal"
+    );
 }
