@@ -14,9 +14,10 @@ use std::{
 };
 
 use eframe::egui;
+use yesvox_core::worker::{spawn, JobEvent, JobHandle};
 use yesvox_core::{
-    AudioBuffer, BatchControl, BatchPresetMode, BatchProgress, BatchSummary, CardId, ContentMode,
-    JobStatus, LoudnessTarget, OutputFormat, Preset, RenderQueue, Session, VocalIsolationCheck,
+    AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, JobStatus,
+    LoudnessTarget, OutputFormat, Preset, RenderQueue, Session, VocalIsolationCheck,
 };
 
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
@@ -245,6 +246,21 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> egui::Rect {
     egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h))
 }
 
+/// Result of an off-thread render: the moved-out session (now rendered) comes
+/// back so the UI can adopt it, plus a status line.
+struct RenderDone {
+    session: Session,
+    ok: bool,
+    status: String,
+}
+
+/// Result of an off-thread batch run: the per-row status updates to apply and
+/// the run summary.
+struct BatchDone {
+    updates: Vec<(usize, JobStatus)>,
+    summary: BatchSummary,
+}
+
 struct YesVoxApp {
     session: Session,
     tab: Tab,
@@ -259,9 +275,15 @@ struct YesVoxApp {
     preview_lufs: bool,
     add_to_library: bool,
     batch_queue: BatchQueueUi,
-    batch_cancel_requested: bool,
-    last_batch_progress: Option<BatchProgress>,
     isolation_check: Option<VocalIsolationCheck>,
+    /// In-flight background jobs (#22). Processing runs off the UI thread; the
+    /// UI polls these each frame. Only one runs at a time (see `busy`).
+    render_job: Option<JobHandle<RenderDone>>,
+    export_job: Option<JobHandle<PathBuf>>,
+    batch_job: Option<JobHandle<BatchDone>>,
+    /// Last real progress fraction reported by the current foreground job — what
+    /// drives the progress bars (replaces the old 0/0.55/1.0 heuristic).
+    job_progress: f32,
 }
 
 impl YesVoxApp {
@@ -305,9 +327,96 @@ impl YesVoxApp {
             preview_lufs: false,
             add_to_library: true,
             batch_queue: BatchQueueUi::default(),
-            batch_cancel_requested: false,
-            last_batch_progress: None,
             isolation_check: None,
+            render_job: None,
+            export_job: None,
+            batch_job: None,
+            job_progress: 0.0,
+        }
+    }
+
+    /// Whether a background job is running. Only one foreground job at a time —
+    /// new triggers are ignored while busy (the render path even moves the
+    /// session onto the worker, so it must not be touched concurrently).
+    fn busy(&self) -> bool {
+        self.render_job.is_some() || self.export_job.is_some() || self.batch_job.is_some()
+    }
+
+    /// Drain background-job events once per frame and adopt their results. Must
+    /// run at the top of `ui()`; requests a repaint while any job is live so the
+    /// progress bar keeps moving without user input.
+    fn pump_jobs(&mut self, ctx: &egui::Context) {
+        // Render: the session was moved onto the worker; adopt it back on Done.
+        if let Some((events, finished)) = self
+            .render_job
+            .as_mut()
+            .map(|j| (j.poll(), j.is_finished()))
+        {
+            for ev in events {
+                match ev {
+                    JobEvent::Progress(p) => self.job_progress = p,
+                    JobEvent::Done(done) => {
+                        self.session = done.session;
+                        self.status = done.status;
+                        if done.ok {
+                            self.ab = AbView::Processed;
+                            self.isolation_check = None;
+                        }
+                    }
+                    JobEvent::Failed(msg) => {
+                        // Only a panic reaches here; the session was lost with it.
+                        self.status = format!("Render crashed: {msg}");
+                    }
+                }
+            }
+            if finished {
+                self.render_job = None;
+            }
+        }
+
+        // Export: read-only; the session stayed put.
+        if let Some((events, finished)) = self
+            .export_job
+            .as_mut()
+            .map(|j| (j.poll(), j.is_finished()))
+        {
+            for ev in events {
+                match ev {
+                    JobEvent::Progress(p) => self.job_progress = p,
+                    JobEvent::Done(path) => self.status = format!("Exported - {}", path.display()),
+                    JobEvent::Failed(msg) => self.status = format!("Export failed: {msg}"),
+                }
+            }
+            if finished {
+                self.export_job = None;
+            }
+        }
+
+        // Batch: apply per-row status updates on Done.
+        if let Some((events, finished)) =
+            self.batch_job.as_mut().map(|j| (j.poll(), j.is_finished()))
+        {
+            for ev in events {
+                match ev {
+                    JobEvent::Progress(p) => self.job_progress = p,
+                    JobEvent::Done(done) => {
+                        for (row, status) in done.updates {
+                            if let Some(r) = self.batch_queue.rows.get_mut(row) {
+                                r.status = status;
+                            }
+                        }
+                        self.status = format_batch_status(&done.summary);
+                    }
+                    JobEvent::Failed(msg) => self.status = format!("Batch failed: {msg}"),
+                }
+            }
+            if finished {
+                self.batch_job = None;
+            }
+        }
+
+        if self.busy() {
+            ctx.request_repaint();
         }
     }
 
@@ -350,15 +459,32 @@ impl YesVoxApp {
     }
 
     fn render_now(&mut self) {
-        match self.session.render() {
-            Ok(()) => {
-                self.ab = AbView::Processed;
-                self.isolation_check = None;
-                let lufs = self.session.output_lufs().unwrap_or(f32::NAN);
-                self.status = format!("Rendered - OUT {lufs:.1} LUFS");
-            }
-            Err(e) => self.status = format!("Render failed: {e}"),
+        if self.busy() {
+            self.status = "Working - please wait".to_owned();
+            return;
         }
+        // Move the session onto a worker thread; the UI stays responsive and
+        // shows a processing state until it comes back rendered (#22).
+        let session = std::mem::replace(&mut self.session, Session::new());
+        self.job_progress = 0.0;
+        self.status = "Analyzing...".to_owned();
+        self.render_job = Some(spawn(move |ctx| {
+            ctx.progress(0.05);
+            let mut session = session;
+            let (ok, status) = match session.render() {
+                Ok(()) => {
+                    let lufs = session.output_lufs().unwrap_or(f32::NAN);
+                    (true, format!("Rendered - OUT {lufs:.1} LUFS"))
+                }
+                Err(e) => (false, format!("Render failed: {e}")),
+            };
+            ctx.progress(1.0);
+            Ok(RenderDone {
+                session,
+                ok,
+                status,
+            })
+        }));
     }
 
     fn queue_current_vocal(&mut self) {
@@ -378,6 +504,10 @@ impl YesVoxApp {
     }
 
     fn run_batch_queue(&mut self) {
+        if self.busy() {
+            self.status = "Working - please wait".to_owned();
+            return;
+        }
         if self.batch_queue.paused {
             self.status = "Batch queue is paused".to_owned();
             return;
@@ -404,21 +534,28 @@ impl YesVoxApp {
             }
         }
 
-        let cancel_requested = &mut self.batch_cancel_requested;
-        let last_progress = &mut self.last_batch_progress;
-        let summary = queue.run_with_progress(|progress| {
-            *last_progress = Some(progress);
-            if *cancel_requested {
-                *cancel_requested = false;
-                BatchControl::Cancel
-            } else {
-                BatchControl::Continue
-            }
-        });
-        for (queue_item, row_index) in queue.items().iter().zip(pending_indices) {
-            self.batch_queue.rows[row_index].status = queue_item.status.clone();
-        }
-        self.status = format_batch_status(&summary);
+        // Run the batch off the UI thread; real per-file progress + cooperative
+        // cancel flow through the worker (#22).
+        self.job_progress = 0.0;
+        self.status = "Batch running...".to_owned();
+        self.batch_job = Some(spawn(move |ctx| {
+            let mut queue = queue;
+            let summary = queue.run_with_progress(|progress| {
+                ctx.progress(progress.completed as f32 / progress.total.max(1) as f32);
+                if ctx.is_canceled() {
+                    BatchControl::Cancel
+                } else {
+                    BatchControl::Continue
+                }
+            });
+            let updates = queue
+                .items()
+                .iter()
+                .zip(pending_indices)
+                .map(|(item, row_index)| (row_index, item.status.clone()))
+                .collect();
+            Ok(BatchDone { updates, summary })
+        }));
     }
 
     fn check_isolation_now(&mut self) {
@@ -486,7 +623,13 @@ impl YesVoxApp {
     }
 
     fn processing_label(&self) -> &'static str {
-        if self.session.output().is_some() {
+        if self.render_job.is_some() {
+            "Analyzing"
+        } else if self.export_job.is_some() {
+            "Exporting"
+        } else if self.batch_job.is_some() {
+            "Batch"
+        } else if self.session.output().is_some() {
             "Rendered"
         } else if self.session.input().is_some() {
             "Loaded"
@@ -494,10 +637,25 @@ impl YesVoxApp {
             "Ready"
         }
     }
+
+    /// Real progress fraction for the processing bars (replaces the old
+    /// 0/0.55/1.0 heuristic): the live job's reported progress while busy,
+    /// otherwise 1.0 once rendered and 0.0 when idle.
+    fn processing_progress(&self) -> f32 {
+        if self.busy() {
+            self.job_progress
+        } else if self.session.output().is_some() {
+            1.0
+        } else {
+            0.0
+        }
+    }
 }
 
 impl eframe::App for YesVoxApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Drain background-job events and repaint while work is in flight (#22).
+        self.pump_jobs(ui.ctx());
         let available = ui.max_rect();
         let canvas = CanvasMap::new(available);
         let layout = ReferenceLayout::new();
@@ -719,13 +877,7 @@ impl YesVoxApp {
             BORDER_DIM,
         );
         self.small_text(painter, c, 34.0, 918.0, self.processing_label(), CYAN);
-        let progress = if self.session.output().is_some() {
-            1.0
-        } else if self.session.input().is_some() {
-            0.55
-        } else {
-            0.0
-        };
+        let progress = self.processing_progress();
         self.small_text(
             painter,
             c,
@@ -1273,8 +1425,12 @@ impl YesVoxApp {
             "x",
             "batch_cancel",
         ) {
-            self.batch_cancel_requested = true;
-            self.status = "Batch cancel requested".to_owned();
+            if let Some(job) = self.batch_job.as_ref() {
+                job.cancel();
+                self.status = "Batch cancel requested".to_owned();
+            } else {
+                self.status = "No batch running".to_owned();
+            }
         }
         if self.outline_button(
             ui,
@@ -1304,9 +1460,24 @@ impl YesVoxApp {
             "EXPORT VOCAL",
             "export_vocal",
         ) {
-            match self.session.export_to_target() {
-                Ok(p) => self.status = format!("Exported - {}", p.display()),
-                Err(e) => self.status = format!("Export failed: {e}"),
+            if self.busy() {
+                self.status = "Working - please wait".to_owned();
+            } else {
+                match self.session.prepare_export() {
+                    Ok(prepared) => {
+                        // Write off the UI thread; the session stays put (export
+                        // is read-only) — #22.
+                        self.job_progress = 0.0;
+                        self.status = "Exporting...".to_owned();
+                        self.export_job = Some(spawn(move |ctx| {
+                            ctx.progress(0.1);
+                            let path = prepared.write().map_err(|e| e.to_string())?;
+                            ctx.progress(1.0);
+                            Ok(path)
+                        }));
+                    }
+                    Err(e) => self.status = format!("Export failed: {e}"),
+                }
             }
         }
     }
@@ -1657,13 +1828,7 @@ impl YesVoxApp {
             "transport_loop",
         );
         self.body_text(painter, c, 756.0, 385.0, self.processing_label(), TEXT);
-        let progress = if self.session.output().is_some() {
-            1.0
-        } else if self.session.input().is_some() {
-            0.55
-        } else {
-            0.0
-        };
+        let progress = self.processing_progress();
         self.body_text(
             painter,
             c,
