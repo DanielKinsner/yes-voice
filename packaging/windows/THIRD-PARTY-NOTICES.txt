@@ -1,0 +1,44 @@
+YesVox v1.0 Third-Party Notices
+================================
+
+This notice file is displayed by the unsigned Windows setup recipe and is also
+installed next to YesVox. It covers package-time model-weight candidates tracked
+in licenses/model-weights.tsv. The exact shipped neural artifacts are staged
+outside git and must be recorded with bundled SHA-256 values before a release
+package is cut.
+
+Model weight manifest
+---------------------
+
+DeepFilterNet3
+- Status: candidate
+- License expression: MIT OR Apache-2.0
+- Repo license record: licenses/DeepFilterNet3/WEIGHTS_LICENSE.md
+- Package rule: do not ship this row as bundled until the exact installer
+  payload has been selected and its shipped SHA-256 is recorded in
+  licenses/model-weights.tsv.
+- Notice rule: if the MIT option is selected for the shipped payload, include
+  the selected upstream MIT copyright/license text with the package. If the
+  Apache-2.0 option is selected, include the Apache-2.0 license text and any
+  upstream NOTICE file that applies to the selected payload.
+
+MossFormer2_SE_48K
+- Status: candidate
+- License expression: Apache-2.0
+- Repo license record: licenses/MossFormer2_SE_48K/WEIGHTS_LICENSE.md
+- Package rule: do not ship this row as bundled until the exact installer
+  payload has been selected and its shipped SHA-256 is recorded in
+  licenses/model-weights.tsv.
+- Notice rule: include the Apache-2.0 license text and any upstream NOTICE file
+  that applies to the selected payload.
+
+Package-time release blockers
+-----------------------------
+
+- Stage release binaries in YESVOX_BIN_DIR.
+- Stage ONNX Runtime or other required runtime files in YESVOX_RUNTIME_BUNDLE_DIR.
+- Stage the exact approved model payloads in YESVOX_MODEL_BUNDLE_DIR.
+- Update licenses/model-weights.tsv from candidate to bundled only for files
+  that are actually included in the setup package.
+- Keep this file synchronized with every non-comment row in
+  licenses/model-weights.tsv.

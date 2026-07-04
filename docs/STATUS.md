@@ -204,9 +204,12 @@ long-file memory-budget validation.
    bundled weights + ORT, ≤2 GB, clean-VM smoke test). **Started 2026-07-04:**
    `docs/model-weights-license-audit.md`, `licenses/model-weights.tsv`, and
    per-model `WEIGHTS_LICENSE.md` records now approve DFN3 + MossFormer2 as
-   source-license candidates and add a mechanical cargo-test audit. Remaining
-   blocker: exact shipped artifacts/hashes, installer notices, integrity
-   manifest entries, and clean-Windows-VM smoke.
+   source-license candidates and add a mechanical cargo-test audit. The Windows
+   package recipe (`packaging/windows/yesvox.iss`) now requires staged runtime
+   files + model payloads, installs notices/license records, and is guarded by
+   `xtask/tests/windows_package_contract.rs`. Remaining blocker: exact shipped
+   artifacts/hashes, final upstream license/NOTICE text for those payloads,
+   integrity manifest entries, and clean-Windows-VM smoke.
 6. **#21 eval lanes:** CI-safe perf ceiling + local Criterion; `cargo xtask
    eval` real-stem no-regression harness (corpus dir via env var, never
    committed; Dan supplies stems); optional non-blocking listen. **Started

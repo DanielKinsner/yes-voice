@@ -39,6 +39,22 @@ Per-model records live in:
 
 The mechanical manifest is `licenses/model-weights.tsv`.
 
+## Windows Package Contract
+
+`packaging/windows/yesvox.iss` is the source-controlled unsigned Inno Setup
+recipe for the v1.0 Windows package. It requires package-time staging
+directories for release binaries, runtime files, and model payloads:
+
+- `YESVOX_BIN_DIR` for `yesvox-gui.exe` and `yesvox.exe`;
+- `YESVOX_RUNTIME_BUNDLE_DIR` for ONNX Runtime or other runtime files;
+- `YESVOX_MODEL_BUNDLE_DIR` for the approved neural model payloads.
+
+The recipe installs `THIRD-PARTY-NOTICES.txt`, the model-weight manifest, and
+the per-model license records next to the app. `THIRD-PARTY-NOTICES.txt` is
+kept synchronized with every non-comment row in `licenses/model-weights.tsv`.
+It is still a release blocker to append the exact upstream license/NOTICE text
+that applies to the selected shipped artifacts.
+
 ## Exclusions
 
 The v1.0 YesVox bundle must not include:
@@ -65,13 +81,19 @@ Rows marked `bundled` additionally require a shipped-artifact SHA-256. Current
 rows are intentionally `candidate` because the installer payloads are not yet
 selected/exported.
 
+`cargo test --all` also includes `xtask/tests/windows_package_contract.rs`. The
+test requires the Windows setup recipe to bundle a model directory, install the
+notice file, and mention every model/status/SPDX/license-record entry from
+`licenses/model-weights.tsv` in the notice text.
+
 ## Release Blockers
 
 Before #20 can close:
 
 - select/export the exact shipped DFN3 and MossFormer2 artifacts;
 - record each shipped artifact's SHA-256 in `licenses/model-weights.tsv`;
-- include the required license text and notices in the installer;
+- append the required final upstream license/NOTICE text for the selected
+  payloads;
 - update `crates/yesvox-core/src/neural/integrity.rs` with the shipped-weight
   manifest entries;
 - smoke test install -> launch -> render -> uninstall on a clean Windows VM.
