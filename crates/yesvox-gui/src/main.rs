@@ -74,7 +74,7 @@ enum Tab {
     Polish,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbView {
     Original,
     Processed,
@@ -278,6 +278,74 @@ struct RenderDone {
     status: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AudibleCacheKey {
+    ab: AbView,
+    volume_match: bool,
+    reblend_bits: u32,
+    auditioning_reblend: bool,
+    generation: u64,
+}
+
+impl AudibleCacheKey {
+    fn playback_source(self) -> PlaybackSource {
+        if self.auditioning_reblend {
+            PlaybackSource::Reblend
+        } else {
+            match self.ab {
+                AbView::Original => PlaybackSource::Original,
+                AbView::Processed => PlaybackSource::Processed,
+            }
+        }
+    }
+}
+
+fn audible_cache_key(
+    ab: AbView,
+    volume_match: bool,
+    reblend_amount: f32,
+    auditioning_reblend: bool,
+    generation: u64,
+) -> AudibleCacheKey {
+    AudibleCacheKey {
+        ab,
+        volume_match,
+        reblend_bits: reblend_amount.clamp(0.0, 1.0).to_bits(),
+        auditioning_reblend,
+        generation,
+    }
+}
+
+fn should_refresh_player_source(current: Option<AudibleCacheKey>, next: AudibleCacheKey) -> bool {
+    current != Some(next)
+}
+
+#[derive(Clone, Copy)]
+struct AudibleMetrics {
+    peak_db: f32,
+    lufs: Option<f32>,
+}
+
+struct AudibleCache {
+    key: AudibleCacheKey,
+    buffer: AudioBuffer,
+    metrics: AudibleMetrics,
+}
+
+impl AudibleCache {
+    fn new(key: AudibleCacheKey, buffer: AudioBuffer) -> Self {
+        let metrics = AudibleMetrics {
+            peak_db: yesvox_core::monitor::channel_peak_db(&buffer, 0),
+            lufs: yesvox_core::loudness::integrated_lufs(&buffer),
+        };
+        Self {
+            key,
+            buffer,
+            metrics,
+        }
+    }
+}
+
 /// Result of an off-thread batch run: the per-row status updates to apply and
 /// the run summary.
 struct BatchDone {
@@ -317,6 +385,11 @@ struct YesVoxApp {
     /// A reblend-slider change happened mid-drag; the playback source refreshes
     /// on pointer release (per-frame full-buffer swaps thrash the audio path).
     reblend_dirty: bool,
+    /// Bumps whenever imported/rendered/invalidated audio changes, so cached
+    /// monitor buffers cannot outlive the session audio they summarize.
+    audio_generation: u64,
+    audible_cache: Option<AudibleCache>,
+    player_source_key: Option<AudibleCacheKey>,
     /// Settings snapshot taken before each render (the session is *moved* onto
     /// the worker; if the worker panics, the session is lost with it and gets
     /// rebuilt from the source path + this snapshot).
@@ -389,6 +462,9 @@ impl YesVoxApp {
             player: None,
             auditioning_reblend: false,
             reblend_dirty: false,
+            audio_generation: 0,
+            audible_cache: None,
+            player_source_key: None,
             render_recovery: None,
             preset_menu_open: false,
             history,
@@ -400,6 +476,13 @@ impl YesVoxApp {
     fn commit_edit(&mut self, key: &str) {
         let snapshot = self.session.snapshot();
         self.history.record(snapshot, Some(key));
+        self.bump_audio_generation();
+    }
+
+    fn bump_audio_generation(&mut self) {
+        self.audio_generation = self.audio_generation.wrapping_add(1);
+        self.audible_cache = None;
+        self.player_source_key = None;
     }
 
     /// Undo the last settings edit (if any), restoring the session.
@@ -407,6 +490,7 @@ impl YesVoxApp {
         if let Some(snapshot) = self.history.undo().cloned() {
             self.session.restore_snapshot(&snapshot);
             self.stop_playback();
+            self.bump_audio_generation();
             // The verdict described the pre-undo render; don't show it against
             // reverted settings.
             self.isolation_check = None;
@@ -419,6 +503,7 @@ impl YesVoxApp {
         if let Some(snapshot) = self.history.redo().cloned() {
             self.session.restore_snapshot(&snapshot);
             self.stop_playback();
+            self.bump_audio_generation();
             self.isolation_check = None;
             self.status = "Redo".to_owned();
         }
@@ -464,41 +549,103 @@ impl YesVoxApp {
         }
     }
 
-    /// Play/pause `buffer`, opening the cpal device on first use. A device
+    fn audible_key(&self) -> AudibleCacheKey {
+        audible_cache_key(
+            self.ab,
+            self.volume_match,
+            self.reblend_amount,
+            self.auditioning_reblend,
+            self.audio_generation,
+        )
+    }
+
+    fn audible_buffer(&mut self) -> Option<&AudioBuffer> {
+        let key = self.audible_key();
+        if self.audible_cache.as_ref().is_some_and(|c| c.key == key) {
+            return self.audible_cache.as_ref().map(|c| &c.buffer);
+        }
+
+        let buffer = self
+            .session
+            .playback_buffer(
+                key.playback_source(),
+                self.volume_match,
+                self.reblend_amount,
+            )
+            .or_else(|| self.session.input().cloned())?;
+        self.audible_cache = Some(AudibleCache::new(key, buffer));
+        self.audible_cache.as_ref().map(|c| &c.buffer)
+    }
+
+    fn audible_metrics(&mut self) -> Option<AudibleMetrics> {
+        let key = self.audible_key();
+        let _ = self.audible_buffer()?;
+        self.audible_cache
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .map(|cache| cache.metrics)
+    }
+
+    /// Play/pause the current audible source, opening the cpal device on first use. A device
     /// failure becomes a status line, never a panic (#23). Switching the source
     /// on an existing player preserves the playhead (instant A/B).
-    fn play_pause_source(&mut self, buffer: Option<AudioBuffer>) {
-        let Some(buffer) = buffer else {
+    fn play_pause_audible(&mut self) {
+        let key = self.audible_key();
+        if self.player.is_some() {
+            if should_refresh_player_source(self.player_source_key, key) {
+                let Some(buffer) = self.audible_buffer().cloned() else {
+                    self.status = "Nothing to play - import a vocal".to_owned();
+                    return;
+                };
+                if let Some(p) = self.player.as_ref() {
+                    p.set_source(&buffer);
+                }
+                self.player_source_key = Some(key);
+            }
+            if let Some(p) = self.player.as_ref() {
+                p.toggle();
+            }
+            return;
+        }
+
+        let Some(buffer) = self.audible_buffer().cloned() else {
             self.status = "Nothing to play - import a vocal".to_owned();
             return;
         };
-        match &self.player {
-            Some(p) => {
-                p.set_source(&buffer);
-                p.toggle();
+        match Player::new(&buffer) {
+            Ok(p) => {
+                p.play();
+                self.player = Some(p);
+                self.player_source_key = Some(key);
             }
-            None => match Player::new(&buffer) {
-                Ok(p) => {
-                    p.play();
-                    self.player = Some(p);
-                }
-                Err(e) => self.status = format!("Playback unavailable: {e}"),
-            },
+            Err(e) => self.status = format!("Playback unavailable: {e}"),
         }
     }
 
     /// Swap the audible source into the live player without moving the playhead —
     /// what makes an A/B / Volume Match / reblend change instant. No-op if not
     /// playing anything.
-    fn refresh_playback_source(&self) {
-        if let (Some(p), Some(buf)) = (&self.player, self.audible_buffer()) {
-            p.set_source(&buf);
+    fn refresh_playback_source(&mut self) {
+        if self.player.is_none() {
+            return;
+        }
+        let key = self.audible_key();
+        if !should_refresh_player_source(self.player_source_key, key) {
+            return;
+        }
+        let Some(buffer) = self.audible_buffer().cloned() else {
+            return;
+        };
+        if let Some(p) = self.player.as_ref() {
+            p.set_source(&buffer);
+            self.player_source_key = Some(key);
         }
     }
 
     /// Stop playback and release the device (new audio invalidates the stream).
     fn stop_playback(&mut self) {
         self.player = None;
+        self.player_source_key = None;
     }
 
     /// Whether a background job is running. Only one foreground job at a time —
@@ -530,6 +677,7 @@ impl YesVoxApp {
                     JobEvent::Progress(p) => self.job_progress = p,
                     JobEvent::Done(done) => {
                         self.session = done.session;
+                        self.bump_audio_generation();
                         self.status = done.status;
                         self.render_recovery = None;
                         if done.ok {
@@ -641,6 +789,7 @@ impl YesVoxApp {
                 if let Some(parent) = path.parent() {
                     self.session.set_output_location(parent);
                 }
+                self.bump_audio_generation();
                 self.render_now();
             }
             Err(e) => self.status = format!("Import failed: {e}"),
@@ -654,6 +803,7 @@ impl YesVoxApp {
         }
         // Stop playback: the processed audio is about to change under it (#23).
         self.stop_playback();
+        self.bump_audio_generation();
         // Move the session onto a worker thread; the UI stays responsive and
         // shows a processing state until it comes back rendered (#22). Keep a
         // settings snapshot: if the worker panics, the session is lost with it
@@ -713,6 +863,7 @@ impl YesVoxApp {
         session.set_output_name(&self.name_input);
         self.session = session;
         self.player = None;
+        self.bump_audio_generation();
         self.isolation_check = None;
     }
 
@@ -795,25 +946,6 @@ impl YesVoxApp {
             }
             Err(e) => self.status = format!("Isolation check failed: {e}"),
         }
-    }
-
-    /// The buffer the transport audits, via the tested
-    /// [`Session::playback_buffer`] mapping. "Processed" is the **pure** output
-    /// — exactly what exports — never a reblend mix; auditioning the mix is the
-    /// reblend strip's job (`auditioning_reblend`). Falls back to the input
-    /// before a render exists so Play always has something to say.
-    fn audible_buffer(&self) -> Option<AudioBuffer> {
-        let source = if self.auditioning_reblend {
-            PlaybackSource::Reblend
-        } else {
-            match self.ab {
-                AbView::Original => PlaybackSource::Original,
-                AbView::Processed => PlaybackSource::Processed,
-            }
-        };
-        self.session
-            .playback_buffer(source, self.volume_match, self.reblend_amount)
-            .or_else(|| self.session.input().cloned())
     }
 
     fn input_duration(&self) -> Option<f32> {
@@ -1774,7 +1906,7 @@ impl YesVoxApp {
         }
     }
 
-    fn draw_status_bar(&self, painter: &egui::Painter, c: CanvasMap, l: ReferenceLayout) {
+    fn draw_status_bar(&mut self, painter: &egui::Painter, c: CanvasMap, l: ReferenceLayout) {
         paint_panel(painter, c, l.status, 0, alpha(PANEL, 245), BORDER_DIM);
         painter.circle_filled(c.pos(18.0, 1062.0), c.v(5.0), BLUE);
         self.small_text(
@@ -1794,25 +1926,11 @@ impl YesVoxApp {
             &format!("Quality {:?}", self.session.settings().quality_mode),
             TEXT_MUTED,
         );
-        let audible = self.audible_buffer();
-        let peak = audible
-            .as_ref()
-            .map(|b| yesvox_core::monitor::channel_peak_db(b, 0));
+        let metrics = self.audible_metrics();
+        let peak = metrics.map(|m| m.peak_db);
         // LIVE LUFS reports what is audible right now: the reblend mix only
         // while the strip audition is active, else the honest A/B side.
-        let lufs = if self.auditioning_reblend {
-            audible
-                .as_ref()
-                .and_then(yesvox_core::loudness::integrated_lufs)
-        } else {
-            match self.ab {
-                AbView::Original if self.volume_match => audible
-                    .as_ref()
-                    .and_then(yesvox_core::loudness::integrated_lufs),
-                AbView::Original => self.session.input_lufs(),
-                AbView::Processed => self.session.output_lufs(),
-            }
-        };
+        let lufs = metrics.and_then(|m| m.lufs);
         self.small_text(
             painter,
             c,
@@ -2073,7 +2191,7 @@ impl YesVoxApp {
             // The main transport audits the A/B compare; the reblend strip's
             // own play button is the only way into the mix audition.
             self.auditioning_reblend = false;
-            self.play_pause_source(self.audible_buffer());
+            self.play_pause_audible();
         }
         let pos_s = self
             .player
@@ -2146,14 +2264,13 @@ impl YesVoxApp {
         // "Preview LUFS" checkbox removed (#24): it was never wired.
     }
 
-    fn draw_waveform(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+    fn draw_waveform(&mut self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
         let sr = c.rect(r);
         let mid = sr.center().y;
         let height = sr.height() * 0.42;
         let buckets = sr.width().round().max(1.0) as usize;
         let peaks = self
             .audible_buffer()
-            .as_ref()
             .map(|b| yesvox_core::monitor::waveform_peaks(b, 0, buckets));
         let selection = rect(r.left(), r.top(), r.width() * 0.20, r.height());
         paint_h_gradient(
@@ -2427,7 +2544,7 @@ impl YesVoxApp {
             // Audition the reblend mix — the one path that plays a blend. The
             // main A/B transport stays pure-output (honest compare).
             self.auditioning_reblend = true;
-            self.play_pause_source(self.audible_buffer());
+            self.play_pause_audible();
         }
 
         painter.line_segment(
@@ -3599,6 +3716,45 @@ mod tests {
 
         session.set_quality_mode(QualityMode::RestorationHq);
         assert!(preset_gen_badge_visible(&session));
+    }
+
+    #[test]
+    fn audible_cache_key_tracks_source_controls_and_render_generation() {
+        let base = audible_cache_key(AbView::Processed, false, 0.25, false, 7);
+
+        assert_eq!(base.playback_source(), PlaybackSource::Processed);
+        assert_ne!(
+            base,
+            audible_cache_key(AbView::Original, false, 0.25, false, 7)
+        );
+        assert_ne!(
+            base,
+            audible_cache_key(AbView::Processed, true, 0.25, false, 7)
+        );
+        assert_ne!(
+            base,
+            audible_cache_key(AbView::Processed, false, 0.50, false, 7)
+        );
+        assert_ne!(
+            base,
+            audible_cache_key(AbView::Processed, false, 0.25, false, 8)
+        );
+
+        let audition = audible_cache_key(AbView::Original, false, 0.25, true, 7);
+        assert_eq!(audition.playback_source(), PlaybackSource::Reblend);
+        assert_ne!(base, audition);
+    }
+
+    #[test]
+    fn unchanged_audible_cache_key_does_not_refresh_player_source() {
+        let key = audible_cache_key(AbView::Processed, false, 0.25, false, 7);
+
+        assert!(should_refresh_player_source(None, key));
+        assert!(!should_refresh_player_source(Some(key), key));
+        assert!(should_refresh_player_source(
+            Some(key),
+            audible_cache_key(AbView::Original, false, 0.25, false, 7)
+        ));
     }
 
     #[test]
