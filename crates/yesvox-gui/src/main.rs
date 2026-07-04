@@ -437,6 +437,13 @@ impl YesVoxApp {
     }
 
     fn open_path(&mut self, path: PathBuf) {
+        if self.busy() {
+            // The render path moves the session onto a worker; loading a file
+            // into the placeholder now would be discarded when the render's
+            // session is adopted back. Refuse until the job finishes (#22).
+            self.status = "Working - please wait".to_owned();
+            return;
+        }
         match self.session.open(&path) {
             Ok(_) => {
                 self.source_path = Some(path.clone());
