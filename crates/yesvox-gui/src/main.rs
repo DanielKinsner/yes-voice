@@ -214,6 +214,49 @@ fn advanced_declip_control_rects(card: egui::Rect) -> AdvancedDeClipControlRects
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedDeClickPanel {
+    click_enabled: bool,
+    mouth_enabled: bool,
+    click_amount: f32,
+    mouth_amount: f32,
+}
+
+impl AdvancedDeClickPanel {
+    fn from_session(session: &Session) -> Self {
+        AdvancedDeClickPanel {
+            click_enabled: session.click_repair_enabled(),
+            mouth_enabled: session.mouth_click_enabled(),
+            click_amount: session.click_repair_amount(),
+            mouth_amount: session.mouth_click_amount(),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_click_repair_enabled(self.click_enabled);
+        session.set_mouth_click_enabled(self.mouth_enabled);
+        session.set_click_repair_amount(self.click_amount);
+        session.set_mouth_click_amount(self.mouth_amount);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedDeClickControlRects {
+    click_toggle: egui::Rect,
+    mouth_toggle: egui::Rect,
+    click_knob: egui::Rect,
+    mouth_knob: egui::Rect,
+}
+
+fn advanced_declick_control_rects(card: egui::Rect) -> AdvancedDeClickControlRects {
+    AdvancedDeClickControlRects {
+        click_toggle: rect(card.left() + 12.0, card.top() + 54.0, 34.0, 20.0),
+        mouth_toggle: rect(card.left() + 12.0, card.top() + 88.0, 34.0, 20.0),
+        click_knob: rect(card.left() + 118.0, card.top() + 48.0, 60.0, 60.0),
+        mouth_knob: rect(card.left() + 180.0, card.top() + 48.0, 60.0, 60.0),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BatchQueueRow {
     input: PathBuf,
@@ -1739,6 +1782,8 @@ impl YesVoxApp {
                 self.advanced_debleed_card(ui, painter, c, *card);
             } else if i == 1 {
                 self.advanced_declip_card(ui, painter, c, *card);
+            } else if i == 2 {
+                self.advanced_declick_card(ui, painter, c, *card);
             } else {
                 self.advanced_module_card(painter, c, *card, module);
             }
@@ -2150,6 +2195,111 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_declip");
+        }
+    }
+
+    fn advanced_declick_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "3", "De-click");
+        let controls = advanced_declick_control_rects(r);
+        let original = AdvancedDeClickPanel::from_session(&self.session);
+        let mut panel = original;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 190.0,
+            r.top() + 25.0,
+            if panel.click_enabled || panel.mouth_enabled {
+                "Split"
+            } else {
+                "Bypass"
+            },
+            if panel.click_enabled || panel.mouth_enabled {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 54.0,
+            r.top() + 66.0,
+            "Click repair",
+            TEXT_MUTED,
+        );
+        if self.toggle(
+            ui,
+            painter,
+            c,
+            controls.click_toggle,
+            panel.click_enabled,
+            "advanced_declick_click_toggle",
+        ) {
+            panel.click_enabled = !panel.click_enabled;
+        }
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 54.0,
+            r.top() + 100.0,
+            "Mouth click",
+            TEXT_MUTED,
+        );
+        if self.toggle(
+            ui,
+            painter,
+            c,
+            controls.mouth_toggle,
+            panel.mouth_enabled,
+            "advanced_declick_mouth_toggle",
+        ) {
+            panel.mouth_enabled = !panel.mouth_enabled;
+        }
+
+        self.micro_text(
+            painter,
+            c,
+            controls.click_knob.left() + 14.0,
+            controls.click_knob.top() - 5.0,
+            "Click",
+            TEXT_MUTED,
+        );
+        panel.click_amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.click_knob.center(),
+            panel.click_amount,
+            "advanced_declick_click_amount",
+        );
+        self.micro_text(
+            painter,
+            c,
+            controls.mouth_knob.left() + 10.0,
+            controls.mouth_knob.top() - 5.0,
+            "Mouth",
+            TEXT_MUTED,
+        );
+        panel.mouth_amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.mouth_knob.center(),
+            panel.mouth_amount,
+            "advanced_declick_mouth_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_declick");
         }
     }
 
@@ -4524,6 +4674,58 @@ mod tests {
         for (i, a) in rects.iter().enumerate() {
             for b in rects.iter().skip(i + 1) {
                 assert!(!a.intersects(*b), "Declip controls must not crowd");
+            }
+        }
+    }
+
+    #[test]
+    fn advanced_declick_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedDeClickPanel::from_session(&session);
+
+        assert!(panel.click_enabled);
+        assert!(panel.mouth_enabled);
+        assert_eq!(panel.click_amount, session.click_repair_amount());
+        assert_eq!(panel.mouth_amount, session.mouth_click_amount());
+
+        let edited = AdvancedDeClickPanel {
+            click_enabled: false,
+            mouth_enabled: true,
+            click_amount: 0.36,
+            mouth_amount: 0.58,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert!(!session.click_repair_enabled());
+        assert!(session.mouth_click_enabled());
+        assert_eq!(session.click_repair_amount(), 0.36);
+        assert_eq!(session.mouth_click_amount(), 0.58);
+        assert_eq!(AdvancedDeClickPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_declick_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[2];
+        let controls = advanced_declick_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.click_toggle,
+            controls.mouth_toggle,
+            controls.click_knob,
+            controls.mouth_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "De-click controls must not crowd");
             }
         }
     }
