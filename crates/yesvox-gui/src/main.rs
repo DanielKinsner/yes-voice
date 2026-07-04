@@ -878,6 +878,31 @@ impl AudibleCacheKey {
     }
 }
 
+/// Badge text when the audition stream runs at a different rate than the
+/// source (#36). The preview resamples to the device rate when the device
+/// won't open at the file's rate (#35) — export is unaffected, and staying
+/// silent about it reads as "my file changed sample rate".
+fn preview_rate_badge(stream_hz: u32, source_hz: u32) -> Option<String> {
+    (stream_hz != source_hz).then(|| {
+        format!(
+            "Preview {:.1} kHz - source {:.1} kHz",
+            stream_hz as f32 / 1000.0,
+            source_hz as f32 / 1000.0
+        )
+    })
+}
+
+/// Status line for a canceled render (#36). A canceled render leaves the prior
+/// output untouched, so playback keeps auditioning the previous processed take
+/// when one exists — say so instead of being silently correct.
+fn canceled_render_status(has_previous_output: bool) -> &'static str {
+    if has_previous_output {
+        "Render canceled - showing previous processed"
+    } else {
+        "Render canceled"
+    }
+}
+
 fn audible_cache_key(
     ab: AbView,
     volume_match: bool,
@@ -1552,7 +1577,10 @@ impl YesVoxApp {
                     let lufs = session.output_lufs().unwrap_or(f32::NAN);
                     (true, format!("Rendered - OUT {lufs:.1} LUFS"))
                 }
-                Err(SessionError::Canceled) => (false, "Render canceled".to_owned()),
+                Err(SessionError::Canceled) => (
+                    false,
+                    canceled_render_status(session.output().is_some()).to_owned(),
+                ),
                 Err(e) => (false, format!("Render failed: {e}")),
             };
             ctx.progress(1.0);
@@ -4173,6 +4201,13 @@ impl YesVoxApp {
             &format!("LIVE LUFS  {}", lufs_label(lufs)),
             TEXT_MUTED,
         );
+        // Preview-rate badge (#36): visible in both views whenever the open
+        // stream runs at a device rate that differs from the file's.
+        if let (Some(player), Some(input)) = (self.player.as_ref(), self.session.input()) {
+            if let Some(badge) = preview_rate_badge(player.sample_rate(), input.sample_rate()) {
+                self.small_text(painter, c, 1150.0, 1066.0, &badge, TEXT_MUTED);
+            }
+        }
         self.small_text(painter, c, 1662.0, 1066.0, &self.status, TEXT_DIM);
         self.badge(
             painter,
@@ -6902,6 +6937,68 @@ mod tests {
             app.pump_jobs(&ctx);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn canceled_render_status_names_the_audible_fallback() {
+        // A canceled render keeps the prior output; the status must say what
+        // playback is still auditioning instead of being silently correct (#36).
+        assert_eq!(canceled_render_status(false), "Render canceled");
+        assert_eq!(
+            canceled_render_status(true),
+            "Render canceled - showing previous processed"
+        );
+    }
+
+    #[test]
+    fn preview_rate_badge_only_appears_on_a_rate_mismatch() {
+        assert_eq!(preview_rate_badge(48_000, 48_000), None);
+        assert_eq!(preview_rate_badge(44_100, 44_100), None);
+        assert_eq!(
+            preview_rate_badge(48_000, 44_100).as_deref(),
+            Some("Preview 48.0 kHz - source 44.1 kHz")
+        );
+    }
+
+    #[test]
+    fn undo_redo_keep_the_pinned_compare_snapshot() {
+        // The pinned C is an audio slot, not a setting: undo/redo restore
+        // settings snapshots and must leave it pinned (#36 regression guard).
+        use yesvox_core::{write_wav, AudioBuffer, SampleEncoding};
+        let mut path = std::env::temp_dir();
+        path.push(format!("yesvox-gui-pin-c-{}.wav", std::process::id()));
+        let sr = 48_000u32;
+        let samples: Vec<f32> = (0..(sr as usize / 2))
+            .map(|i| {
+                let t = i as f32 / sr as f32;
+                0.15 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+            })
+            .collect();
+        write_wav(
+            &path,
+            &AudioBuffer::new(sr, 24, SampleEncoding::Int, vec![samples]),
+        )
+        .expect("write fixture");
+
+        let mut app = YesVoxApp::from_session(YesVoxApp::default_session());
+        app.session.open(&path).expect("open fixture");
+        app.session.render().expect("render fixture");
+        app.pin_compare_snapshot();
+        assert!(app.session.compare_snapshot().is_some(), "pin failed");
+
+        assert!(app.apply_edit("flow", |s| s.set_flow_amount(0.7)));
+        app.undo();
+        assert!(
+            app.session.compare_snapshot().is_some(),
+            "undo cleared the pinned C"
+        );
+        app.redo();
+        assert!(
+            app.session.compare_snapshot().is_some(),
+            "redo cleared the pinned C"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
