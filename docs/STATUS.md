@@ -211,9 +211,10 @@ long-file memory-budget validation.
    eval` real-stem no-regression harness (corpus dir via env var, never
    committed; Dan supplies stems); optional non-blocking listen. **Started
    2026-07-04:** `tests/perf_budget.rs` adds the fixed synthetic 3-minute
-   full-chain render tripwire; remaining lanes are Criterion, `cargo xtask
-   eval`, Dan's local corpus, clean-machine suite round-trip, and optional
-   listening checklist.
+   full-chain render tripwire, and `benches/render_bench.rs` adds local
+   Criterion benches for per-module and 30 s full-chain precision tracking.
+   Remaining lanes are `cargo xtask eval`, Dan's local corpus, clean-machine
+   suite round-trip, and optional listening checklist.
 
 ## Decisions on record
 

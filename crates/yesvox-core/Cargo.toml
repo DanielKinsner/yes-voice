@@ -31,3 +31,10 @@ ort = { version = "=2.0.0-rc.12", optional = true, default-features = false, fea
 # value-type/param-range invariants. Default-features off to avoid the `fork`/
 # `timeout` (rusty-fork) subprocess machinery — pure in-process properties.
 proptest = { version = "1", default-features = false, features = ["std"] }
+# Local precision perf lane (#21). Default features stay off so CI compiles the
+# bench target without pulling plotting/reporting extras into the normal gate.
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "render_bench"
+harness = false
