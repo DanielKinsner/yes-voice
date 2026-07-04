@@ -28,7 +28,11 @@ impl Default for ChunkPolicy {
         ChunkPolicy {
             chunk_s: 8.0,
             overlap_s: 0.5,
-            working_set_k: 8.0,
+            // Measured, not guessed (#32): a counting allocator recorded a real
+            // whole-rack render peaking at ~13.2x the f32 buffer size (the old
+            // 8.0 under-estimated and would have let OOM-bound files through).
+            // 16 keeps ~20% headroom; `tests/memory_budget.rs` guards it.
+            working_set_k: 16.0,
         }
     }
 }
