@@ -18,7 +18,7 @@ use crate::card::CardId;
 use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
-use crate::modules::{BleedVerdict, DeClip, DePop, LoudnessTarget};
+use crate::modules::{BleedVerdict, DeClip, DeHum, DePop, LoudnessTarget};
 use crate::playback::PlaybackSource;
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
@@ -524,6 +524,36 @@ impl DePopAdvanced {
     }
 }
 
+/// Advanced-only De-hum controls. The nominal fundamental is restricted to
+/// Auto/50/60 Hz so this stays mains restoration, not freeform notch EQ.
+#[derive(Clone, Copy)]
+struct DeHumAdvanced {
+    nominal: Option<f32>,
+    harmonics: u32,
+    q: f32,
+    track: bool,
+}
+
+impl Default for DeHumAdvanced {
+    fn default() -> Self {
+        DeHumAdvanced {
+            nominal: None,
+            harmonics: 6,
+            q: 30.0,
+            track: true,
+        }
+    }
+}
+
+impl DeHumAdvanced {
+    fn set(&mut self, nominal: Option<f32>, harmonics: u32, q: f32, track: bool) {
+        self.nominal = nominal.map(|f| if f < 55.0 { 50.0 } else { 60.0 });
+        self.harmonics = harmonics.min(12);
+        self.q = q.clamp(5.0, 80.0);
+        self.track = track;
+    }
+}
+
 /// A stateful vocal-editing session.
 pub struct Session {
     settings: Settings,
@@ -538,6 +568,7 @@ pub struct Session {
     debleed: DeBleedAdvanced,
     declip: DeClipAdvanced,
     depop: DePopAdvanced,
+    dehum: DeHumAdvanced,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -565,6 +596,8 @@ pub struct Session {
     allow_over_budget: bool,
     /// The neural→light fallback reason from the last render, if any (#33).
     engine_note: Option<String>,
+    /// Last successful render's De-hum tracked fundamental, `0.0` before render.
+    dehum_tracked_hz: f32,
 }
 
 /// An opaque snapshot of a [`Session`]'s **settings state** — the fields undo/redo
@@ -582,6 +615,7 @@ pub struct SessionSnapshot {
     debleed: DeBleedAdvanced,
     declip: DeClipAdvanced,
     depop: DePopAdvanced,
+    dehum: DeHumAdvanced,
     flow: f32,
     polish: f32,
     loudness_override: Option<LoudnessTarget>,
@@ -616,6 +650,7 @@ impl Session {
             debleed: DeBleedAdvanced::default(),
             declip: DeClipAdvanced::default(),
             depop: DePopAdvanced::default(),
+            dehum: DeHumAdvanced::default(),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -627,6 +662,7 @@ impl Session {
             available_memory_override: None,
             allow_over_budget: false,
             engine_note: None,
+            dehum_tracked_hz: 0.0,
         }
     }
 
@@ -716,6 +752,37 @@ impl Session {
     pub fn set_depop_settings(&mut self, cutoff_hz: f32, strength: f32) {
         self.depop.set(cutoff_hz, strength);
         self.output = None;
+    }
+
+    /// Advanced De-hum nominal fundamental, harmonic count, notch Q, and drift
+    /// tracking flag.
+    pub fn dehum_settings(&self) -> (Option<f32>, u32, f32, bool) {
+        (
+            self.dehum.nominal,
+            self.dehum.harmonics,
+            self.dehum.q,
+            self.dehum.track,
+        )
+    }
+
+    /// Set Advanced De-hum controls. Nominal maps to Auto/50/60 Hz, harmonics
+    /// clamp to `0..=12`, and Q clamps to the voice-preserving notch range.
+    pub fn set_dehum_settings(
+        &mut self,
+        nominal: Option<f32>,
+        harmonics: u32,
+        q: f32,
+        track: bool,
+    ) {
+        self.dehum.set(nominal, harmonics, q, track);
+        self.dehum_tracked_hz = 0.0;
+        self.output = None;
+    }
+
+    /// Last successful render's De-hum tracked fundamental in Hz, or `0.0` when
+    /// no De-hum render has produced a readout yet.
+    pub fn dehum_tracked_frequency(&self) -> f32 {
+        self.dehum_tracked_hz
     }
 
     /// Set a visible Standard card's amount. Finish sub-controls that share
@@ -1086,6 +1153,7 @@ impl Session {
         self.report = Some(report);
         self.output = None;
         self.compare_snapshot = None;
+        self.dehum_tracked_hz = 0.0;
         // Default the export target from the opened file (FILE panel), as the mock
         // shows ("Lead Vocal" → "Lead Vocal_YesVox" beside the source's folder).
         if self.output_dir.is_none() {
@@ -1440,6 +1508,7 @@ impl Session {
             debleed: self.debleed,
             declip: self.declip,
             depop: self.depop,
+            dehum: self.dehum,
             flow: self.flow,
             polish: self.polish,
             loudness_override: self.loudness_override,
@@ -1459,11 +1528,13 @@ impl Session {
         self.debleed = snapshot.debleed;
         self.declip = snapshot.declip;
         self.depop = snapshot.depop;
+        self.dehum = snapshot.dehum;
         self.flow = snapshot.flow;
         self.polish = snapshot.polish;
         self.loudness_override = snapshot.loudness_override;
         self.output_format = snapshot.output_format;
         self.output = None;
+        self.dehum_tracked_hz = 0.0;
     }
 
     /// Re-analyze the rendered output and return the bottom-strip Vocal Isolation
@@ -1542,6 +1613,9 @@ impl Session {
         built.chain.declip = DeClip::new(declip_threshold, declip_strength);
         let (depop_cutoff_hz, depop_strength) = self.depop_settings();
         built.chain.depop = DePop::with_settings(depop_cutoff_hz, depop_strength);
+        let (dehum_nominal, dehum_harmonics, dehum_q, dehum_track) = self.dehum_settings();
+        built.chain.dehum =
+            DeHum::with_settings(dehum_nominal, dehum_harmonics, dehum_q, dehum_track);
 
         // Apply the per-card overrides (the UI rack) over the preset's defaults,
         // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
@@ -1606,8 +1680,10 @@ impl Session {
             .chain
             .process_with_cancel(&mut buffer, &mut should_cancel)
             .map_err(|_| SessionError::Canceled)?;
+        let dehum_tracked_hz = built.chain.dehum.tracked_frequency();
         self.output = Some(buffer);
         self.engine_note = engine_note;
+        self.dehum_tracked_hz = dehum_tracked_hz;
         Ok(())
     }
 
@@ -1747,6 +1823,21 @@ mod tests {
             let env = (-(t as f32) / (0.012 * SR as f32)).exp();
             x[at + t] += 0.8 * env * (2.0 * PI * 80.0 * t as f32 / SR as f32).cos();
         }
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
+    fn hum_fixture(path: &Path) -> AudioBuffer {
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR as f32;
+                0.30 * (2.0 * PI * 220.0 * t).sin()
+                    + 0.20 * (2.0 * PI * 60.0 * t).sin()
+                    + 0.10 * (2.0 * PI * 120.0 * t).sin()
+            })
+            .collect();
         let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
         write_wav(path, &buf).expect("write fixture");
         buf
@@ -3303,6 +3394,57 @@ mod tests {
         assert!(
             wet_low < dry_low * 0.5,
             "De-pop strength should reduce plosive low end: {dry_low} -> {wet_low}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn advanced_dehum_settings_clamp_and_restore() {
+        let mut s = Session::new();
+        assert_eq!(s.dehum_settings(), (None, 6, 30.0, true));
+
+        s.set_dehum_settings(Some(60.0), 8, 45.0, false);
+        let snapshot = s.snapshot();
+        assert_eq!(s.dehum_settings(), (Some(60.0), 8, 45.0, false));
+
+        s.set_dehum_settings(Some(52.0), 99, 1.0, true);
+        assert_eq!(s.dehum_settings(), (Some(50.0), 12, 5.0, true));
+
+        s.restore_snapshot(&snapshot);
+        assert_eq!(s.dehum_settings(), (Some(60.0), 8, 45.0, false));
+    }
+
+    #[test]
+    fn advanced_dehum_settings_reach_rendered_notches_and_readout() {
+        let path = temp("advanced-dehum-render");
+        hum_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        for stage in Stage::ALL {
+            s.set_stage_enabled(stage, false);
+        }
+        s.set_stage_enabled(Stage::DeHum, true);
+
+        s.set_dehum_settings(Some(60.0), 0, 30.0, true);
+        s.render().expect("dry dehum render");
+        let dry = s.output().unwrap().channel(0).to_vec();
+
+        s.set_dehum_settings(Some(60.0), 2, 30.0, true);
+        s.render().expect("wet dehum render");
+        let wet = s.output().unwrap().channel(0).to_vec();
+
+        let dry_tail = &dry[8000..];
+        let wet_tail = &wet[8000..];
+        let dry_hum = goertzel_power(dry_tail, SR as f32, 60.0);
+        let wet_hum = goertzel_power(wet_tail, SR as f32, 60.0);
+        assert!(
+            wet_hum < dry_hum * 0.1,
+            "De-hum harmonics should reduce the 60 Hz tone: {dry_hum} -> {wet_hum}"
+        );
+        assert!(
+            (s.dehum_tracked_frequency() - 60.0).abs() < 0.5,
+            "tracked frequency should surface the rendered De-hum estimate"
         );
 
         let _ = std::fs::remove_file(&path);

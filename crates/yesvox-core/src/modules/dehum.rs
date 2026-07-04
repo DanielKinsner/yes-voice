@@ -45,6 +45,10 @@ impl Default for DeHum {
 }
 
 impl DeHum {
+    fn normalize_nominal(nominal: Option<f32>) -> Option<f32> {
+        nominal.map(|f| if f < 55.0 { 50.0 } else { 60.0 })
+    }
+
     /// A de-hum with an explicit nominal fundamental (e.g. from the analysis
     /// report). Pass `None` to auto-detect.
     pub fn new(nominal: Option<f32>) -> Self {
@@ -52,6 +56,13 @@ impl DeHum {
             nominal,
             ..DeHum::default()
         }
+    }
+
+    /// A de-hum with the Advanced controls applied.
+    pub fn with_settings(nominal: Option<f32>, harmonics: u32, q: f32, track: bool) -> Self {
+        let mut dehum = DeHum::new(nominal);
+        dehum.set_settings(nominal, harmonics, q, track);
+        dehum
     }
 
     /// Enable or bypass. Bypassed → identity.
@@ -67,6 +78,29 @@ impl DeHum {
     /// The currently tracked fundamental in Hz (`0.0` before the first block).
     pub fn tracked_frequency(&self) -> f32 {
         self.f0
+    }
+
+    /// Advanced settings: nominal fundamental, harmonic count, notch Q, tracking.
+    pub fn settings(&self) -> (Option<f32>, u32, f32, bool) {
+        (self.nominal, self.harmonics, self.q, self.track)
+    }
+
+    /// Apply Advanced controls. Harmonics allow `0` for a true no-notch dry
+    /// comparison; upper bounds keep this module a hum remover, not a tone tool.
+    pub fn set_settings(&mut self, nominal: Option<f32>, harmonics: u32, q: f32, track: bool) {
+        let nominal = Self::normalize_nominal(nominal);
+        let harmonics = harmonics.min(12);
+        let q = q.clamp(5.0, 80.0);
+        if self.nominal != nominal || self.harmonics != harmonics || self.track != track {
+            self.f0 = 0.0;
+        }
+        if self.harmonics != harmonics {
+            self.cascades.clear();
+        }
+        self.nominal = nominal;
+        self.harmonics = harmonics;
+        self.q = q;
+        self.track = track;
     }
 
     /// Estimate the dominant fundamental (50 vs 60 Hz) over `samples`.
