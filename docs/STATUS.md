@@ -109,11 +109,17 @@ this order (each TDD'd, each its own green commit):
   per-card "Advanced", transport "Loop". Persistence-lite (last dir/format
   via eframe storage). Only Undo/Redo remain unwired — they are #25.
 
-1. **#25 undo/redo** — bounded settings snapshot stack (G18 decided). ←
-   **current**
-2. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
+- ✅ **#25 undo/redo** (done 2026-07-03). `yesvox_core::history::History<T>`
+  (bounded, coalescing, redo-truncating; proptest + cap/eviction tests) +
+  `Session::snapshot`/`restore_snapshot` (settings-only; restore marks the
+  render stale like a direct edit). GUI holds `History<SessionSnapshot>` cap
+  100; every settings edit records with a per-control coalesce key; the
+  toolbar arrows (real enabled state) + Ctrl/Cmd+Z/Shift+Z/Y drive it. This
+  also wired the last dead controls from #24 → zero dead chrome.
+
+1. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
    filesystem/atomic export, resource guards, model-load validation,
-   determinism. Interleavable AFK filler.
+   determinism. Interleavable AFK filler. ← **current (#28)**
 3. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
    separate screen, Standard visual language, mock-first approval).
 4. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
