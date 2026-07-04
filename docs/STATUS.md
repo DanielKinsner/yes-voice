@@ -100,18 +100,25 @@ this order (each TDD'd, each its own green commit):
   reblend-strip play, and instant A/B/Volume-Match/reblend source switching.
   cpal added to CI (Linux ALSA); its licenses were already covered.
 
-1. **#24 Standard wiring sweep + chrome triage** (wire-or-remove policy; preset
-   picker, card dials, loudness target, file fields; drop PNG-only chrome). ←
+- ✅ **#24 Standard wiring sweep + chrome triage** (done 2026-07-03). Wired:
+  preset dropdown (`select_preset`), all 9 card amount knobs
+  (`set_card_amount`, `visual_card_amount` stub deleted), Loudness Target +
+  Bit Depth selectors, editable output name (TextEdit) + rfd folder picker.
+  Removed dead chrome: Gear/Help/Back-to-Suite, Auto Polish, Save as New
+  Preset, Add to Suite Library, Preview LUFS, duplicate Loudness "Target",
+  per-card "Advanced", transport "Loop". Persistence-lite (last dir/format
+  via eframe storage). Only Undo/Redo remain unwired — they are #25.
+
+1. **#25 undo/redo** — bounded settings snapshot stack (G18 decided). ←
    **current**
-3. **#25 undo/redo** — bounded settings snapshot stack (G18 decided).
-4. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
+2. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
    filesystem/atomic export, resource guards, model-load validation,
    determinism. Interleavable AFK filler.
-5. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
+3. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
    separate screen, Standard visual language, mock-first approval).
-6. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
+4. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
    (commerce/signing/activation split to a v1.1 lane).
-7. **#21** — perf budget gates + real-stem no-regression corpus (Dan supplies
+5. **#21** — perf budget gates + real-stem no-regression corpus (Dan supplies
    stems) + optional non-blocking listen.
 
 ## Decisions on record
