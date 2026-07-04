@@ -18,7 +18,9 @@ use crate::card::CardId;
 use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
-use crate::modules::{BleedVerdict, DeClip, DeHum, DePop, DeReverb, LoudnessTarget};
+use crate::modules::{
+    BleedVerdict, DeClip, DeEss, DeEssMode, DeHum, DePop, DeReverb, LoudnessTarget,
+};
 use crate::playback::PlaybackSource;
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
@@ -584,6 +586,39 @@ impl DeReverbAdvanced {
     }
 }
 
+/// Advanced-only De-ess controls. Defaults follow the preset/content tuning so
+/// singing keeps the gentler sibilance handling unless the user overrides it.
+#[derive(Clone, Copy)]
+struct DeEssAdvanced {
+    mode: DeEssMode,
+    ess_ratio: f32,
+    min_gain: f32,
+}
+
+impl DeEssAdvanced {
+    fn for_preset(preset: Preset) -> Self {
+        let mut module = DeEss::new(preset.deess_mode);
+        if preset.content_mode == ContentMode::Singing {
+            module.set_sensitivity(0.6, 0.25);
+        }
+        let (mode, ess_ratio, min_gain) = module.settings();
+        DeEssAdvanced {
+            mode,
+            ess_ratio,
+            min_gain,
+        }
+    }
+
+    fn set(&mut self, mode: DeEssMode, ess_ratio: f32, min_gain: f32) {
+        let mut module = DeEss::new(mode);
+        module.set_sensitivity(ess_ratio, min_gain);
+        let (mode, ess_ratio, min_gain) = module.settings();
+        self.mode = mode;
+        self.ess_ratio = ess_ratio;
+        self.min_gain = min_gain;
+    }
+}
+
 fn machine_max_worker_count() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get().max(1))
@@ -610,6 +645,7 @@ pub struct Session {
     depop: DePopAdvanced,
     dehum: DeHumAdvanced,
     dereverb: DeReverbAdvanced,
+    deess: DeEssAdvanced,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -639,6 +675,8 @@ pub struct Session {
     engine_note: Option<String>,
     /// Last successful render's De-hum tracked fundamental, `0.0` before render.
     dehum_tracked_hz: f32,
+    /// Last successful render's De-ess HF reduction handed to Breath, in dB.
+    deess_hf_reduction_db: f32,
 }
 
 /// An opaque snapshot of a [`Session`]'s **settings state** — the fields undo/redo
@@ -658,6 +696,7 @@ pub struct SessionSnapshot {
     depop: DePopAdvanced,
     dehum: DeHumAdvanced,
     dereverb: DeReverbAdvanced,
+    deess: DeEssAdvanced,
     workers: usize,
     flow: f32,
     polish: f32,
@@ -694,6 +733,7 @@ impl Session {
             depop: DePopAdvanced::default(),
             dehum: DeHumAdvanced::default(),
             dereverb: DeReverbAdvanced::for_content(content_mode),
+            deess: DeEssAdvanced::for_preset(preset),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -706,6 +746,7 @@ impl Session {
             allow_over_budget: false,
             engine_note: None,
             dehum_tracked_hz: 0.0,
+            deess_hf_reduction_db: 0.0,
         }
     }
 
@@ -746,6 +787,7 @@ impl Session {
         s.settings = settings;
         s.preset = preset;
         s.dereverb = DeReverbAdvanced::for_content(content_mode);
+        s.deess = DeEssAdvanced::for_preset(preset);
         s
     }
 
@@ -862,6 +904,25 @@ impl Session {
     /// Analyzer-measured RT60 in seconds for the De-reverb auto-soften readout.
     pub fn dereverb_rt60(&self) -> f32 {
         self.report.map(|r| r.reverb_time_s).unwrap_or(0.0)
+    }
+
+    /// Advanced De-ess mode, sensitivity ratio, and minimum gain.
+    pub fn deess_settings(&self) -> (DeEssMode, f32, f32) {
+        (self.deess.mode, self.deess.ess_ratio, self.deess.min_gain)
+    }
+
+    /// Set Advanced De-ess controls. Sensitivity ratio and minimum gain use the
+    /// engine's voice-preserving clamp ranges.
+    pub fn set_deess_settings(&mut self, mode: DeEssMode, ess_ratio: f32, min_gain: f32) {
+        self.deess.set(mode, ess_ratio, min_gain);
+        self.deess_hf_reduction_db = 0.0;
+        self.output = None;
+    }
+
+    /// Last successful render's De-ess HF reduction in dB after stage mix, or
+    /// `0.0` before a De-ess render has produced a readout.
+    pub fn deess_hf_reduction_db(&self) -> f32 {
+        self.deess_hf_reduction_db
     }
 
     /// Set a visible Standard card's amount. Finish sub-controls that share
@@ -1217,7 +1278,9 @@ impl Session {
         self.finish_cards = FinishCards::default();
         self.transient_cards = TransientCards::default();
         self.dereverb = DeReverbAdvanced::for_content(self.settings.content_mode);
+        self.deess = DeEssAdvanced::for_preset(self.preset);
         self.loudness_override = None;
+        self.deess_hf_reduction_db = 0.0;
     }
 
     /// Open and analyze a vocal. The content toggle stays user-authoritative —
@@ -1234,6 +1297,7 @@ impl Session {
         self.output = None;
         self.compare_snapshot = None;
         self.dehum_tracked_hz = 0.0;
+        self.deess_hf_reduction_db = 0.0;
         // Default the export target from the opened file (FILE panel), as the mock
         // shows ("Lead Vocal" → "Lead Vocal_YesVox" beside the source's folder).
         if self.output_dir.is_none() {
@@ -1590,6 +1654,7 @@ impl Session {
             depop: self.depop,
             dehum: self.dehum,
             dereverb: self.dereverb,
+            deess: self.deess,
             workers: self.workers,
             flow: self.flow,
             polish: self.polish,
@@ -1612,6 +1677,7 @@ impl Session {
         self.depop = snapshot.depop;
         self.dehum = snapshot.dehum;
         self.dereverb = snapshot.dereverb;
+        self.deess = snapshot.deess;
         self.workers = snapshot.workers.clamp(1, Self::max_worker_count());
         self.flow = snapshot.flow;
         self.polish = snapshot.polish;
@@ -1619,6 +1685,7 @@ impl Session {
         self.output_format = snapshot.output_format;
         self.output = None;
         self.dehum_tracked_hz = 0.0;
+        self.deess_hf_reduction_db = 0.0;
     }
 
     /// Re-analyze the rendered output and return the bottom-strip Vocal Isolation
@@ -1705,6 +1772,14 @@ impl Session {
         built.chain.dereverb = DeReverb::new(dereverb_strength, dereverb_tail_preservation);
         built.chain.dereverb.set_enabled(dereverb_enabled);
         built.chain.dereverb.set_rt60(report.reverb_time_s);
+        let deess_enabled = built.chain.deess.enabled();
+        let (deess_mode, deess_ess_ratio, deess_min_gain) = self.deess_settings();
+        built.chain.deess = DeEss::new(deess_mode);
+        built.chain.deess.set_enabled(deess_enabled);
+        built
+            .chain
+            .deess
+            .set_sensitivity(deess_ess_ratio, deess_min_gain);
 
         // Apply the per-card overrides (the UI rack) over the preset's defaults,
         // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
@@ -1770,9 +1845,11 @@ impl Session {
             .process_with_cancel(&mut buffer, &mut should_cancel)
             .map_err(|_| SessionError::Canceled)?;
         let dehum_tracked_hz = built.chain.dehum.tracked_frequency();
+        let deess_hf_reduction_db = built.chain.last_shared_hf_db;
         self.output = Some(buffer);
         self.engine_note = engine_note;
         self.dehum_tracked_hz = dehum_tracked_hz;
+        self.deess_hf_reduction_db = deess_hf_reduction_db;
         Ok(())
     }
 
@@ -1944,6 +2021,19 @@ mod tests {
         for i in delay..n {
             x[i] += decay * x[i - delay];
         }
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
+    fn sibilant_fixture(path: &Path) -> AudioBuffer {
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SR as f32;
+                0.35 * (2.0 * PI * 220.0 * t).sin() + 0.35 * (2.0 * PI * 7000.0 * t).sin()
+            })
+            .collect();
         let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
         write_wav(path, &buf).expect("write fixture");
         buf
@@ -3635,6 +3725,64 @@ mod tests {
         assert!(
             wet_tail < dry_tail * 0.75,
             "De-reverb strength should reduce the late room tail: {dry_tail} -> {wet_tail}"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn advanced_deess_settings_clamp_restore_and_follow_content_defaults() {
+        let mut s = Session::new();
+        assert_eq!(s.deess_settings(), (DeEssMode::Split, 0.45, 0.1));
+
+        s.set_content_mode(ContentMode::Singing);
+        assert_eq!(s.deess_settings(), (DeEssMode::Split, 0.6, 0.25));
+
+        s.set_deess_settings(DeEssMode::Wide, 0.30, 0.05);
+        let snapshot = s.snapshot();
+        assert_eq!(s.deess_settings(), (DeEssMode::Wide, 0.30, 0.05));
+
+        s.set_deess_settings(DeEssMode::Split, 2.0, -0.5);
+        assert_eq!(s.deess_settings(), (DeEssMode::Split, 1.0, 0.0));
+
+        s.restore_snapshot(&snapshot);
+        assert_eq!(s.deess_settings(), (DeEssMode::Wide, 0.30, 0.05));
+
+        s.select_preset(Preset::NARRATION);
+        assert_eq!(s.deess_settings(), (DeEssMode::Split, 0.45, 0.1));
+        s.select_preset(Preset::LEAD_VOCAL);
+        assert_eq!(s.deess_settings(), (DeEssMode::Split, 0.6, 0.25));
+    }
+
+    #[test]
+    fn advanced_deess_settings_reach_rendered_reduction_and_readout() {
+        let path = temp("advanced-deess-render");
+        sibilant_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        for stage in Stage::ALL {
+            s.set_stage_enabled(stage, false);
+        }
+        s.set_stage_enabled(Stage::DeEss, true);
+
+        s.set_deess_settings(DeEssMode::Split, 1.0, 1.0);
+        s.render().expect("dry deess render");
+        let dry = s.output().unwrap().channel(0).to_vec();
+        assert_eq!(s.deess_hf_reduction_db(), 0.0);
+
+        s.set_deess_settings(DeEssMode::Split, 0.20, 0.0);
+        s.render().expect("wet deess render");
+        let wet = s.output().unwrap().channel(0).to_vec();
+
+        let dry_hf = goertzel_power(&dry[2000..], SR as f32, 7000.0);
+        let wet_hf = goertzel_power(&wet[2000..], SR as f32, 7000.0);
+        assert!(
+            wet_hf < dry_hf * 0.5,
+            "De-ess sensitivity should reduce sibilant HF: {dry_hf} -> {wet_hf}"
+        );
+        assert!(
+            s.deess_hf_reduction_db() > 1.0,
+            "HF reduction readout should surface the rendered de-ess handoff"
         );
 
         let _ = std::fs::remove_file(&path);

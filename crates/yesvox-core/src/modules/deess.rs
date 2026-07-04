@@ -77,6 +77,11 @@ impl DeEss {
         self.mode
     }
 
+    /// The active mode, sibilance ratio, and minimum gain.
+    pub fn settings(&self) -> (DeEssMode, f32, f32) {
+        (self.mode, self.ess_ratio, self.min_gain)
+    }
+
     /// Tune how hard de-essing works. `ess_ratio` is the allowed sibilance-band
     /// level as a fraction of broadband (higher = ducks less; reserve attenuation
     /// for genuinely harsh fricatives); `min_gain` floors the ducking gain
