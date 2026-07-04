@@ -20,8 +20,8 @@ use eframe::egui;
 use yesvox_core::worker::{spawn, JobEvent, JobHandle};
 use yesvox_core::{
     AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, History,
-    JobStatus, LoudnessTarget, OutputFormat, PlaybackSource, Preset, RenderQueue, Session,
-    SessionError, SessionSnapshot, Stage, VocalIsolationCheck,
+    JobStatus, LoudnessTarget, OutputFormat, PlaybackSource, Preset, QualityMode, RenderQueue,
+    Session, SessionError, SessionSnapshot, Stage, VocalIsolationCheck,
 };
 
 /// Undo/redo depth cap (#25).
@@ -349,6 +349,71 @@ fn advanced_dehum_control_rects(card: egui::Rect) -> AdvancedDeHumControlRects {
         track_toggle: rect(card.left() + 144.0, card.top() + 42.0, 34.0, 20.0),
         harmonics_slider: rect(card.left() + 82.0, card.top() + 76.0, 72.0, 5.0),
         q_slider: rect(card.left() + 82.0, card.top() + 99.0, 72.0, 5.0),
+        amount_knob: rect(card.right() - 68.0, card.top() + 52.0, 56.0, 56.0),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedDenoisePanel {
+    quality: QualityMode,
+    workers: usize,
+    amount: f32,
+}
+
+impl AdvancedDenoisePanel {
+    fn from_session(session: &Session) -> Self {
+        AdvancedDenoisePanel {
+            quality: session.settings().quality_mode,
+            workers: session.worker_count(),
+            amount: session.stage_mix(Stage::Denoise),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_quality_mode(self.quality);
+        session.set_worker_count(self.workers);
+        session.set_stage_mix(Stage::Denoise, self.amount);
+    }
+
+    fn quality_label(self) -> &'static str {
+        match self.quality {
+            QualityMode::Natural => "Natural",
+            QualityMode::Balanced => "Balanced",
+            QualityMode::RestorationHq => "HQ",
+        }
+    }
+
+    fn engine_label(self) -> &'static str {
+        if self.quality.is_generative() {
+            "Neural"
+        } else {
+            "Light"
+        }
+    }
+
+    fn pass_label(self) -> &'static str {
+        match self.quality.binding().max_passes {
+            1 => "1 pass",
+            _ => "2 pass",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedDenoiseControlRects {
+    natural_button: egui::Rect,
+    balanced_button: egui::Rect,
+    hq_button: egui::Rect,
+    workers_slider: egui::Rect,
+    amount_knob: egui::Rect,
+}
+
+fn advanced_denoise_control_rects(card: egui::Rect) -> AdvancedDenoiseControlRects {
+    AdvancedDenoiseControlRects {
+        natural_button: rect(card.left() + 12.0, card.top() + 42.0, 42.0, 20.0),
+        balanced_button: rect(card.left() + 58.0, card.top() + 42.0, 42.0, 20.0),
+        hq_button: rect(card.left() + 104.0, card.top() + 42.0, 34.0, 20.0),
+        workers_slider: rect(card.left() + 82.0, card.top() + 84.0, 62.0, 5.0),
         amount_knob: rect(card.right() - 68.0, card.top() + 52.0, 56.0, 56.0),
     }
 }
@@ -1884,6 +1949,8 @@ impl YesVoxApp {
                 self.advanced_depop_card(ui, painter, c, *card);
             } else if i == 4 {
                 self.advanced_dehum_card(ui, painter, c, *card);
+            } else if i == 5 {
+                self.advanced_denoise_card(ui, painter, c, *card);
             } else {
                 self.advanced_module_card(painter, c, *card, module);
             }
@@ -2616,6 +2683,138 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_dehum");
+        }
+    }
+
+    fn advanced_denoise_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "6", "Denoise");
+        let controls = advanced_denoise_control_rects(r);
+        let original = AdvancedDenoisePanel::from_session(&self.session);
+        let mut panel = original;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 164.0,
+            r.top() + 25.0,
+            panel.quality_label(),
+            if panel.quality.is_generative() {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.natural_button,
+            "Nat",
+            panel.quality == QualityMode::Natural,
+            "advanced_denoise_natural",
+        ) {
+            panel.quality = QualityMode::Natural;
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.balanced_button,
+            "Bal",
+            panel.quality == QualityMode::Balanced,
+            "advanced_denoise_balanced",
+        ) {
+            panel.quality = QualityMode::Balanced;
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.hq_button,
+            "HQ",
+            panel.quality == QualityMode::RestorationHq,
+            "advanced_denoise_hq",
+        ) {
+            panel.quality = QualityMode::RestorationHq;
+        }
+
+        let max_workers = Session::max_worker_count().max(1);
+        panel.workers = panel.workers.clamp(1, max_workers);
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 87.0,
+            &format!("Workers {}", panel.workers),
+            TEXT_MUTED,
+        );
+        let worker_t = if max_workers <= 1 {
+            0.0
+        } else {
+            (panel.workers.saturating_sub(1)) as f32 / (max_workers - 1) as f32
+        };
+        let next_worker_t = self.slider(
+            ui,
+            painter,
+            c,
+            controls.workers_slider,
+            worker_t,
+            "advanced_denoise_workers",
+            BLUE,
+            CYAN,
+        );
+        panel.workers = if max_workers <= 1 {
+            1
+        } else {
+            (1.0 + next_worker_t * (max_workers - 1) as f32)
+                .round()
+                .clamp(1.0, max_workers as f32) as usize
+        };
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 108.0,
+            panel.engine_label(),
+            TEXT_MUTED,
+        );
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 62.0,
+            r.top() + 108.0,
+            panel.pass_label(),
+            TEXT_MUTED,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            controls.amount_knob.left() + 5.0,
+            controls.amount_knob.top() - 5.0,
+            "Amount",
+            TEXT_MUTED,
+        );
+        panel.amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.amount_knob.center(),
+            panel.amount,
+            "advanced_denoise_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_denoise");
         }
     }
 
@@ -5149,6 +5348,63 @@ mod tests {
         for (i, a) in rects.iter().enumerate() {
             for b in rects.iter().skip(i + 1) {
                 assert!(!a.intersects(*b), "De-hum controls must not crowd");
+            }
+        }
+    }
+
+    #[test]
+    fn advanced_denoise_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedDenoisePanel::from_session(&session);
+
+        assert_eq!(panel.quality, QualityMode::Balanced);
+        assert_eq!(panel.quality_label(), "Balanced");
+        assert_eq!(panel.engine_label(), "Neural");
+        assert_eq!(panel.pass_label(), "1 pass");
+        assert_eq!(panel.workers, session.worker_count());
+        assert_eq!(panel.amount, session.stage_mix(Stage::Denoise));
+
+        let edited = AdvancedDenoisePanel {
+            quality: QualityMode::RestorationHq,
+            workers: Session::max_worker_count().clamp(1, 3),
+            amount: 0.57,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert_eq!(session.settings().quality_mode, QualityMode::RestorationHq);
+        assert_eq!(session.worker_count(), edited.workers);
+        assert_eq!(session.stage_mix(Stage::Denoise), 0.57);
+        assert_eq!(
+            AdvancedDenoisePanel::from_session(&session).pass_label(),
+            "2 pass"
+        );
+        assert_eq!(AdvancedDenoisePanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_denoise_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[5];
+        let controls = advanced_denoise_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.natural_button,
+            controls.balanced_button,
+            controls.hq_button,
+            controls.workers_slider,
+            controls.amount_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "Denoise controls must not crowd");
             }
         }
     }
