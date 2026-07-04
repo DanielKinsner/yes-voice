@@ -68,7 +68,8 @@ pub use render_queue::{
     QueueStateError, RenderQueue,
 };
 pub use session::{
-    IsolationVerdict, OutputFormat, PreparedExport, Session, SessionError, VocalIsolationCheck,
+    IsolationVerdict, OutputFormat, PreparedExport, Session, SessionError, SessionSnapshot,
+    VocalIsolationCheck,
 };
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,

@@ -382,6 +382,24 @@ pub struct Session {
     neural_model: Option<PathBuf>,
 }
 
+/// An opaque snapshot of a [`Session`]'s **settings state** — the fields undo/redo
+/// covers (#25): preset, cards + macros, content mode, loudness target, and
+/// output options. Excludes the loaded audio, the render, and file
+/// name/location. Produced by [`Session::snapshot`] and applied by
+/// [`Session::restore_snapshot`].
+#[derive(Clone)]
+pub struct SessionSnapshot {
+    settings: Settings,
+    preset: Preset,
+    cards: [Card; STAGE_COUNT],
+    finish_cards: FinishCards,
+    transient_cards: TransientCards,
+    flow: f32,
+    polish: f32,
+    loudness_override: Option<LoudnessTarget>,
+    output_format: OutputFormat,
+}
+
 impl Default for Session {
     fn default() -> Self {
         Self::new()
@@ -1113,6 +1131,38 @@ impl Session {
         }
     }
 
+    /// Capture the current settings state for the undo/redo stack (#25). Cheap:
+    /// clones only the settings-affecting fields, not the audio.
+    pub fn snapshot(&self) -> SessionSnapshot {
+        SessionSnapshot {
+            settings: self.settings.clone(),
+            preset: self.preset,
+            cards: self.cards,
+            finish_cards: self.finish_cards,
+            transient_cards: self.transient_cards,
+            flow: self.flow,
+            polish: self.polish,
+            loudness_override: self.loudness_override,
+            output_format: self.output_format,
+        }
+    }
+
+    /// Restore a settings [`SessionSnapshot`] (undo/redo). Reverts every settings
+    /// field and marks the render stale (`output = None`) — exactly what a direct
+    /// settings edit does — while leaving the loaded audio and file target alone.
+    pub fn restore_snapshot(&mut self, snapshot: &SessionSnapshot) {
+        self.settings = snapshot.settings.clone();
+        self.preset = snapshot.preset;
+        self.cards = snapshot.cards;
+        self.finish_cards = snapshot.finish_cards;
+        self.transient_cards = snapshot.transient_cards;
+        self.flow = snapshot.flow;
+        self.polish = snapshot.polish;
+        self.loudness_override = snapshot.loudness_override;
+        self.output_format = snapshot.output_format;
+        self.output = None;
+    }
+
     /// Re-analyze the rendered output and return the bottom-strip Vocal Isolation
     /// Check verdict. This intentionally depends on the current processed buffer:
     /// changing cards/macros invalidates the output, and the next check reflects
@@ -1600,6 +1650,55 @@ mod tests {
 
         let _ = std::fs::remove_file(&in_path);
         let _ = std::fs::remove_file(&written);
+    }
+
+    #[test]
+    fn snapshot_restore_reverts_settings_and_marks_output_stale() {
+        // #25: restoring a settings snapshot reverts the value AND invalidates
+        // the render, exactly like the direct edit did.
+        let in_path = temp("snap-in");
+        degraded_fixture(&in_path);
+        let mut s = Session::new();
+        s.open(&in_path).expect("open");
+        s.render().expect("render");
+
+        let original = s.card_amount(CardId::PresenceAir);
+        let snap = s.snapshot();
+
+        // A direct settings edit marks the render stale...
+        let target = if original >= 0.5 { 0.2 } else { 0.8 };
+        s.set_card_amount(CardId::PresenceAir, target);
+        assert!(s.output().is_none(), "direct edit marks output stale");
+        s.render().expect("re-render");
+        assert!(s.output().is_some());
+        assert_ne!(s.card_amount(CardId::PresenceAir), original);
+
+        // ...and so does restoring the snapshot (undo).
+        s.restore_snapshot(&snap);
+        assert_eq!(
+            s.card_amount(CardId::PresenceAir),
+            original,
+            "snapshot restore reverts the setting"
+        );
+        assert!(
+            s.output().is_none(),
+            "restore marks the render stale like a direct edit"
+        );
+
+        let _ = std::fs::remove_file(&in_path);
+    }
+
+    #[test]
+    fn snapshot_restore_roundtrips_preset_and_loudness() {
+        let mut s = Session::new();
+        s.select_preset(Preset::NARRATION);
+        s.set_loudness_target(LoudnessTarget::Podcast);
+        let snap = s.snapshot();
+        s.select_preset(Preset::LEAD_VOCAL);
+        s.set_loudness_target(LoudnessTarget::Custom(-9.0));
+        s.restore_snapshot(&snap);
+        assert_eq!(s.preset(), Preset::NARRATION);
+        assert_eq!(s.loudness_target(), LoudnessTarget::Podcast);
     }
 
     #[test]
