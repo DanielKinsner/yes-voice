@@ -209,7 +209,11 @@ long-file memory-budget validation.
    manifest entries, and clean-Windows-VM smoke.
 6. **#21 eval lanes:** CI-safe perf ceiling + local Criterion; `cargo xtask
    eval` real-stem no-regression harness (corpus dir via env var, never
-   committed; Dan supplies stems); optional non-blocking listen.
+   committed; Dan supplies stems); optional non-blocking listen. **Started
+   2026-07-04:** `tests/perf_budget.rs` adds the fixed synthetic 3-minute
+   full-chain render tripwire; remaining lanes are Criterion, `cargo xtask
+   eval`, Dan's local corpus, clean-machine suite round-trip, and optional
+   listening checklist.
 
 ## Decisions on record
 
