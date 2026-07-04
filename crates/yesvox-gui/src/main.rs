@@ -20,8 +20,8 @@ use eframe::egui;
 use yesvox_core::worker::{spawn, JobEvent, JobHandle};
 use yesvox_core::{
     AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, History,
-    JobStatus, LoudnessTarget, OutputFormat, Preset, RenderQueue, Session, SessionSnapshot,
-    VocalIsolationCheck,
+    JobStatus, LoudnessTarget, OutputFormat, PlaybackSource, Preset, RenderQueue, Session,
+    SessionSnapshot, VocalIsolationCheck,
 };
 
 /// Undo/redo depth cap (#25).
@@ -297,6 +297,17 @@ struct YesVoxApp {
     /// no device. Holds the shared transport; switching A/B source preserves the
     /// playhead.
     player: Option<Player>,
+    /// What the transport audits: `false` = the A/B compare (Original vs the
+    /// pure processed output — never a blend, so the compare is honest);
+    /// `true` = the reblend strip's mix. Cleared by any A/B interaction.
+    auditioning_reblend: bool,
+    /// A reblend-slider change happened mid-drag; the playback source refreshes
+    /// on pointer release (per-frame full-buffer swaps thrash the audio path).
+    reblend_dirty: bool,
+    /// Settings snapshot taken before each render (the session is *moved* onto
+    /// the worker; if the worker panics, the session is lost with it and gets
+    /// rebuilt from the source path + this snapshot).
+    render_recovery: Option<SessionSnapshot>,
     /// Whether the top-bar preset dropdown is showing (#24).
     preset_menu_open: bool,
     /// Bounded undo/redo over settings snapshots (#25).
@@ -363,6 +374,9 @@ impl YesVoxApp {
             batch_job: None,
             job_progress: 0.0,
             player: None,
+            auditioning_reblend: false,
+            reblend_dirty: false,
+            render_recovery: None,
             preset_menu_open: false,
             history,
         }
@@ -380,6 +394,9 @@ impl YesVoxApp {
         if let Some(snapshot) = self.history.undo().cloned() {
             self.session.restore_snapshot(&snapshot);
             self.stop_playback();
+            // The verdict described the pre-undo render; don't show it against
+            // reverted settings.
+            self.isolation_check = None;
             self.status = "Undo".to_owned();
         }
     }
@@ -389,6 +406,7 @@ impl YesVoxApp {
         if let Some(snapshot) = self.history.redo().cloned() {
             self.session.restore_snapshot(&snapshot);
             self.stop_playback();
+            self.isolation_check = None;
             self.status = "Redo".to_owned();
         }
     }
@@ -481,6 +499,13 @@ impl YesVoxApp {
     /// run at the top of `ui()`; requests a repaint while any job is live so the
     /// progress bar keeps moving without user input.
     fn pump_jobs(&mut self, ctx: &egui::Context) {
+        // A dead audio stream (device unplugged mid-playback) must not leave a
+        // frozen play icon: surface the error and release the player.
+        if let Some(err) = self.player.as_ref().and_then(Player::take_error) {
+            self.status = format!("Playback stopped: {err}");
+            self.player = None;
+        }
+
         // Render: the session was moved onto the worker; adopt it back on Done.
         if let Some((events, finished)) = self
             .render_job
@@ -493,6 +518,7 @@ impl YesVoxApp {
                     JobEvent::Done(done) => {
                         self.session = done.session;
                         self.status = done.status;
+                        self.render_recovery = None;
                         if done.ok {
                             self.ab = AbView::Processed;
                             self.isolation_check = None;
@@ -501,8 +527,11 @@ impl YesVoxApp {
                         }
                     }
                     JobEvent::Failed(msg) => {
-                        // Only a panic reaches here; the session was lost with it.
+                        // Only a panic reaches here — and the session, which was
+                        // moved onto the worker, was lost with it. Rebuild it so
+                        // the user's file and tuning survive the crash.
                         self.status = format!("Render crashed: {msg}");
+                        self.recover_session_after_crash();
                     }
                 }
             }
@@ -613,7 +642,10 @@ impl YesVoxApp {
         // Stop playback: the processed audio is about to change under it (#23).
         self.stop_playback();
         // Move the session onto a worker thread; the UI stays responsive and
-        // shows a processing state until it comes back rendered (#22).
+        // shows a processing state until it comes back rendered (#22). Keep a
+        // settings snapshot: if the worker panics, the session is lost with it
+        // and is rebuilt from the source path + this snapshot.
+        self.render_recovery = Some(self.session.snapshot());
         let session = std::mem::replace(&mut self.session, Session::new());
         self.job_progress = 0.0;
         self.status = "Analyzing...".to_owned();
@@ -634,6 +666,31 @@ impl YesVoxApp {
                 status,
             })
         }));
+    }
+
+    /// Rebuild the session after a render-worker panic (the session was moved
+    /// onto the worker and died with it): re-open the source file and restore
+    /// the pre-render settings snapshot, so the user loses the crashed render —
+    /// not their file, tuning, or undo history.
+    fn recover_session_after_crash(&mut self) {
+        let mut session = Session::new();
+        if let Some(path) = self.source_path.clone() {
+            match session.open(&path) {
+                Ok(_) => {
+                    if let Some(parent) = path.parent() {
+                        session.set_output_location(parent);
+                    }
+                }
+                Err(e) => self.status = format!("{} (reimport failed: {e})", self.status),
+            }
+        }
+        if let Some(snapshot) = self.render_recovery.take() {
+            session.restore_snapshot(&snapshot);
+        }
+        session.set_output_name(&self.name_input);
+        self.session = session;
+        self.player = None;
+        self.isolation_check = None;
     }
 
     fn queue_current_vocal(&mut self) {
@@ -717,16 +774,23 @@ impl YesVoxApp {
         }
     }
 
+    /// The buffer the transport audits, via the tested
+    /// [`Session::playback_buffer`] mapping. "Processed" is the **pure** output
+    /// — exactly what exports — never a reblend mix; auditioning the mix is the
+    /// reblend strip's job (`auditioning_reblend`). Falls back to the input
+    /// before a render exists so Play always has something to say.
     fn audible_buffer(&self) -> Option<AudioBuffer> {
-        match self.ab {
-            AbView::Original if self.volume_match => self.session.ab_matched_input(),
-            AbView::Original => self.session.input().cloned(),
-            AbView::Processed => self
-                .session
-                .reblend(self.reblend_amount)
-                .or_else(|| self.session.output().cloned())
-                .or_else(|| self.session.input().cloned()),
-        }
+        let source = if self.auditioning_reblend {
+            PlaybackSource::Reblend
+        } else {
+            match self.ab {
+                AbView::Original => PlaybackSource::Original,
+                AbView::Processed => PlaybackSource::Processed,
+            }
+        };
+        self.session
+            .playback_buffer(source, self.volume_match, self.reblend_amount)
+            .or_else(|| self.session.input().cloned())
     }
 
     fn input_duration(&self) -> Option<f32> {
@@ -829,7 +893,7 @@ impl eframe::App for YesVoxApp {
             let undo = cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z);
             let redo = cmd
                 && ((i.modifiers.shift && i.key_pressed(egui::Key::Z))
-                    || i.key_pressed(egui::Key::Y));
+                    || (!i.modifiers.shift && i.key_pressed(egui::Key::Y)));
             (undo, redo)
         });
         if do_undo {
@@ -924,6 +988,7 @@ impl YesVoxApp {
                 AbView::Original => AbView::Processed,
                 AbView::Processed => AbView::Original,
             };
+            self.auditioning_reblend = false; // A/B compares pure output, not the mix
             self.refresh_playback_source(); // instant A/B at the shared playhead
         }
         // Preset picker (#24): the top-bar dropdown is the only way to change
@@ -998,6 +1063,8 @@ impl YesVoxApp {
             "mode_voice",
         ) {
             self.session.set_content_mode(ContentMode::Voiceover);
+            self.commit_edit("content_mode"); // undoable — it resets the rack (#25)
+            self.stop_playback();
         }
         if self.mode_button(
             ui,
@@ -1010,6 +1077,8 @@ impl YesVoxApp {
             "mode_sing",
         ) {
             self.session.set_content_mode(ContentMode::Singing);
+            self.commit_edit("content_mode"); // undoable — it resets the rack (#25)
+            self.stop_playback();
         }
 
         paint_panel(
@@ -1161,6 +1230,7 @@ impl YesVoxApp {
             "ab_original",
         ) {
             self.ab = AbView::Original;
+            self.auditioning_reblend = false;
             self.refresh_playback_source();
         }
         if self.segment_button(
@@ -1173,6 +1243,7 @@ impl YesVoxApp {
             "ab_processed",
         ) {
             self.ab = AbView::Processed;
+            self.auditioning_reblend = false;
             self.refresh_playback_source();
         }
 
@@ -1697,17 +1768,20 @@ impl YesVoxApp {
         let peak = audible
             .as_ref()
             .map(|b| yesvox_core::monitor::channel_peak_db(b, 0));
-        let lufs = match self.ab {
-            AbView::Original if self.volume_match => audible
-                .as_ref()
-                .and_then(yesvox_core::loudness::integrated_lufs),
-            AbView::Original => self.session.input_lufs(),
-            AbView::Processed => self
-                .session
-                .reblend(self.reblend_amount)
+        // LIVE LUFS reports what is audible right now: the reblend mix only
+        // while the strip audition is active, else the honest A/B side.
+        let lufs = if self.auditioning_reblend {
+            audible
                 .as_ref()
                 .and_then(yesvox_core::loudness::integrated_lufs)
-                .or_else(|| self.session.output_lufs()),
+        } else {
+            match self.ab {
+                AbView::Original if self.volume_match => audible
+                    .as_ref()
+                    .and_then(yesvox_core::loudness::integrated_lufs),
+                AbView::Original => self.session.input_lufs(),
+                AbView::Processed => self.session.output_lufs(),
+            }
         };
         self.small_text(
             painter,
@@ -1819,38 +1893,6 @@ impl YesVoxApp {
         }
     }
 
-    fn loop_icon(
-        &self,
-        painter: &egui::Painter,
-        c: CanvasMap,
-        center: egui::Pos2,
-        color: egui::Color32,
-    ) {
-        let sc = c.pos(center.x, center.y);
-        arc(
-            painter,
-            sc,
-            c.v(10.0),
-            -30.0,
-            275.0,
-            egui::Stroke::new(c.v(1.7), color),
-        );
-        painter.line_segment(
-            [
-                sc + egui::vec2(c.v(7.0), -c.v(8.0)),
-                sc + egui::vec2(c.v(13.0), -c.v(8.0)),
-            ],
-            egui::Stroke::new(c.v(1.7), color),
-        );
-        painter.line_segment(
-            [
-                sc + egui::vec2(c.v(13.0), -c.v(8.0)),
-                sc + egui::vec2(c.v(10.0), -c.v(13.0)),
-            ],
-            egui::Stroke::new(c.v(1.7), color),
-        );
-    }
-
     fn upload_icon(
         &self,
         painter: &egui::Painter,
@@ -1902,24 +1944,6 @@ impl YesVoxApp {
             c.pos(center.x + 8.0, center.y),
         ];
         painter.add(egui::Shape::convex_polygon(tri, color, egui::Stroke::NONE));
-    }
-
-    fn settings_icon(
-        &self,
-        painter: &egui::Painter,
-        c: CanvasMap,
-        center: egui::Pos2,
-        color: egui::Color32,
-    ) {
-        let sc = c.pos(center.x, center.y);
-        painter.circle_stroke(sc, c.v(7.0), egui::Stroke::new(c.v(1.7), color));
-        painter.circle_filled(sc, c.v(2.4), color);
-        for i in 0..8 {
-            let a = i as f32 * std::f32::consts::TAU / 8.0;
-            let inner = sc + egui::vec2(a.cos() * c.v(10.0), a.sin() * c.v(10.0));
-            let outer = sc + egui::vec2(a.cos() * c.v(13.0), a.sin() * c.v(13.0));
-            painter.line_segment([inner, outer], egui::Stroke::new(c.v(1.5), color));
-        }
     }
 
     fn mic_icon(
@@ -2016,6 +2040,9 @@ impl YesVoxApp {
             painter.add(egui::Shape::convex_polygon(tri, TEXT, egui::Stroke::NONE));
         }
         if play_clicked {
+            // The main transport audits the A/B compare; the reblend strip's
+            // own play button is the only way into the mix audition.
+            self.auditioning_reblend = false;
             self.play_pause_source(self.audible_buffer());
         }
         let pos_s = self
@@ -2343,7 +2370,15 @@ impl YesVoxApp {
         let reblend_changed = (reblend - self.reblend_amount).abs() > 1e-6;
         self.reblend_amount = reblend;
         if reblend_changed {
-            self.refresh_playback_source(); // live reblend while auditioning
+            // Defer the source swap to pointer release: rebuilding a full-length
+            // mix buffer every drag frame thrashes the audio path (#23 review).
+            self.reblend_dirty = true;
+        }
+        if self.reblend_dirty && !ui.input(|i| i.pointer.any_down()) {
+            self.reblend_dirty = false;
+            if self.auditioning_reblend {
+                self.refresh_playback_source(); // the mix being auditioned changed
+            }
         }
         self.body_text(
             painter,
@@ -2361,12 +2396,10 @@ impl YesVoxApp {
             ">",
             "reblend_preview",
         ) {
-            // Audition the reblend mix (falls back to the difference monitor).
-            let reblend = self
-                .session
-                .reblend(self.reblend_amount)
-                .or_else(|| self.session.difference());
-            self.play_pause_source(reblend);
+            // Audition the reblend mix — the one path that plays a blend. The
+            // main A/B transport stays pure-output (honest compare).
+            self.auditioning_reblend = true;
+            self.play_pause_source(self.audible_buffer());
         }
 
         painter.line_segment(
@@ -2565,7 +2598,6 @@ impl YesVoxApp {
         };
         paint_panel(painter, c, r, 5, fill, BORDER_DIM);
         match label {
-            "Loop" => self.loop_icon(painter, c, r.center(), TEXT),
             ">" => self.preview_icon(painter, c, r.center(), TEXT),
             _ => {
                 painter.text(
@@ -2629,16 +2661,6 @@ impl YesVoxApp {
         match label {
             "Undo" => self.history_icon(painter, c, r.center(), false, color),
             "Redo" => self.history_icon(painter, c, r.center(), true, color),
-            "Gear" => self.settings_icon(painter, c, r.center(), color),
-            "Help" => {
-                painter.text(
-                    c.rect(r).center(),
-                    egui::Align2::CENTER_CENTER,
-                    "?",
-                    c.font(20.0),
-                    color,
-                );
-            }
             _ => {
                 painter.text(
                     c.rect(r).center(),

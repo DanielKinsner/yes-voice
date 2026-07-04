@@ -24,6 +24,9 @@ struct Shared {
 pub struct Player {
     _stream: cpal::Stream,
     shared: Arc<Mutex<Shared>>,
+    /// Set by cpal's error callback (device unplugged mid-playback); the GUI
+    /// polls [`Player::take_error`] each frame and tears the player down.
+    error: Arc<Mutex<Option<String>>>,
     channels: usize,
     sample_rate: u32,
 }
@@ -48,7 +51,11 @@ impl Player {
             .find(|c| c.min_sample_rate().0 <= sample_rate && sample_rate <= c.max_sample_rate().0)
             .map(|c| c.with_sample_rate(cpal::SampleRate(sample_rate)))
             .ok_or_else(|| {
-                format!("no f32 output config supports {sample_rate} Hz on this device")
+                format!(
+                    "this output device has no f32 config at {sample_rate} Hz - \
+                     set the device's sample rate to {sample_rate} Hz to preview \
+                     (export is unaffected)"
+                )
             })?;
 
         let channels = chosen.channels() as usize;
@@ -61,6 +68,8 @@ impl Player {
         }));
 
         let cb_shared = Arc::clone(&shared);
+        let error = Arc::new(Mutex::new(None::<String>));
+        let cb_error = Arc::clone(&error);
         let stream = device
             .build_output_stream(
                 &config,
@@ -71,7 +80,14 @@ impl Player {
                     }
                     Err(_) => out.iter_mut().for_each(|x| *x = 0.0),
                 },
-                |err| eprintln!("audio stream error: {err}"),
+                move |err| {
+                    // Surface to the UI (device unplugged / stream died) — a
+                    // frozen play icon with no explanation is not an error path.
+                    if let Ok(mut slot) = cb_error.lock() {
+                        *slot = Some(err.to_string());
+                    }
+                    eprintln!("audio stream error: {err}");
+                },
                 None,
             )
             .map_err(|e| format!("open output stream: {e}"))?;
@@ -80,9 +96,16 @@ impl Player {
         Ok(Player {
             _stream: stream,
             shared,
+            error,
             channels,
             sample_rate,
         })
+    }
+
+    /// The stream error (if one fired) — consuming it. The GUI polls this once
+    /// per frame and drops the player so the transport can't play dead air.
+    pub fn take_error(&self) -> Option<String> {
+        self.error.lock().unwrap_or_else(|p| p.into_inner()).take()
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut Shared) -> R) -> R {
@@ -126,10 +149,13 @@ impl Player {
 
     /// Swap the audible source (A/B / reblend / difference) **without moving the
     /// playhead** — instant A/B at the shared playhead. The buffer is adapted to
-    /// the stream's channel count.
+    /// the stream's channel count. The old buffer is dropped *after* releasing
+    /// the callback lock: freeing a multi-minute buffer while holding it stalls
+    /// the audio callback and audibly glitches the switch.
     pub fn set_source(&self, source: &AudioBuffer) {
         let adapted = adapt_channels(source, self.channels);
-        self.with(|s| s.source = adapted);
+        let old = self.with(|s| std::mem::replace(&mut s.source, adapted));
+        drop(old);
     }
 }
 
@@ -138,7 +164,17 @@ impl Player {
 /// [`Transport::fill`] a plain interleaving copy against a matching layout.
 fn adapt_channels(src: &AudioBuffer, target: usize) -> AudioBuffer {
     let target = target.max(1);
-    let sc = src.channel_count().max(1);
+    if src.channel_count() == 0 {
+        // Defensive: unreachable via IO, but `src.channel(0)` would panic in
+        // release builds where AudioBuffer's shape is only debug-asserted.
+        return AudioBuffer::new(
+            src.sample_rate(),
+            src.bits_per_sample(),
+            src.encoding(),
+            vec![Vec::new(); target],
+        );
+    }
+    let sc = src.channel_count();
     let channels: Vec<Vec<f32>> = (0..target)
         .map(|ch| src.channel(ch % sc).to_vec())
         .collect();
