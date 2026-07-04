@@ -74,6 +74,13 @@ enum Tab {
     Polish,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ViewMode {
+    #[default]
+    Standard,
+    Advanced,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbView {
     Original,
@@ -266,6 +273,50 @@ impl ReferenceLayout {
     }
 }
 
+#[derive(Clone, Copy)]
+struct AdvancedLayout {
+    top: egui::Rect,
+    work: egui::Rect,
+    status: egui::Rect,
+    spectrogram: egui::Rect,
+    group_panels: [egui::Rect; 5],
+    module_cards: [egui::Rect; 10],
+    monitor: egui::Rect,
+    export: egui::Rect,
+}
+
+impl AdvancedLayout {
+    fn new() -> Self {
+        AdvancedLayout {
+            top: rect(0.0, 0.0, 1920.0, 70.0),
+            work: rect(88.0, 70.0, 1744.0, 970.0),
+            status: rect(0.0, 1040.0, 1920.0, 40.0),
+            spectrogram: rect(88.0, 96.0, 1744.0, 270.0),
+            group_panels: [
+                rect(88.0, 390.0, 1112.0, 318.0),  // Restore
+                rect(1212.0, 390.0, 300.0, 318.0), // Polish
+                rect(1524.0, 390.0, 308.0, 318.0), // Finish
+                rect(88.0, 724.0, 870.0, 292.0),   // Monitor
+                rect(970.0, 724.0, 862.0, 292.0),  // Export / safety
+            ],
+            module_cards: [
+                rect(108.0, 442.0, 250.0, 118.0),
+                rect(382.0, 442.0, 250.0, 118.0),
+                rect(656.0, 442.0, 250.0, 118.0),
+                rect(930.0, 442.0, 250.0, 118.0),
+                rect(108.0, 574.0, 250.0, 118.0),
+                rect(382.0, 574.0, 250.0, 118.0),
+                rect(656.0, 574.0, 250.0, 118.0),
+                rect(1232.0, 442.0, 260.0, 118.0),
+                rect(1232.0, 574.0, 260.0, 118.0),
+                rect(1544.0, 474.0, 268.0, 160.0),
+            ],
+            monitor: rect(88.0, 724.0, 870.0, 292.0),
+            export: rect(970.0, 724.0, 862.0, 292.0),
+        }
+    }
+}
+
 fn rect(x: f32, y: f32, w: f32, h: f32) -> egui::Rect {
     egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h))
 }
@@ -355,6 +406,7 @@ struct BatchDone {
 
 struct YesVoxApp {
     session: Session,
+    view_mode: ViewMode,
     tab: Tab,
     ab: AbView,
     path_input: String,
@@ -444,6 +496,7 @@ impl YesVoxApp {
         let history = History::new(session.snapshot(), HISTORY_CAP);
         YesVoxApp {
             session,
+            view_mode: ViewMode::Standard,
             tab: Tab::Restore,
             ab: AbView::Processed,
             path_input: String::new(),
@@ -1059,16 +1112,25 @@ impl eframe::App for YesVoxApp {
         }
         let available = ui.max_rect();
         let canvas = CanvasMap::new(available);
-        let layout = ReferenceLayout::new();
         let painter = ui.painter().clone();
 
         painter.rect_filled(available, egui::CornerRadius::ZERO, BG_BOTTOM);
         paint_v_gradient(&painter, canvas.rect, BG_TOP, BG_BOTTOM, 72);
+        let layout = ReferenceLayout::new();
         self.draw_top_bar(ui, &painter, canvas, layout);
-        self.draw_left_sidebar(ui, &painter, canvas, layout);
-        self.draw_center(ui, &painter, canvas, layout);
-        self.draw_right_sidebar(ui, &painter, canvas, layout);
-        self.draw_status_bar(&painter, canvas, layout);
+        match self.view_mode {
+            ViewMode::Standard => {
+                self.draw_left_sidebar(ui, &painter, canvas, layout);
+                self.draw_center(ui, &painter, canvas, layout);
+                self.draw_right_sidebar(ui, &painter, canvas, layout);
+                self.draw_status_bar(&painter, canvas, layout);
+            }
+            ViewMode::Advanced => {
+                let advanced = AdvancedLayout::new();
+                self.draw_advanced(ui, &painter, canvas, advanced);
+                self.draw_status_bar(&painter, canvas, ReferenceLayout::new());
+            }
+        }
         self.draw_preset_menu(ui, &painter, canvas); // overlay, drawn last
     }
 }
@@ -1084,29 +1146,64 @@ impl YesVoxApp {
         paint_panel(painter, c, l.top, 0, alpha(PANEL, 235), BORDER_DIM);
         self.draw_wordmark(painter, c, egui::pos2(18.0, 35.0));
 
-        let restore = rect(742.0, 13.0, 184.0, 44.0);
-        let polish = rect(928.0, 13.0, 184.0, 44.0);
         if self.segment_button(
             ui,
             painter,
             c,
-            restore,
-            "Restore",
-            self.tab == Tab::Restore,
-            "top_restore",
+            rect(314.0, 14.0, 124.0, 40.0),
+            "Standard",
+            self.view_mode == ViewMode::Standard,
+            "view_standard",
         ) {
-            self.tab = Tab::Restore;
+            self.view_mode = ViewMode::Standard;
         }
         if self.segment_button(
             ui,
             painter,
             c,
-            polish,
-            "Polish",
-            self.tab == Tab::Polish,
-            "top_polish",
+            rect(440.0, 14.0, 124.0, 40.0),
+            "Advanced",
+            self.view_mode == ViewMode::Advanced,
+            "view_advanced",
         ) {
-            self.tab = Tab::Polish;
+            self.view_mode = ViewMode::Advanced;
+        }
+
+        let restore = rect(742.0, 13.0, 184.0, 44.0);
+        let polish = rect(928.0, 13.0, 184.0, 44.0);
+        if self.view_mode == ViewMode::Standard {
+            if self.segment_button(
+                ui,
+                painter,
+                c,
+                restore,
+                "Restore",
+                self.tab == Tab::Restore,
+                "top_restore",
+            ) {
+                self.tab = Tab::Restore;
+            }
+            if self.segment_button(
+                ui,
+                painter,
+                c,
+                polish,
+                "Polish",
+                self.tab == Tab::Polish,
+                "top_polish",
+            ) {
+                self.tab = Tab::Polish;
+            }
+        } else {
+            self.section_label(painter, c, 742.0, 35.0, "ADVANCED");
+            self.small_text(
+                painter,
+                c,
+                846.0,
+                35.0,
+                "module depth + spectrogram",
+                TEXT_MUTED,
+            );
         }
 
         // Undo/redo (#25): enabled state reflects real stack depth; clicks drive
@@ -1445,6 +1542,240 @@ impl YesVoxApp {
         self.draw_rack_panel(ui, painter, c, l.restore, Tab::Restore);
         self.draw_rack_panel(ui, painter, c, l.polish, Tab::Polish);
         self.draw_monitor_strip(ui, painter, c, l.monitor);
+    }
+
+    fn draw_advanced(
+        &mut self,
+        _ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        l: AdvancedLayout,
+    ) {
+        let _chrome = (l.top, l.status);
+        paint_panel(painter, c, l.work, 8, alpha(PANEL, 186), BORDER_DIM);
+
+        paint_panel(painter, c, l.spectrogram, 8, alpha(PANEL_2, 230), BORDER);
+        self.section_label(
+            painter,
+            c,
+            l.spectrogram.left() + 20.0,
+            l.spectrogram.top() + 28.0,
+            "SPECTROGRAM",
+        );
+        self.small_text(
+            painter,
+            c,
+            l.spectrogram.left() + 140.0,
+            l.spectrogram.top() + 28.0,
+            "full vocal view - brush heal is post-v1",
+            TEXT_MUTED,
+        );
+        let spec = rect(
+            l.spectrogram.left() + 20.0,
+            l.spectrogram.top() + 52.0,
+            l.spectrogram.width() - 40.0,
+            l.spectrogram.height() - 76.0,
+        );
+        self.draw_spectrum(painter, c, spec, self.session.difference().as_ref());
+        self.draw_time_labels(painter, c, spec);
+
+        let group_titles = [
+            ("RESTORE", "repair damage and room"),
+            ("POLISH", "sibilance and breath"),
+            ("FINISH", "presence, rider, loudness"),
+            ("MONITOR", "A/B/C, difference, reblend"),
+            ("EXPORT + SAFETY", "format, target, memory"),
+        ];
+        for (panel, (title, subtitle)) in l.group_panels.iter().zip(group_titles) {
+            paint_panel(painter, c, *panel, 8, alpha(PANEL, 218), BORDER_DIM);
+            self.section_label(painter, c, panel.left() + 18.0, panel.top() + 28.0, title);
+            self.micro_text(
+                painter,
+                c,
+                panel.left() + 18.0,
+                panel.top() + 48.0,
+                subtitle,
+                TEXT_MUTED,
+            );
+        }
+
+        let modules = [
+            ("1", "De-bleed", "Mix-likeness", "Warn 0.02 / Block 0.15"),
+            ("2", "Declip", "Threshold 0.98", "Strength 1.00"),
+            ("3", "De-click", "Click repair", "Mouth clicks split"),
+            ("4", "De-pop", "Low-cut 120 Hz", "Strength 1.00"),
+            ("5", "De-hum", "Auto 50/60 Hz", "Track on"),
+            ("6", "Denoise", "Balanced", "Neural -> light fallback"),
+            ("7", "De-reverb", "RT60 readout", "Tail preserve"),
+            ("8", "De-ess", "Split / Wide", "HF reduction readout"),
+            ("9", "Breath", "Attenuation dB", "De-ess sidechain"),
+            ("10", "Finish", "Presence + leveling", "Loudness limiter"),
+        ];
+        for (card, module) in l.module_cards.iter().zip(modules) {
+            self.advanced_module_card(painter, c, *card, module);
+        }
+
+        self.body_text(
+            painter,
+            c,
+            l.monitor.left() + 24.0,
+            l.monitor.top() + 88.0,
+            "A  Original        B  Processed        C  Difference",
+            TEXT,
+        );
+        self.small_text(
+            painter,
+            c,
+            l.monitor.left() + 24.0,
+            l.monitor.top() + 128.0,
+            "Volume Match",
+            if self.volume_match { CYAN } else { TEXT_MUTED },
+        );
+        self.small_text(
+            painter,
+            c,
+            l.monitor.left() + 24.0,
+            l.monitor.top() + 160.0,
+            "Reblend",
+            TEXT_MUTED,
+        );
+        let reblend_bar = rect(
+            l.monitor.left() + 108.0,
+            l.monitor.top() + 154.0,
+            260.0,
+            8.0,
+        );
+        paint_panel(
+            painter,
+            c,
+            reblend_bar,
+            4,
+            FIELD,
+            egui::Color32::TRANSPARENT,
+        );
+        paint_h_gradient(
+            painter,
+            c,
+            rect(
+                reblend_bar.left(),
+                reblend_bar.top(),
+                reblend_bar.width() * self.reblend_amount.clamp(0.0, 1.0),
+                reblend_bar.height(),
+            ),
+            BLUE,
+            CYAN,
+            16,
+            4,
+        );
+        self.draw_spectrum(
+            painter,
+            c,
+            rect(
+                l.monitor.left() + 430.0,
+                l.monitor.top() + 82.0,
+                402.0,
+                158.0,
+            ),
+            self.session.difference().as_ref(),
+        );
+
+        let export_x = l.export.left() + 24.0;
+        self.body_text(
+            painter,
+            c,
+            export_x,
+            l.export.top() + 88.0,
+            &format!("Format  {}", self.session.output_format().label()),
+            TEXT,
+        );
+        self.body_text(
+            painter,
+            c,
+            export_x,
+            l.export.top() + 122.0,
+            &format!("Bit depth  {}", self.bit_depth_label()),
+            TEXT,
+        );
+        self.body_text(
+            painter,
+            c,
+            export_x,
+            l.export.top() + 156.0,
+            &format!("Target  {}", loudness_label(self.session.loudness_target())),
+            TEXT,
+        );
+        self.small_text(
+            painter,
+            c,
+            export_x,
+            l.export.top() + 202.0,
+            "Memory preflight enforced before render",
+            TEXT_MUTED,
+        );
+    }
+
+    fn advanced_module_card(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        (index, title, line1, line2): (&str, &str, &str, &str),
+    ) {
+        paint_panel(painter, c, r, 7, alpha(CARD, 235), BORDER_DIM);
+        paint_panel(
+            painter,
+            c,
+            rect(r.left() + 12.0, r.top() + 12.0, 30.0, 24.0),
+            4,
+            FIELD,
+            BORDER_DIM,
+        );
+        painter.text(
+            c.pos(r.left() + 27.0, r.top() + 24.0),
+            egui::Align2::CENTER_CENTER,
+            index,
+            c.font(13.0),
+            TEXT,
+        );
+        self.body_text(painter, c, r.left() + 54.0, r.top() + 25.0, title, TEXT);
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 56.0,
+            line1,
+            TEXT_MUTED,
+        );
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 78.0,
+            line2,
+            TEXT_MUTED,
+        );
+        paint_panel(
+            painter,
+            c,
+            rect(r.left() + 12.0, r.bottom() - 18.0, r.width() - 24.0, 5.0),
+            3,
+            FIELD,
+            egui::Color32::TRANSPARENT,
+        );
+        paint_h_gradient(
+            painter,
+            c,
+            rect(
+                r.left() + 12.0,
+                r.bottom() - 18.0,
+                (r.width() - 24.0) * 0.58,
+                5.0,
+            ),
+            BLUE,
+            CYAN,
+            14,
+            3,
+        );
     }
 
     fn draw_rack_panel(
@@ -3650,6 +3981,45 @@ mod tests {
         assert_eq!(l.restore.width(), l.center.width());
         assert_eq!(l.polish.width(), l.center.width());
         assert_eq!(l.monitor.width(), l.center.width());
+    }
+
+    #[test]
+    fn advanced_layout_keeps_dense_modules_scannable() {
+        let l = AdvancedLayout::new();
+        assert_eq!(l.top.height(), 70.0);
+        assert_eq!(l.status.top(), 1040.0);
+        assert!(
+            l.spectrogram.width() >= 1180.0,
+            "Advanced needs a full-width spectrogram, not the compact Standard waveform"
+        );
+        assert!(
+            l.spectrogram.height() >= 250.0,
+            "spectrogram must be tall enough to inspect vocal artifacts"
+        );
+        assert_eq!(l.module_cards.len(), 10);
+        assert_eq!(l.group_panels.len(), 5);
+
+        for card in l.module_cards {
+            assert!(card.width() >= 170.0, "module cards need readable width");
+            assert!(
+                card.height() >= 118.0,
+                "module cards need room for labels, controls, and readouts"
+            );
+            assert!(l.work.contains(card.min));
+            assert!(l.work.contains(card.max));
+        }
+
+        let mut panels = Vec::new();
+        panels.extend(l.group_panels);
+        panels.push(l.spectrogram);
+        for (i, a) in panels.iter().enumerate() {
+            for b in panels.iter().skip(i + 1) {
+                assert!(
+                    !a.intersects(*b),
+                    "Advanced panels should not overlap or crowd"
+                );
+            }
+        }
     }
 
     #[test]
