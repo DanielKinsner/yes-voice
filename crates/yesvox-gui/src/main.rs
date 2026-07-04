@@ -13,6 +13,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod audio;
+
+use audio::Player;
 use eframe::egui;
 use yesvox_core::worker::{spawn, JobEvent, JobHandle};
 use yesvox_core::{
@@ -284,6 +287,10 @@ struct YesVoxApp {
     /// Last real progress fraction reported by the current foreground job — what
     /// drives the progress bars (replaces the old 0/0.55/1.0 heuristic).
     job_progress: f32,
+    /// The cpal playback stream (#23), created on first Play. `None` = stopped /
+    /// no device. Holds the shared transport; switching A/B source preserves the
+    /// playhead.
+    player: Option<Player>,
 }
 
 impl YesVoxApp {
@@ -332,7 +339,45 @@ impl YesVoxApp {
             export_job: None,
             batch_job: None,
             job_progress: 0.0,
+            player: None,
         }
+    }
+
+    /// Play/pause `buffer`, opening the cpal device on first use. A device
+    /// failure becomes a status line, never a panic (#23). Switching the source
+    /// on an existing player preserves the playhead (instant A/B).
+    fn play_pause_source(&mut self, buffer: Option<AudioBuffer>) {
+        let Some(buffer) = buffer else {
+            self.status = "Nothing to play - import a vocal".to_owned();
+            return;
+        };
+        match &self.player {
+            Some(p) => {
+                p.set_source(&buffer);
+                p.toggle();
+            }
+            None => match Player::new(&buffer) {
+                Ok(p) => {
+                    p.play();
+                    self.player = Some(p);
+                }
+                Err(e) => self.status = format!("Playback unavailable: {e}"),
+            },
+        }
+    }
+
+    /// Swap the audible source into the live player without moving the playhead —
+    /// what makes an A/B / Volume Match / reblend change instant. No-op if not
+    /// playing anything.
+    fn refresh_playback_source(&self) {
+        if let (Some(p), Some(buf)) = (&self.player, self.audible_buffer()) {
+            p.set_source(&buf);
+        }
+    }
+
+    /// Stop playback and release the device (new audio invalidates the stream).
+    fn stop_playback(&mut self) {
+        self.player = None;
     }
 
     /// Whether a background job is running. Only one foreground job at a time —
@@ -361,6 +406,8 @@ impl YesVoxApp {
                         if done.ok {
                             self.ab = AbView::Processed;
                             self.isolation_check = None;
+                            // The processed audio changed — drop the stale stream.
+                            self.player = None;
                         }
                     }
                     JobEvent::Failed(msg) => {
@@ -415,7 +462,9 @@ impl YesVoxApp {
             }
         }
 
-        if self.busy() {
+        // Keep repainting while a job runs or audio is playing so progress bars,
+        // the playhead and the position readout advance without user input.
+        if self.busy() || self.player.as_ref().is_some_and(|p| p.is_playing()) {
             ctx.request_repaint();
         }
     }
@@ -444,6 +493,7 @@ impl YesVoxApp {
             self.status = "Working - please wait".to_owned();
             return;
         }
+        self.stop_playback(); // new audio invalidates the current stream
         match self.session.open(&path) {
             Ok(_) => {
                 self.source_path = Some(path.clone());
@@ -470,6 +520,8 @@ impl YesVoxApp {
             self.status = "Working - please wait".to_owned();
             return;
         }
+        // Stop playback: the processed audio is about to change under it (#23).
+        self.stop_playback();
         // Move the session onto a worker thread; the UI stays responsive and
         // shows a processing state until it comes back rendered (#22).
         let session = std::mem::replace(&mut self.session, Session::new());
@@ -736,6 +788,7 @@ impl YesVoxApp {
                 AbView::Original => AbView::Processed,
                 AbView::Processed => AbView::Original,
             };
+            self.refresh_playback_source(); // instant A/B at the shared playhead
         }
         self.outline_button(
             ui,
@@ -977,6 +1030,7 @@ impl YesVoxApp {
             "ab_original",
         ) {
             self.ab = AbView::Original;
+            self.refresh_playback_source();
         }
         if self.segment_button(
             ui,
@@ -988,11 +1042,29 @@ impl YesVoxApp {
             "ab_processed",
         ) {
             self.ab = AbView::Processed;
+            self.refresh_playback_source();
         }
 
         let wave_rect = rect(322.0, 148.0, 1032.0, 160.0);
         paint_panel(painter, c, wave_rect, 5, FIELD, BORDER);
         self.draw_waveform(painter, c, wave_rect);
+        // Click/drag the waveform to seek (#23).
+        if self.player.is_some() {
+            let resp = ui.interact(
+                c.rect(wave_rect),
+                ui.make_persistent_id("waveform_seek"),
+                egui::Sense::click_and_drag(),
+            );
+            if resp.clicked() || resp.dragged() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let sr = c.rect(wave_rect);
+                    let f = ((pos.x - sr.left()) / sr.width()).clamp(0.0, 1.0);
+                    if let Some(p) = &self.player {
+                        p.seek_fraction(f);
+                    }
+                }
+            }
+        }
         self.draw_time_labels(painter, c, wave_rect);
         self.draw_meter_panel(painter, c, rect(1370.0, 148.0, 166.0, 160.0));
         self.draw_transport(ui, painter, c);
@@ -1805,25 +1877,46 @@ impl YesVoxApp {
     }
 
     fn draw_transport(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, c: CanvasMap) {
-        let play = c.rect(rect(322.0, 358.0, 52.0, 52.0));
+        let play_rect = rect(322.0, 358.0, 52.0, 52.0);
+        let play_clicked = self.response(ui, c, play_rect, "transport_play").clicked();
+        let play = c.rect(play_rect);
         painter.circle_filled(play.center(), c.v(26.0), VIOLET);
-        painter.circle_filled(
-            play.center() - egui::vec2(c.v(5.0), c.v(5.0)),
-            c.v(24.0),
-            BLUE,
-        );
-        let tri = vec![
-            c.pos(342.0, 374.0),
-            c.pos(342.0, 394.0),
-            c.pos(360.0, 384.0),
-        ];
-        painter.add(egui::Shape::convex_polygon(tri, TEXT, egui::Stroke::NONE));
+        let inner = play.center() - egui::vec2(c.v(5.0), c.v(5.0));
+        painter.circle_filled(inner, c.v(24.0), BLUE);
+        if self.player.as_ref().is_some_and(|p| p.is_playing()) {
+            // Pause icon (two bars).
+            for dx in [-6.0, 6.0] {
+                painter.rect_filled(
+                    egui::Rect::from_center_size(
+                        inner + egui::vec2(c.v(dx), 0.0),
+                        egui::vec2(c.v(5.0), c.v(20.0)),
+                    ),
+                    egui::CornerRadius::ZERO,
+                    TEXT,
+                );
+            }
+        } else {
+            let tri = vec![
+                c.pos(342.0, 374.0),
+                c.pos(342.0, 394.0),
+                c.pos(360.0, 384.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(tri, TEXT, egui::Stroke::NONE));
+        }
+        if play_clicked {
+            self.play_pause_source(self.audible_buffer());
+        }
+        let pos_s = self
+            .player
+            .as_ref()
+            .map(|p| p.position() as f32 / p.sample_rate().max(1) as f32)
+            .unwrap_or(0.0);
         self.body_text(
             painter,
             c,
             396.0,
             390.0,
-            &format!("0:00 / {}", self.duration_label()),
+            &format!("{} / {}", format_duration(pos_s), self.duration_label()),
             TEXT,
         );
         self.outline_button(
@@ -1835,16 +1928,46 @@ impl YesVoxApp {
             "transport_loop",
         );
         self.body_text(painter, c, 756.0, 385.0, self.processing_label(), TEXT);
-        let progress = self.processing_progress();
-        self.body_text(
-            painter,
-            c,
-            884.0,
-            385.0,
-            &format!("{:.0}%", progress * 100.0),
-            TEXT,
-        );
-        self.progress_bar(painter, c, rect(712.0, 398.0, 350.0, 6.0), progress);
+        let bar = rect(712.0, 398.0, 350.0, 6.0);
+        if self.player.is_some() {
+            // The bar shows the playback playhead and is a seek control.
+            let resp = ui.interact(
+                c.rect(bar.expand(10.0)),
+                ui.make_persistent_id("transport_seek"),
+                egui::Sense::click_and_drag(),
+            );
+            if resp.clicked() || resp.dragged() {
+                if let Some(pos) = resp.interact_pointer_pos() {
+                    let sr = c.rect(bar);
+                    let f = ((pos.x - sr.left()) / sr.width()).clamp(0.0, 1.0);
+                    if let Some(p) = &self.player {
+                        p.seek_fraction(f);
+                    }
+                }
+            }
+            let frac = self.player.as_ref().map(|p| p.fraction()).unwrap_or(0.0);
+            self.body_text(
+                painter,
+                c,
+                884.0,
+                385.0,
+                &format!("{:.0}%", frac * 100.0),
+                TEXT,
+            );
+            self.progress_bar(painter, c, bar, frac);
+        } else {
+            // Idle/rendering: the bar shows processing progress (non-interactive).
+            let progress = self.processing_progress();
+            self.body_text(
+                painter,
+                c,
+                884.0,
+                385.0,
+                &format!("{:.0}%", progress * 100.0),
+                TEXT,
+            );
+            self.progress_bar(painter, c, bar, progress);
+        }
         if self.checkbox(
             ui,
             painter,
@@ -1854,6 +1977,7 @@ impl YesVoxApp {
             "volume_match",
         ) {
             self.volume_match = !self.volume_match;
+            self.refresh_playback_source();
         }
         self.body_text(painter, c, 1165.0, 390.0, "Volume Match", TEXT_MUTED);
         if self.checkbox(
@@ -2120,7 +2244,11 @@ impl YesVoxApp {
             BLUE,
             BLUE,
         );
+        let reblend_changed = (reblend - self.reblend_amount).abs() > 1e-6;
         self.reblend_amount = reblend;
+        if reblend_changed {
+            self.refresh_playback_source(); // live reblend while auditioning
+        }
         self.body_text(
             painter,
             c,
@@ -2129,14 +2257,21 @@ impl YesVoxApp {
             &format!("{:.0}%", self.reblend_amount * 100.0),
             TEXT,
         );
-        self.outline_button(
+        if self.outline_button(
             ui,
             painter,
             c,
             rect(r.left() + 930.0, r.top() + 50.0, 48.0, 48.0),
             ">",
             "reblend_preview",
-        );
+        ) {
+            // Audition the reblend mix (falls back to the difference monitor).
+            let reblend = self
+                .session
+                .reblend(self.reblend_amount)
+                .or_else(|| self.session.difference());
+            self.play_pause_source(reblend);
+        }
 
         painter.line_segment(
             [
