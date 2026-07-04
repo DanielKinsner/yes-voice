@@ -119,12 +119,18 @@ this order (each TDD'd, each its own green commit):
 
 1. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
    filesystem/atomic export, resource guards, model-load validation,
-   determinism. Interleavable AFK filler. ← **current (#29)**
+   determinism. Interleavable AFK filler. ← **current (#30)**
    - ✅ **#28 H1 numeric hygiene** (done 2026-07-03): decode-time
      `AudioBuffer::sanitize` (NaN/±Inf→0, clamp ±4, counted →
      `AnalysisReport::non_finite_samples`), biquad denormal flush-to-zero,
      and a hostile-sample proptest (analyze+render+export panic-free/finite)
      + NaN-WAV round-trip.
+   - ✅ **#29 H2 panic-safety** (done 2026-07-03): partial_cmp().unwrap →
+     total_cmp; worker-pool poison recovery + dead-worker fallback (kill-a-
+     worker test); io/render_queue/session unwrap/expect removed;
+     `deny(clippy::unwrap_used, expect_used)` crate-wide (tests exempt).
+     `indexing_slicing` deliberately NOT denied (180 bounds-safe DSP sites);
+     ort_model expect chain waived → #33. ← next is **#30**.
 3. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
    separate screen, Standard visual language, mock-first approval).
 4. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
