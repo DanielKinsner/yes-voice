@@ -201,7 +201,12 @@ long-file memory-budget validation.
    recorded in `docs/advanced-param-coverage.md`.
 5. **#20 v1.0 lane:** weights license audit (redistribution rights for every
    bundled weight, recorded in docs) → unsigned Windows installer (Inno/NSIS,
-   bundled weights + ORT, ≤2 GB, clean-VM smoke test).
+   bundled weights + ORT, ≤2 GB, clean-VM smoke test). **Started 2026-07-04:**
+   `docs/model-weights-license-audit.md`, `licenses/model-weights.tsv`, and
+   per-model `WEIGHTS_LICENSE.md` records now approve DFN3 + MossFormer2 as
+   source-license candidates and add a mechanical cargo-test audit. Remaining
+   blocker: exact shipped artifacts/hashes, installer notices, integrity
+   manifest entries, and clean-Windows-VM smoke.
 6. **#21 eval lanes:** CI-safe perf ceiling + local Criterion; `cargo xtask
    eval` real-stem no-regression harness (corpus dir via env var, never
    committed; Dan supplies stems); optional non-blocking listen.

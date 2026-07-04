@@ -1,0 +1,3 @@
+# model	status	spdx	license_doc	source_url	pinned_ref	source_sha256	bundled_sha256
+DeepFilterNet3	candidate	MIT OR Apache-2.0	licenses/DeepFilterNet3/WEIGHTS_LICENSE.md	https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_onnx.tar.gz	d375b2d8309e0935d165700c91da9de862a99c31	c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616	TBD
+MossFormer2_SE_48K	candidate	Apache-2.0	licenses/MossFormer2_SE_48K/WEIGHTS_LICENSE.md	https://huggingface.co/alibabasglab/MossFormer2_SE_48K/tree/eff8c97925c8bec812af707814b3e5d777fd4503	eff8c97925c8bec812af707814b3e5d777fd4503	03692b9f773bbd6bb43b9c5a41f96b1e28affd66e13796b7bec66ad3d8b227c6	TBD

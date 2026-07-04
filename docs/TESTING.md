@@ -38,6 +38,16 @@ symbol appears in `yesvox-core/src`. The batch path has its own guarantee
 coverage (`tests/guarantee_batch.rs`), and NULL/SAME-LENGTH also run around a
 mock (non-`SpectralDenoiser`) engine (`tests/guarantee_neural_plumbing.rs`).
 
+## Model-weights license audit
+
+`cargo test --all` also includes the #20 weights-license audit in
+`xtask/tests/weights_license_audit.rs`. It is separate from `cargo-deny` because
+it audits neural model weights, not Rust crate code. The check requires every
+row in `licenses/model-weights.tsv` to have an approved SPDX expression, pinned
+upstream revision, source artifact SHA-256, and a per-model
+`WEIGHTS_LICENSE.md` with a distribution decision and source evidence. Any row
+marked `bundled` must also carry the shipped-artifact SHA-256.
+
 As modules land, each adds its own mechanical gate (per-module null, no-double-repair, loudness within ±0.5 LU of target, metadata round-trip, fp16 numerics, …). See the plan's acceptance-criteria matrix.
 
 ## Goldens — bless deliberately, never silently
