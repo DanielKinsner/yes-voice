@@ -18,3 +18,8 @@ Before a package can be treated as releasable, every model file staged in
 `YESVOX_MODEL_BUNDLE_DIR` must have a matching `bundled` row and shipped
 SHA-256 in `licenses/model-weights.tsv`, and the clean Windows VM smoke test
 must pass: install, launch, render, uninstall.
+
+Run `cargo xtask package-audit` after staging `YESVOX_MODEL_BUNDLE_DIR`. It is
+safe to run on normal checkouts: without `YESVOX_MODEL_BUNDLE_DIR`, it exits 0
+with an explicit skip notice. With a staged bundle, it verifies shipped hashes
+and the v1.0 2 GiB model-payload ceiling before the setup recipe is built.

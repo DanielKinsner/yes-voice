@@ -207,9 +207,12 @@ long-file memory-budget validation.
    source-license candidates and add a mechanical cargo-test audit. The Windows
    package recipe (`packaging/windows/yesvox.iss`) now requires staged runtime
    files + model payloads, installs notices/license records, and is guarded by
-   `xtask/tests/windows_package_contract.rs`. Remaining blocker: exact shipped
-   artifacts/hashes, final upstream license/NOTICE text for those payloads,
-   integrity manifest entries, and clean-Windows-VM smoke.
+   `xtask/tests/windows_package_contract.rs`; `cargo xtask package-audit` is
+   skip-safe until `YESVOX_MODEL_BUNDLE_DIR` is staged, then verifies staged
+   model hashes against `bundled` manifest rows and the v1.0 2 GiB ceiling.
+   Remaining blocker: exact shipped artifacts/hashes, final upstream
+   license/NOTICE text for those payloads, integrity manifest entries, and
+   clean-Windows-VM smoke.
 6. **#21 eval lanes:** CI-safe perf ceiling + local Criterion; `cargo xtask
    eval` real-stem no-regression harness (corpus dir via env var, never
    committed; Dan supplies stems); optional non-blocking listen. **Started

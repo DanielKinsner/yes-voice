@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
@@ -15,6 +16,7 @@ use std::{
 };
 use yesvox_core::{
     loudness::{integrated_lufs, true_peak_dbtp},
+    neural::sha256_hex,
     singing::{
         f0_cents_deviation, hnr_db, pitch_contour, spectral_envelope_cosine, tail_survival_db,
         vibrato,
@@ -24,8 +26,13 @@ use yesvox_core::{
 
 const EVAL_CORPUS_ENV: &str = "YESVOX_EVAL_CORPUS";
 const EVAL_REPORT_ENV: &str = "YESVOX_EVAL_REPORT";
+const MODEL_BUNDLE_ENV: &str = "YESVOX_MODEL_BUNDLE_DIR";
+const MODEL_WEIGHTS_MANIFEST_ENV: &str = "YESVOX_MODEL_WEIGHTS_MANIFEST";
+const MODEL_BUNDLE_MAX_BYTES_ENV: &str = "YESVOX_MODEL_BUNDLE_MAX_BYTES";
 const DEFAULT_EVAL_REPORT: &str = "target/eval/report.json";
+const DEFAULT_MODEL_WEIGHTS_MANIFEST: &str = "licenses/model-weights.tsv";
 const EVAL_MIN_PER_MODE: usize = 12;
+const MAX_MODEL_BUNDLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const LOUDNESS_TOLERANCE_LU: f32 = 2.0;
 const TRUE_PEAK_CEILING_DBTP: f32 = 0.2;
 const MIN_VOICED_RATIO: f32 = 0.80;
@@ -44,11 +51,218 @@ fn main() -> ExitCode {
         "gate" => gate(),
         "bless" => bless(),
         "eval" => eval(),
+        "package-audit" => package_audit(),
         other => {
-            eprintln!("unknown xtask: {other:?}\n\ntasks:\n  gate    fmt --check + clippy -D warnings + test + deny\n  bless   deliberately regenerate goldens (YESVOX_BLESS=1 cargo test)\n  eval    run local #21 corpus eval (YESVOX_EVAL_CORPUS)");
+            eprintln!("unknown xtask: {other:?}\n\ntasks:\n  gate           fmt --check + clippy -D warnings + test + deny\n  bless          deliberately regenerate goldens (YESVOX_BLESS=1 cargo test)\n  eval           run local #21 corpus eval (YESVOX_EVAL_CORPUS)\n  package-audit  audit staged #20 model package payloads (YESVOX_MODEL_BUNDLE_DIR)");
             ExitCode::from(2)
         }
     }
+}
+
+/// Audit staged #20 package inputs. Fresh checkouts and CI do not have the
+/// private release model bundle, so absence of `YESVOX_MODEL_BUNDLE_DIR` is a
+/// success-path skip. Once it is set, bundle problems are hard failures.
+fn package_audit() -> ExitCode {
+    let Some(model_dir) = std::env::var_os(MODEL_BUNDLE_ENV).map(PathBuf::from) else {
+        eprintln!(
+            "package-audit: skipped — {MODEL_BUNDLE_ENV} is not set. \
+             Set it to the staged model bundle dir to verify #20 package payloads."
+        );
+        return ExitCode::SUCCESS;
+    };
+
+    match run_package_audit(&model_dir) {
+        Ok(outcome) => {
+            eprintln!(
+                "package-audit: green — {} model files, {} bytes, {} bundled manifest rows",
+                outcome.files, outcome.bytes, outcome.bundled_rows
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("package-audit: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+struct PackageAuditOutcome {
+    files: usize,
+    bytes: u64,
+    bundled_rows: usize,
+}
+
+fn run_package_audit(model_dir: &Path) -> Result<PackageAuditOutcome, String> {
+    if !model_dir.is_dir() {
+        return Err(format!(
+            "{MODEL_BUNDLE_ENV} must point at a directory, got {}",
+            model_dir.display()
+        ));
+    }
+
+    let manifest_path = model_weights_manifest_path();
+    let bundled = bundled_manifest_hashes(&manifest_path)?;
+    let max_bundle_bytes = max_model_bundle_bytes()?;
+
+    let mut files = Vec::new();
+    collect_payload_files(model_dir, model_dir, &mut files)?;
+    if files.is_empty() {
+        return Err(format!(
+            "{MODEL_BUNDLE_ENV} contains no staged model files: {}",
+            model_dir.display()
+        ));
+    }
+
+    let mut total_bytes = 0u64;
+    let mut seen_hashes = BTreeSet::new();
+    for file in &files {
+        let metadata = fs::metadata(file)
+            .map_err(|e| format!("could not inspect staged model {}: {e}", file.display()))?;
+        total_bytes = total_bytes
+            .checked_add(metadata.len())
+            .ok_or_else(|| "staged model bundle size overflowed u64".to_string())?;
+        if total_bytes > max_bundle_bytes {
+            return Err(format!(
+                "staged model bundle is {} bytes, above the {} byte v1.0 ceiling",
+                total_bytes, max_bundle_bytes
+            ));
+        }
+
+        let bytes = fs::read(file)
+            .map_err(|e| format!("could not read staged model {}: {e}", file.display()))?;
+        let hash = sha256_hex(&bytes);
+        let Some(model) = bundled.get(&hash) else {
+            let relative = file.strip_prefix(model_dir).unwrap_or(file);
+            return Err(format!(
+                "{} ({hash}) is not listed as a bundled shipped hash in {}",
+                display_path(relative),
+                manifest_path.display()
+            ));
+        };
+        eprintln!(
+            "package-audit: matched {} -> {model}",
+            display_path(file.strip_prefix(model_dir).unwrap_or(file))
+        );
+        seen_hashes.insert(hash);
+    }
+
+    for (hash, model) in &bundled {
+        if !seen_hashes.contains(hash) {
+            return Err(format!(
+                "bundled manifest row for {model} ({hash}) has no matching staged model file in {}",
+                model_dir.display()
+            ));
+        }
+    }
+
+    Ok(PackageAuditOutcome {
+        files: files.len(),
+        bytes: total_bytes,
+        bundled_rows: bundled.len(),
+    })
+}
+
+fn model_weights_manifest_path() -> PathBuf {
+    std::env::var_os(MODEL_WEIGHTS_MANIFEST_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root().join(DEFAULT_MODEL_WEIGHTS_MANIFEST))
+}
+
+fn max_model_bundle_bytes() -> Result<u64, String> {
+    let Some(raw) = std::env::var_os(MODEL_BUNDLE_MAX_BYTES_ENV) else {
+        return Ok(MAX_MODEL_BUNDLE_BYTES);
+    };
+    raw.to_string_lossy().parse::<u64>().map_err(|e| {
+        format!("{MODEL_BUNDLE_MAX_BYTES_ENV} must be an unsigned byte count, got {raw:?}: {e}")
+    })
+}
+
+fn bundled_manifest_hashes(manifest_path: &Path) -> Result<BTreeMap<String, String>, String> {
+    let raw = fs::read_to_string(manifest_path)
+        .map_err(|e| format!("could not read {}: {e}", manifest_path.display()))?;
+    let mut bundled = BTreeMap::new();
+    for (index, raw_line) in raw.lines().enumerate() {
+        let line_no = index + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = raw_line.split('\t').collect();
+        if cols.len() != 8 {
+            return Err(format!(
+                "{}:{line_no} must have 8 tab-separated columns",
+                manifest_path.display()
+            ));
+        }
+        let model = cols[0].trim();
+        let status = cols[1].trim();
+        let bundled_sha256 = cols[7].trim();
+        match status {
+            "candidate" => {}
+            "bundled" => {
+                if !is_sha256(bundled_sha256) {
+                    return Err(format!(
+                        "{}:{line_no} bundled row for {model} needs a shipped SHA-256",
+                        manifest_path.display()
+                    ));
+                }
+                if let Some(existing) =
+                    bundled.insert(bundled_sha256.to_ascii_lowercase(), model.to_string())
+                {
+                    return Err(format!(
+                        "{}:{line_no} duplicates shipped hash with {existing}",
+                        manifest_path.display()
+                    ));
+                }
+            }
+            other => {
+                return Err(format!(
+                    "{}:{line_no} status must be candidate or bundled, got {other:?}",
+                    manifest_path.display()
+                ));
+            }
+        }
+    }
+    Ok(bundled)
+}
+
+fn collect_payload_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let mut entries = fs::read_dir(dir)
+        .map_err(|e| {
+            format!(
+                "could not read model bundle directory {}: {e}",
+                dir.display()
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("could not read a model bundle directory entry: {e}"))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("could not inspect {}: {e}", path.display()))?;
+        if file_type.is_dir() {
+            collect_payload_files(root, &path, files)?;
+        } else if file_type.is_file() {
+            let _ = path
+                .strip_prefix(root)
+                .map_err(|e| format!("could not relativize {}: {e}", path.display()))?;
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask lives under the repo root")
+        .to_path_buf()
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Run the #21 local real-stem no-regression harness. CI and fresh checkouts do

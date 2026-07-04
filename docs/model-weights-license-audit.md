@@ -86,6 +86,13 @@ test requires the Windows setup recipe to bundle a model directory, install the
 notice file, and mention every model/status/SPDX/license-record entry from
 `licenses/model-weights.tsv` in the notice text.
 
+`cargo xtask package-audit` is the local package-payload audit. It is skip-safe
+when `YESVOX_MODEL_BUNDLE_DIR` is unset; when set, it requires every staged
+model file's SHA-256 to match a `bundled` row, requires every `bundled` row to
+have a staged file, and enforces the v1.0 2 GiB model-payload ceiling. Tests
+cover skip, unmanifested staged payloads, the byte ceiling, and a matching
+bundled hash.
+
 ## Release Blockers
 
 Before #20 can close:

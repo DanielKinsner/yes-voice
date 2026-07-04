@@ -48,6 +48,20 @@ upstream revision, source artifact SHA-256, and a per-model
 `WEIGHTS_LICENSE.md` with a distribution decision and source evidence. Any row
 marked `bundled` must also carry the shipped-artifact SHA-256.
 
+When package-time model payloads are staged, run:
+
+```
+cargo xtask package-audit
+```
+
+It is skip-safe when `YESVOX_MODEL_BUNDLE_DIR` is unset. When set, it walks the
+staged model directory, checks the total model payload size against the v1.0
+2 GiB ceiling, hashes every staged file, and fails unless every hash matches a
+`bundled` row in `licenses/model-weights.tsv` and every bundled row has a
+matching staged file. Tests use `YESVOX_MODEL_WEIGHTS_MANIFEST` and
+`YESVOX_MODEL_BUNDLE_MAX_BYTES` overrides so the behavior is covered without
+committing release weights.
+
 As modules land, each adds its own mechanical gate (per-module null, no-double-repair, loudness within ±0.5 LU of target, metadata round-trip, fp16 numerics, …). See the plan's acceptance-criteria matrix.
 
 ## Goldens — bless deliberately, never silently
