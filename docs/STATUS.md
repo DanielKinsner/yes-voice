@@ -1,6 +1,6 @@
 # YesVox — build status & pick-up guide
 
-> Resume-from-anywhere snapshot. Last updated **2026-07-01**. For product intent
+> Resume-from-anywhere snapshot. Last updated **2026-07-03**. For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
 > for the GUI target see [`ui/yesvox-v1-ui-reference.md`](ui/yesvox-v1-ui-reference.md).
@@ -73,12 +73,18 @@ A full GUI wiring audit + adversarial gate/core audits produced a re-cut plan.
 **All remaining v1 work is tracked as issues #18, #20–#21, #22–#34**; build in
 this order (each TDD'd, each its own green commit):
 
-1. **#27 H0 — gate integrity repairs** (offline gate is tautological,
-   `YESVOX_BLESS`/`xtask bless` unimplemented, neural path outside NULL/SAME-LENGTH,
-   batch queue has no guarantee coverage, singing gate passes a no-op). First,
-   because everything else trusts the gates.
-2. **#22 background threading + real progress** (render/export/batch off the UI
-   thread — today they freeze the window).
+- ✅ **#27 H0 — gate integrity repairs** (done 2026-07-03). All 8 findings
+  landed as green commits: OFFLINE now enforced by a source-level net-symbol
+  scan; `YESVOX_BLESS` + `cargo xtask bless` implemented with a `golden`
+  harness (reference numbers in `tests/goldens/*.golden`); NULL/SAME-LENGTH
+  proven around a mock (non-`SpectralDenoiser`) engine; batch-queue guarantee
+  coverage (`tests/guarantee_batch.rs`); singing gate rejects a no-op;
+  same-path export lock; `LoudnessTarget::Custom` swept; `cargo-deny` now a
+  required gate step; docs realigned. Also cleared a pre-existing red
+  (quick-xml RUSTSEC-2026-0194/-0195 scope-ignore).
+
+1. **#22 background threading + real progress** (render/export/batch off the UI
+   thread — today they freeze the window). ← **current**
 3. **#23 playback trust loop** — cpal transport, volume-matched A/B at a shared
    playhead, reblend/difference audition. **Decided: v1 ship-blocker.**
 4. **#24 Standard wiring sweep + chrome triage** (wire-or-remove policy; preset
