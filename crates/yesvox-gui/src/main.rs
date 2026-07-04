@@ -21,7 +21,7 @@ use yesvox_core::worker::{spawn, JobEvent, JobHandle};
 use yesvox_core::{
     AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, History,
     JobStatus, LoudnessTarget, OutputFormat, PlaybackSource, Preset, RenderQueue, Session,
-    SessionError, SessionSnapshot, VocalIsolationCheck,
+    SessionError, SessionSnapshot, Stage, VocalIsolationCheck,
 };
 
 /// Undo/redo depth cap (#25).
@@ -120,6 +120,59 @@ fn output_field_chrome(label: &str) -> OutputFieldChrome {
     match label {
         "Sample Rate" => OutputFieldChrome::ReadOnly,
         _ => OutputFieldChrome::Selector,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedDeBleedPanel {
+    source_imported: bool,
+    warn_threshold: f32,
+    block_threshold: f32,
+    amount: f32,
+}
+
+impl AdvancedDeBleedPanel {
+    fn from_session(session: &Session) -> Self {
+        let (warn_threshold, block_threshold) = session.debleed_thresholds();
+        AdvancedDeBleedPanel {
+            source_imported: session.debleed_source_imported(),
+            warn_threshold,
+            block_threshold,
+            amount: session.stage_mix(Stage::DeBleed),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_debleed_source_imported(self.source_imported);
+        session.set_debleed_thresholds(self.warn_threshold, self.block_threshold);
+        session.set_stage_mix(Stage::DeBleed, self.amount);
+    }
+
+    fn source_label(self) -> &'static str {
+        if self.source_imported {
+            "Imported stem"
+        } else {
+            "Native take"
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedDeBleedControlRects {
+    native_source: egui::Rect,
+    imported_source: egui::Rect,
+    warn_slider: egui::Rect,
+    block_slider: egui::Rect,
+    amount_knob: egui::Rect,
+}
+
+fn advanced_debleed_control_rects(card: egui::Rect) -> AdvancedDeBleedControlRects {
+    AdvancedDeBleedControlRects {
+        native_source: rect(card.left() + 12.0, card.top() + 42.0, 74.0, 22.0),
+        imported_source: rect(card.left() + 90.0, card.top() + 42.0, 78.0, 22.0),
+        warn_slider: rect(card.left() + 76.0, card.top() + 76.0, 98.0, 5.0),
+        block_slider: rect(card.left() + 76.0, card.top() + 99.0, 98.0, 5.0),
+        amount_knob: rect(card.right() - 72.0, card.top() + 50.0, 60.0, 60.0),
     }
 }
 
@@ -1643,8 +1696,12 @@ impl YesVoxApp {
             ("9", "Breath", "Attenuation dB", "De-ess sidechain"),
             ("10", "Finish", "Presence + leveling", "Loudness limiter"),
         ];
-        for (card, module) in l.module_cards.iter().zip(modules) {
-            self.advanced_module_card(painter, c, *card, module);
+        for (i, (card, module)) in l.module_cards.iter().zip(modules).enumerate() {
+            if i == 0 {
+                self.advanced_debleed_card(ui, painter, c, *card);
+            } else {
+                self.advanced_module_card(painter, c, *card, module);
+            }
         }
 
         let compare_pinned = self.session.compare_snapshot().is_some();
@@ -1832,23 +1889,7 @@ impl YesVoxApp {
         r: egui::Rect,
         (index, title, line1, line2): (&str, &str, &str, &str),
     ) {
-        paint_panel(painter, c, r, 7, alpha(CARD, 235), BORDER_DIM);
-        paint_panel(
-            painter,
-            c,
-            rect(r.left() + 12.0, r.top() + 12.0, 30.0, 24.0),
-            4,
-            FIELD,
-            BORDER_DIM,
-        );
-        painter.text(
-            c.pos(r.left() + 27.0, r.top() + 24.0),
-            egui::Align2::CENTER_CENTER,
-            index,
-            c.font(13.0),
-            TEXT,
-        );
-        self.body_text(painter, c, r.left() + 54.0, r.top() + 25.0, title, TEXT);
+        self.advanced_card_header(painter, c, r, index, title);
         self.micro_text(
             painter,
             c,
@@ -1887,6 +1928,143 @@ impl YesVoxApp {
             14,
             3,
         );
+    }
+
+    fn advanced_debleed_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "1", "De-bleed");
+        let controls = advanced_debleed_control_rects(r);
+        let original = AdvancedDeBleedPanel::from_session(&self.session);
+        let mut panel = original;
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 144.0,
+            r.top() + 25.0,
+            panel.source_label(),
+            if panel.source_imported {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.native_source,
+            "Native",
+            !panel.source_imported,
+            "advanced_debleed_native",
+        ) {
+            panel.source_imported = false;
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.imported_source,
+            "Imported",
+            panel.source_imported,
+            "advanced_debleed_imported",
+        ) {
+            panel.source_imported = true;
+        }
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 79.0,
+            &format!("Warn {:.2}", panel.warn_threshold),
+            TEXT_MUTED,
+        );
+        panel.warn_threshold = self.slider(
+            ui,
+            painter,
+            c,
+            controls.warn_slider,
+            panel.warn_threshold,
+            "advanced_debleed_warn",
+            AMBER,
+            CYAN,
+        );
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 102.0,
+            &format!("Block {:.2}", panel.block_threshold),
+            TEXT_MUTED,
+        );
+        panel.block_threshold = self.slider(
+            ui,
+            painter,
+            c,
+            controls.block_slider,
+            panel.block_threshold,
+            "advanced_debleed_block",
+            BLUE,
+            CYAN,
+        );
+        if panel.block_threshold < panel.warn_threshold {
+            panel.block_threshold = panel.warn_threshold;
+        }
+
+        self.micro_text(
+            painter,
+            c,
+            controls.amount_knob.left() + 7.0,
+            controls.amount_knob.top() - 5.0,
+            "Amount",
+            TEXT_MUTED,
+        );
+        panel.amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.amount_knob.center(),
+            panel.amount,
+            "advanced_debleed_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_debleed");
+        }
+    }
+
+    fn advanced_card_header(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+        index: &str,
+        title: &str,
+    ) {
+        paint_panel(painter, c, r, 7, alpha(CARD, 235), BORDER_DIM);
+        paint_panel(
+            painter,
+            c,
+            rect(r.left() + 12.0, r.top() + 12.0, 30.0, 24.0),
+            4,
+            FIELD,
+            BORDER_DIM,
+        );
+        painter.text(
+            c.pos(r.left() + 27.0, r.top() + 24.0),
+            egui::Align2::CENTER_CENTER,
+            index,
+            c.font(13.0),
+            TEXT,
+        );
+        self.body_text(painter, c, r.left() + 54.0, r.top() + 25.0, title, TEXT);
     }
 
     fn draw_rack_panel(
@@ -4129,6 +4307,63 @@ mod tests {
                     !a.intersects(*b),
                     "Advanced panels should not overlap or crowd"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn advanced_debleed_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedDeBleedPanel::from_session(&session);
+
+        assert_eq!(panel.source_label(), "Native take");
+        assert!(!panel.source_imported);
+        assert_eq!(panel.warn_threshold, 0.02);
+        assert_eq!(panel.block_threshold, 0.15);
+        assert_eq!(panel.amount, session.stage_mix(yesvox_core::Stage::DeBleed));
+
+        let edited = AdvancedDeBleedPanel {
+            source_imported: true,
+            warn_threshold: 0.11,
+            block_threshold: 0.42,
+            amount: 0.63,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert!(session.debleed_source_imported());
+        assert_eq!(session.debleed_thresholds(), (0.11, 0.42));
+        assert_eq!(session.stage_mix(yesvox_core::Stage::DeBleed), 0.63);
+        assert_eq!(
+            AdvancedDeBleedPanel::from_session(&session).source_label(),
+            "Imported stem"
+        );
+        assert_eq!(AdvancedDeBleedPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_debleed_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[0];
+        let controls = advanced_debleed_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.native_source,
+            controls.imported_source,
+            controls.warn_slider,
+            controls.block_slider,
+            controls.amount_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "De-bleed controls must not crowd");
             }
         }
     }
