@@ -25,6 +25,10 @@ use yesvox_core::{
 
 const DEFAULT_VIEWPORT_SIZE: [f32; 2] = [1920.0, 1080.0];
 const MIN_VIEWPORT_SIZE: [f32; 2] = [1280.0, 720.0];
+
+// eframe storage keys for persistence-lite (#24).
+const STORAGE_LAST_DIR: &str = "yesvox_last_output_dir";
+const STORAGE_LAST_FORMAT: &str = "yesvox_last_output_format";
 const CANVAS: egui::Vec2 = egui::vec2(1920.0, 1080.0);
 
 const BG_TOP: egui::Color32 = egui::Color32::from_rgb(3, 10, 18);
@@ -320,6 +324,20 @@ impl YesVoxApp {
             session.set_card_amount(card, amount);
         }
         session.set_card_enabled(CardId::Loudness, true);
+
+        // Persistence-lite (#24): restore the last output dir + format from
+        // eframe storage. Degrades to defaults when there is no stored value.
+        if let Some(storage) = cc.storage {
+            if let Some(dir) = storage.get_string(STORAGE_LAST_DIR) {
+                if !dir.is_empty() {
+                    session.set_output_location(PathBuf::from(dir));
+                }
+            }
+            if storage.get_string(STORAGE_LAST_FORMAT).as_deref() == Some("FLAC") {
+                session.set_output_format(OutputFormat::Flac);
+            }
+        }
+
         YesVoxApp {
             session,
             tab: Tab::Restore,
@@ -754,6 +772,20 @@ impl YesVoxApp {
 }
 
 impl eframe::App for YesVoxApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Persistence-lite (#24): remember the last output dir + format.
+        let dir = self
+            .session
+            .output_location()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        storage.set_string(STORAGE_LAST_DIR, dir);
+        storage.set_string(
+            STORAGE_LAST_FORMAT,
+            self.session.output_format().label().to_string(),
+        );
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Drain background-job events and repaint while work is in flight (#22).
         self.pump_jobs(ui.ctx());
@@ -1932,14 +1964,8 @@ impl YesVoxApp {
             &format!("{} / {}", format_duration(pos_s), self.duration_label()),
             TEXT,
         );
-        self.outline_button(
-            ui,
-            painter,
-            c,
-            rect(500.0, 366.0, 38.0, 38.0),
-            "Loop",
-            "transport_loop",
-        );
+        // "Loop" button removed (#24): looping is an explicitly deferred #23
+        // feature — no dead control for it in v1.
         self.body_text(painter, c, 756.0, 385.0, self.processing_label(), TEXT);
         let bar = rect(712.0, 398.0, 350.0, 6.0);
         if self.player.is_some() {
@@ -3411,6 +3437,28 @@ mod tests {
         ] {
             assert!(!loudness_label(t).is_empty());
         }
+    }
+
+    #[test]
+    fn cycle_loudness_visits_every_target_and_returns_to_start() {
+        // The Loudness Target selector (#24) cycles through the product.md §7
+        // list including Custom, and wraps.
+        let mut t = LoudnessTarget::Podcast;
+        let seen: Vec<LoudnessTarget> = (0..5)
+            .map(|_| {
+                let cur = t;
+                t = cycle_loudness(t);
+                cur
+            })
+            .collect();
+        assert_eq!(t, LoudnessTarget::Podcast, "cycle wraps back to start");
+        assert!(seen.contains(&LoudnessTarget::Streaming));
+        assert!(seen.contains(&LoudnessTarget::MatchInput));
+        assert!(seen.contains(&LoudnessTarget::PeakNormalize));
+        assert!(
+            seen.iter().any(|t| matches!(t, LoudnessTarget::Custom(_))),
+            "cycle includes a Custom target"
+        );
     }
 
     #[test]
