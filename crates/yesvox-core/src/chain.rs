@@ -165,6 +165,14 @@ impl Chain {
         self.declick.set_mouth_click_amount(amount);
     }
 
+    /// Override the finish stage's integrated-loudness target (the OUTPUT panel /
+    /// Loudness card). Mirrors what [`crate::session::Session`] applies at render
+    /// time; exposed here so callers (and the loudness gate) can drive
+    /// [`LoudnessTarget::Custom`] and the fixed presets uniformly.
+    pub fn set_loudness_target(&mut self, target: LoudnessTarget) {
+        self.finish.set_target(target);
+    }
+
     /// Enable or bypass a stage (the UI card toggle).
     pub fn set_stage_enabled(&mut self, stage: Stage, on: bool) {
         match stage {
