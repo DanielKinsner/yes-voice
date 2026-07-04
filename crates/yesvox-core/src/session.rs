@@ -18,7 +18,7 @@ use crate::card::CardId;
 use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
-use crate::modules::{BleedVerdict, LoudnessTarget};
+use crate::modules::{BleedVerdict, DeClip, LoudnessTarget};
 use crate::playback::PlaybackSource;
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
@@ -476,6 +476,30 @@ impl DeBleedAdvanced {
     }
 }
 
+/// Advanced-only Declip controls. Standard owns this as a single repair card;
+/// Advanced exposes the DSP threshold/strength pair directly.
+#[derive(Clone, Copy)]
+struct DeClipAdvanced {
+    threshold: f32,
+    strength: f32,
+}
+
+impl Default for DeClipAdvanced {
+    fn default() -> Self {
+        DeClipAdvanced {
+            threshold: 0.98,
+            strength: 1.0,
+        }
+    }
+}
+
+impl DeClipAdvanced {
+    fn set(&mut self, threshold: f32, strength: f32) {
+        self.threshold = threshold.clamp(0.0, 1.0);
+        self.strength = strength.clamp(0.0, 1.0);
+    }
+}
+
 /// A stateful vocal-editing session.
 pub struct Session {
     settings: Settings,
@@ -488,6 +512,7 @@ pub struct Session {
     finish_cards: FinishCards,
     transient_cards: TransientCards,
     debleed: DeBleedAdvanced,
+    declip: DeClipAdvanced,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -530,6 +555,7 @@ pub struct SessionSnapshot {
     finish_cards: FinishCards,
     transient_cards: TransientCards,
     debleed: DeBleedAdvanced,
+    declip: DeClipAdvanced,
     flow: f32,
     polish: f32,
     loudness_override: Option<LoudnessTarget>,
@@ -562,6 +588,7 @@ impl Session {
             finish_cards: FinishCards::default(),
             transient_cards: TransientCards::default(),
             debleed: DeBleedAdvanced::default(),
+            declip: DeClipAdvanced::default(),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -638,6 +665,17 @@ impl Session {
     /// and the block threshold is never below the warn threshold.
     pub fn set_debleed_thresholds(&mut self, warn: f32, block: f32) {
         self.debleed.set_thresholds(warn, block);
+        self.output = None;
+    }
+
+    /// Advanced Declip detection threshold and repair strength.
+    pub fn declip_settings(&self) -> (f32, f32) {
+        (self.declip.threshold, self.declip.strength)
+    }
+
+    /// Set Advanced Declip threshold/strength. Values clamp to `[0, 1]`.
+    pub fn set_declip_settings(&mut self, threshold: f32, strength: f32) {
+        self.declip.set(threshold, strength);
         self.output = None;
     }
 
@@ -1361,6 +1399,7 @@ impl Session {
             finish_cards: self.finish_cards,
             transient_cards: self.transient_cards,
             debleed: self.debleed,
+            declip: self.declip,
             flow: self.flow,
             polish: self.polish,
             loudness_override: self.loudness_override,
@@ -1378,6 +1417,7 @@ impl Session {
         self.finish_cards = snapshot.finish_cards;
         self.transient_cards = snapshot.transient_cards;
         self.debleed = snapshot.debleed;
+        self.declip = snapshot.declip;
         self.flow = snapshot.flow;
         self.polish = snapshot.polish;
         self.loudness_override = snapshot.loudness_override;
@@ -1457,6 +1497,8 @@ impl Session {
             .chain
             .debleed
             .set_thresholds(debleed_warn, debleed_block);
+        let (declip_threshold, declip_strength) = self.declip_settings();
+        built.chain.declip = DeClip::new(declip_threshold, declip_strength);
 
         // Apply the per-card overrides (the UI rack) over the preset's defaults,
         // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
@@ -1639,6 +1681,20 @@ mod tests {
         let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
         write_wav(path, &buf).expect("write fixture");
         buf
+    }
+
+    fn clipped_fixture(path: &Path) -> AudioBuffer {
+        let n = 48_000;
+        let x: Vec<f32> = (0..n)
+            .map(|i| (1.0 * (2.0 * PI * 150.0 * i as f32 / SR as f32).sin()).clamp(-0.80, 0.80))
+            .collect();
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
+    fn max_abs(samples: &[f32]) -> f32 {
+        samples.iter().map(|s| s.abs()).fold(0.0, f32::max)
     }
 
     /// A clean, quiet 220 Hz tone — integrated loudness well below −16 LUFS, so a
@@ -3100,6 +3156,49 @@ mod tests {
 
         s.set_debleed_thresholds(0.95, 0.99);
         s.render().expect("relaxed thresholds render");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn advanced_declip_settings_clamp_and_restore() {
+        let mut s = Session::new();
+        assert_eq!(s.declip_settings(), (0.98, 1.0));
+
+        s.set_declip_settings(0.79, 0.40);
+        let snapshot = s.snapshot();
+        assert_eq!(s.declip_settings(), (0.79, 0.40));
+
+        s.set_declip_settings(1.2, -0.5);
+        assert_eq!(s.declip_settings(), (1.0, 0.0));
+
+        s.restore_snapshot(&snapshot);
+        assert_eq!(s.declip_settings(), (0.79, 0.40));
+    }
+
+    #[test]
+    fn advanced_declip_settings_reach_rendered_repair() {
+        let path = temp("advanced-declip-render");
+        clipped_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        for stage in Stage::ALL {
+            s.set_stage_enabled(stage, false);
+        }
+        s.set_stage_enabled(Stage::DeClip, true);
+
+        s.set_declip_settings(0.79, 0.0);
+        s.render().expect("dry declip render");
+        let dry = s.output().unwrap().channel(0).to_vec();
+
+        s.set_declip_settings(0.79, 1.0);
+        s.render().expect("wet declip render");
+        let wet = s.output().unwrap().channel(0).to_vec();
+
+        assert!(
+            max_abs(&wet) > max_abs(&dry) + 0.02,
+            "Declip strength should restore peaks above the clipped plateau"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
