@@ -114,7 +114,7 @@ pub fn f0_cents_deviation(reference: &[f32], processed: &[f32], sr: f32) -> Cent
             voiced_frames: 0,
         };
     }
-    devs.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    devs.sort_by(|x, y| x.total_cmp(y));
     let pct = |p: f32| devs[((devs.len() as f32 * p) as usize).min(devs.len() - 1)];
     CentsDeviation {
         median: pct(0.50),
@@ -145,7 +145,7 @@ pub fn vibrato(signal: &[f32], sr: f32) -> Option<Vibrato> {
         return None;
     }
     let mut sorted = voiced.clone();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let median = sorted[sorted.len() / 2];
     // Contour in cents about the median, then remove any residual DC.
     let mut c: Vec<f32> = voiced.iter().map(|&f| cents(median, f)).collect();
@@ -235,7 +235,7 @@ pub fn hnr_db(signal: &[f32], sr: f32) -> Option<f32> {
     if hnrs.is_empty() {
         return None;
     }
-    hnrs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    hnrs.sort_by(|a, b| a.total_cmp(b));
     Some(hnrs[hnrs.len() / 2])
 }
 

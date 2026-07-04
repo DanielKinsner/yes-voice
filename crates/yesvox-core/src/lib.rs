@@ -9,6 +9,14 @@
 //!
 //! See `docs/plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`.
 
+// Panic-safety (#29): the render/analyze/export path must return errors, never
+// panic. Deny `unwrap()`/`expect()` in the production build; tests stay exempt
+// (they use them freely as assertions). `indexing_slicing` is deliberately not
+// denied — the DSP hot paths index within the equal-channel-length invariant and
+// #28 sanitization, and rewriting ~180 bounds-safe accesses to `.get()` would
+// bloat the hot path for no real safety gain.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 pub mod analysis;
 pub mod audio;
 pub mod build;

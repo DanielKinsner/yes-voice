@@ -106,7 +106,7 @@ impl Denoiser for SpectralDenoiser {
             }
         }
         let mut sorted = avg.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        sorted.sort_by(|a, b| a.total_cmp(b));
         let median = sorted[nbins / 2];
         let noise_cap = 2.0 * median;
         let noise: Vec<f32> = avg

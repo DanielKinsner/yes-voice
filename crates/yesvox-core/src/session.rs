@@ -831,7 +831,9 @@ impl Session {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("vocal");
             self.output_name = Some(format!("{stem}_YesVox"));
         }
-        Ok(self.report.as_ref().unwrap())
+        // The report was just set above; `ok_or` keeps this panic-free without an
+        // unwrap (#29).
+        self.report.as_ref().ok_or(SessionError::NotLoaded)
     }
 
     /// The analyzer's voiceover-vs-singing guess (advisory; the toggle decides).

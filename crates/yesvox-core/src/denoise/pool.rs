@@ -37,7 +37,10 @@ impl WorkerPool {
             let rx = Arc::clone(&receiver);
             handles.push(std::thread::spawn(move || loop {
                 let msg = {
-                    let lock = rx.lock().unwrap();
+                    // Recover a poisoned lock rather than panic: the mutex only
+                    // guards the receiver during recv(), so a poisoned guard still
+                    // holds a valid receiver (#29).
+                    let lock = rx.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     lock.recv()
                 };
                 match msg {
@@ -67,24 +70,45 @@ impl WorkerPool {
         denoiser: &Arc<dyn Denoiser>,
     ) -> Vec<Vec<f32>> {
         let n = chunks.len();
+        // Share the chunks so a lost slot can fall back to its untouched input
+        // without an upfront full clone (#29).
+        let chunks = Arc::new(chunks);
         let (tx, rx) = channel::<(usize, Vec<f32>)>();
-        for (i, chunk) in chunks.into_iter().enumerate() {
+        let mut dispatched = 0;
+        for i in 0..n {
             let den = Arc::clone(denoiser);
+            let src = Arc::clone(&chunks);
             let tx = tx.clone();
-            self.sender
+            // A closed channel (all workers gone) means the send fails rather
+            // than panics; that slot simply falls back below.
+            if self
+                .sender
                 .send(Message::Run(Box::new(move || {
-                    let out = den.denoise(&chunk, sample_rate);
+                    let out = den.denoise(&src[i], sample_rate);
                     let _ = tx.send((i, out));
                 })))
-                .expect("worker pool send");
+                .is_ok()
+            {
+                dispatched += 1;
+            }
         }
         drop(tx);
         let mut results: Vec<Option<Vec<f32>>> = (0..n).map(|_| None).collect();
-        for _ in 0..n {
-            let (i, out) = rx.recv().expect("worker pool recv");
-            results[i] = Some(out);
+        for _ in 0..dispatched {
+            match rx.recv() {
+                Ok((i, out)) => results[i] = Some(out),
+                // A worker died mid-job (panicked) — no crash; remaining slots
+                // fall back to their unprocessed input.
+                Err(_) => break,
+            }
         }
-        results.into_iter().map(|r| r.unwrap()).collect()
+        // Any slot with no result degrades to the original (unprocessed) chunk,
+        // preserving length and never panicking (#29).
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| r.unwrap_or_else(|| chunks[i].clone()))
+            .collect()
     }
 }
 
@@ -142,6 +166,49 @@ mod tests {
         assert!(
             !threads.contains(&std::thread::current().id()),
             "inference ran on the caller thread"
+        );
+    }
+
+    /// A denoiser that panics on its second call (killing that worker thread),
+    /// then doubles its input like `SpyDenoiser`.
+    struct SuicidalDenoiser {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl Denoiser for SuicidalDenoiser {
+        fn denoise(&self, input: &[f32], _sr: f32) -> Vec<f32> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(n != 1, "worker suicide on the second chunk");
+            input.iter().map(|x| x * 2.0).collect()
+        }
+    }
+
+    #[test]
+    fn a_dying_worker_degrades_to_fallback_not_a_crash() {
+        // Reaching the assertions at all proves the pool did not crash the
+        // caller when a worker panicked mid-job (#29).
+        let denoiser = Arc::new(SuicidalDenoiser {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let dyn_den: Arc<dyn Denoiser> = denoiser.clone();
+        let pool = WorkerPool::new(3);
+        let chunks: Vec<Vec<f32>> = (0..4).map(|k| vec![(k + 1) as f32; 8]).collect();
+
+        let out = pool.denoise_chunks(chunks.clone(), 48_000.0, &dyn_den);
+
+        assert_eq!(out.len(), 4, "no chunk lost when a worker died");
+        let mut fallbacks = 0;
+        for (o, c) in out.iter().zip(&chunks) {
+            assert_eq!(o.len(), c.len(), "length preserved");
+            let doubled: Vec<f32> = c.iter().map(|x| x * 2.0).collect();
+            if *o == *c {
+                fallbacks += 1; // untouched original — the lost chunk
+            } else {
+                assert_eq!(*o, doubled, "surviving chunk was processed");
+            }
+        }
+        assert_eq!(
+            fallbacks, 1,
+            "one dead worker -> exactly one fallback chunk"
         );
     }
 }

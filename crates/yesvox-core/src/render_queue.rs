@@ -352,8 +352,10 @@ impl RenderQueue {
     /// Process every pending item, skipping (and recording) failures. Returns a
     /// tally of the run.
     pub fn run(&mut self) -> BatchSummary {
+        // Without a log path `run_inner` does no fallible I/O, so the Err arm is
+        // unreachable; degrade to an empty summary rather than panic (#29).
         self.run_inner(None)
-            .expect("in-memory queue run cannot fail")
+            .unwrap_or_else(|_| BatchSummary::empty())
     }
 
     /// Process every pending item and append one JSON object per processed file
@@ -368,8 +370,10 @@ impl RenderQueue {
         &mut self,
         mut progress: impl FnMut(BatchProgress) -> BatchControl,
     ) -> BatchSummary {
+        // See `run`: no log path means no fallible I/O, so degrade instead of
+        // panicking on the unreachable Err (#29).
         self.run_inner_with_progress(None, &mut progress)
-            .expect("in-memory queue run cannot fail")
+            .unwrap_or_else(|_| BatchSummary::empty())
     }
 
     fn run_inner(&mut self, log_path: Option<&Path>) -> Result<BatchSummary, QueueStateError> {

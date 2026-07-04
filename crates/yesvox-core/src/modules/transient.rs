@@ -231,7 +231,7 @@ fn low_band_ratio(seg: &[f32], sample_rate: f32, cutoff: f32) -> f32 {
 fn mad(x: &[f32]) -> f32 {
     let med = local_median(x);
     let mut dev: Vec<f32> = x.iter().map(|v| (v - med).abs()).collect();
-    dev.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    dev.sort_by(|a, b| a.total_cmp(b));
     dev.get(dev.len() / 2).copied().unwrap_or(0.0)
 }
 
@@ -241,7 +241,7 @@ fn local_median(x: &[f32]) -> f32 {
         return 0.0;
     }
     let mut v: Vec<f32> = x.to_vec();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    v.sort_by(|a, b| a.total_cmp(b));
     v[v.len() / 2]
 }
 

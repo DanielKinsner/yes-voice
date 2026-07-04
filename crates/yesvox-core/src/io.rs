@@ -407,8 +407,15 @@ fn read_wav_metadata(path: &Path) -> Result<ContainerMetadata, IoError> {
     let mut chunks = Vec::new();
     let mut pos = 12usize;
     while pos + 8 <= bytes.len() {
-        let id: [u8; 4] = bytes[pos..pos + 4].try_into().unwrap();
-        let len = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) as usize;
+        // The `pos + 8 <= len` guard makes these eight indices in-bounds, so read
+        // the id + length bytes directly rather than via a fallible try_into (#29).
+        let id: [u8; 4] = [bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]];
+        let len = u32::from_le_bytes([
+            bytes[pos + 4],
+            bytes[pos + 5],
+            bytes[pos + 6],
+            bytes[pos + 7],
+        ]) as usize;
         let data_start = pos + 8;
         let data_end = data_start.saturating_add(len);
         if data_end > bytes.len() {

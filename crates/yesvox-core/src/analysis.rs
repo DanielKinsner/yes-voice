@@ -227,7 +227,7 @@ fn noise_floor_db(mono: &[f32], sr: f32) -> f32 {
     if rms.is_empty() {
         return -120.0;
     }
-    rms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    rms.sort_by(|a, b| a.total_cmp(b));
     let p10 = rms[(rms.len() as f32 * 0.10) as usize];
     20.0 * p10.max(1.0e-9).log10()
 }
@@ -266,7 +266,7 @@ fn median_abs(xs: &[f32]) -> f32 {
     if v.is_empty() {
         return 0.0;
     }
-    let (_, median, _) = v.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap());
+    let (_, median, _) = v.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
     *median
 }
 
@@ -353,7 +353,7 @@ fn reverb_time(mono: &[f32], sr: f32) -> f32 {
     if slopes.is_empty() {
         return 0.0;
     }
-    slopes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    slopes.sort_by(|a, b| a.total_cmp(b));
     let median_slope = slopes[slopes.len() / 2].max(1.0);
     (60.0 / median_slope).clamp(0.0, 3.0)
 }
