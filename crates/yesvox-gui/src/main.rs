@@ -418,6 +418,54 @@ fn advanced_denoise_control_rects(card: egui::Rect) -> AdvancedDenoiseControlRec
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedDeReverbPanel {
+    strength: f32,
+    tail_preservation: f32,
+    rt60_s: f32,
+    amount: f32,
+}
+
+impl AdvancedDeReverbPanel {
+    fn from_session(session: &Session) -> Self {
+        let (strength, tail_preservation) = session.dereverb_settings();
+        AdvancedDeReverbPanel {
+            strength,
+            tail_preservation,
+            rt60_s: session.dereverb_rt60(),
+            amount: session.stage_mix(Stage::DeReverb),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_dereverb_settings(self.strength, self.tail_preservation);
+        session.set_stage_mix(Stage::DeReverb, self.amount);
+    }
+
+    fn rt60_label(self) -> String {
+        if self.rt60_s > 0.0 {
+            format!("RT60 {:.2}s", self.rt60_s)
+        } else {
+            "RT60 --".to_owned()
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedDeReverbControlRects {
+    strength_slider: egui::Rect,
+    tail_slider: egui::Rect,
+    amount_knob: egui::Rect,
+}
+
+fn advanced_dereverb_control_rects(card: egui::Rect) -> AdvancedDeReverbControlRects {
+    AdvancedDeReverbControlRects {
+        strength_slider: rect(card.left() + 86.0, card.top() + 57.0, 74.0, 5.0),
+        tail_slider: rect(card.left() + 86.0, card.top() + 88.0, 74.0, 5.0),
+        amount_knob: rect(card.right() - 68.0, card.top() + 52.0, 56.0, 56.0),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BatchQueueRow {
     input: PathBuf,
@@ -1951,6 +1999,8 @@ impl YesVoxApp {
                 self.advanced_dehum_card(ui, painter, c, *card);
             } else if i == 5 {
                 self.advanced_denoise_card(ui, painter, c, *card);
+            } else if i == 6 {
+                self.advanced_dereverb_card(ui, painter, c, *card);
             } else {
                 self.advanced_module_card(painter, c, *card, module);
             }
@@ -2815,6 +2865,90 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_denoise");
+        }
+    }
+
+    fn advanced_dereverb_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "7", "De-reverb");
+        let controls = advanced_dereverb_control_rects(r);
+        let original = AdvancedDeReverbPanel::from_session(&self.session);
+        let mut panel = original;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 148.0,
+            r.top() + 25.0,
+            &panel.rt60_label(),
+            if panel.rt60_s > 0.0 { CYAN } else { TEXT_MUTED },
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 60.0,
+            &format!("Strength {:.2}", panel.strength),
+            TEXT_MUTED,
+        );
+        let strength_t = (panel.strength / 2.0).clamp(0.0, 1.0);
+        let next_strength_t = self.slider(
+            ui,
+            painter,
+            c,
+            controls.strength_slider,
+            strength_t,
+            "advanced_dereverb_strength",
+            BLUE,
+            CYAN,
+        );
+        panel.strength = next_strength_t * 2.0;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 91.0,
+            &format!("Tail {:.2}", panel.tail_preservation),
+            TEXT_MUTED,
+        );
+        panel.tail_preservation = self.slider(
+            ui,
+            painter,
+            c,
+            controls.tail_slider,
+            panel.tail_preservation,
+            "advanced_dereverb_tail",
+            BLUE,
+            CYAN,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            controls.amount_knob.left() + 5.0,
+            controls.amount_knob.top() - 5.0,
+            "Amount",
+            TEXT_MUTED,
+        );
+        panel.amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.amount_knob.center(),
+            panel.amount,
+            "advanced_dereverb_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_dereverb");
         }
     }
 
@@ -5405,6 +5539,55 @@ mod tests {
         for (i, a) in rects.iter().enumerate() {
             for b in rects.iter().skip(i + 1) {
                 assert!(!a.intersects(*b), "Denoise controls must not crowd");
+            }
+        }
+    }
+
+    #[test]
+    fn advanced_dereverb_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedDeReverbPanel::from_session(&session);
+
+        assert_eq!(panel.strength, 1.2);
+        assert_eq!(panel.tail_preservation, 0.1);
+        assert_eq!(panel.rt60_label(), "RT60 --");
+        assert_eq!(panel.amount, session.stage_mix(Stage::DeReverb));
+
+        let edited = AdvancedDeReverbPanel {
+            strength: 1.55,
+            tail_preservation: 0.42,
+            rt60_s: panel.rt60_s,
+            amount: 0.58,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert_eq!(session.dereverb_settings(), (1.55, 0.42));
+        assert_eq!(session.stage_mix(Stage::DeReverb), 0.58);
+        assert_eq!(AdvancedDeReverbPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_dereverb_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[6];
+        let controls = advanced_dereverb_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.strength_slider,
+            controls.tail_slider,
+            controls.amount_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "De-reverb controls must not crowd");
             }
         }
     }
