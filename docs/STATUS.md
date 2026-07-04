@@ -119,7 +119,7 @@ this order (each TDD'd, each its own green commit):
 
 1. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
    filesystem/atomic export, resource guards, model-load validation,
-   determinism. Interleavable AFK filler. ← **current (#33)**
+   determinism. Interleavable AFK filler. ← **current (#34)**
    - ✅ **#28 H1 numeric hygiene** (done 2026-07-03): decode-time
      `AudioBuffer::sanitize` (NaN/±Inf→0, clamp ±4, counted →
      `AnalysisReport::non_finite_samples`), biquad denormal flush-to-zero,
@@ -146,6 +146,13 @@ this order (each TDD'd, each its own green commit):
      a counting-allocator test measured the real render peak and CORRECTED
      `working_set_k` 8→16 (8 under-estimated); docs honesty (whole-buffer
      model, denoise-only streaming).
+   - ✅ **#33 H6 model-load validation** (done 2026-07-03): `OrtMaskModel::run`
+     inference expects → graceful passthrough (waiver removed, deny lint now
+     covers the neural path); neural→light fallback carries a reason to
+     `Session::engine_note()`/CLI; dependency-free SHA-256 + shipped-weight
+     manifest integrity gate. (`ort`'s dylib probe *hangs* without
+     ORT_DYLIB_PATH — the corrupt-model test is #[ignore]d; the fallback
+     mechanism is tested without the feature.)
 3. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
    separate screen, Standard visual language, mock-first approval).
 4. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
