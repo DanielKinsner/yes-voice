@@ -34,6 +34,10 @@ pub struct BuiltEngine {
     /// [`crate::quality::resolve`]. The UI/CLI logs this when it differs from the
     /// binding's intended engine.
     pub actual: Engine,
+    /// A user-presentable reason when the neural engine was requested but a
+    /// light fallback happened (feature off, no model, load/integrity failure —
+    /// #33). `None` when the actual engine is what was asked for.
+    pub fallback_reason: Option<String>,
 }
 
 /// Build the denoiser an [`EngineBinding`] calls for.
@@ -47,6 +51,8 @@ pub fn build_denoiser(binding: EngineBinding, neural_model: Option<&Path>) -> Bu
         Engine::Light => BuiltEngine {
             denoiser: Arc::new(SpectralDenoiser::default()),
             actual: Engine::Light,
+            // Not a fallback — the light engine was the chosen binding.
+            fallback_reason: None,
         },
         Engine::Neural => build_neural(neural_model),
     }
@@ -55,27 +61,43 @@ pub fn build_denoiser(binding: EngineBinding, neural_model: Option<&Path>) -> Bu
 #[cfg(feature = "neural")]
 fn build_neural(model: Option<&Path>) -> BuiltEngine {
     use crate::neural::{MossformerEngine, OrtMaskModel, WindowedMask};
-    if let Some(path) = model {
-        if let Ok(mask) = OrtMaskModel::from_file(path) {
+    let Some(path) = model else {
+        return light_fallback(Some(
+            "no neural model configured — set YESVOX_MODEL_PATH".to_string(),
+        ));
+    };
+    // Weight integrity gate (#33): reject a corrupt/tampered model before it ever
+    // reaches ONNX Runtime.
+    if let Err(reason) = crate::neural::verify_model_integrity(path) {
+        return light_fallback(Some(reason));
+    }
+    match OrtMaskModel::from_file(path) {
+        Ok(mask) => {
             let engine = MossformerEngine::new(Box::new(WindowedMask::mossformer(Box::new(mask))));
-            return BuiltEngine {
+            BuiltEngine {
                 denoiser: Arc::new(engine),
                 actual: Engine::Neural,
-            };
+                fallback_reason: None,
+            }
         }
+        Err(e) => light_fallback(Some(format!(
+            "neural model failed to load ({e}) — reinstall or clear YESVOX_MODEL_PATH"
+        ))),
     }
-    light_fallback()
 }
 
 #[cfg(not(feature = "neural"))]
 fn build_neural(_model: Option<&Path>) -> BuiltEngine {
-    light_fallback()
+    light_fallback(Some(
+        "neural engine not built — rebuild with `--features neural`".to_string(),
+    ))
 }
 
-fn light_fallback() -> BuiltEngine {
+fn light_fallback(reason: Option<String>) -> BuiltEngine {
     BuiltEngine {
         denoiser: Arc::new(SpectralDenoiser::default()),
         actual: Engine::Light,
+        fallback_reason: reason,
     }
 }
 
@@ -243,13 +265,19 @@ mod tests {
     #[test]
     fn factory_builds_light_and_falls_back_without_a_model() {
         use crate::quality::{Engine, QualityMode};
-        // Natural always binds the light engine.
+        // Natural always binds the light engine — not a fallback, so no note.
         let nat = build_denoiser(QualityMode::Natural.binding(), None);
         assert_eq!(nat.actual, Engine::Light);
+        assert!(nat.fallback_reason.is_none());
         // Balanced wants the neural engine, but with no model (and no feature in
-        // the default build) it transparently falls back to light.
+        // the default build) it transparently falls back to light with a
+        // user-presentable reason (#33).
         let bal = build_denoiser(QualityMode::Balanced.binding(), None);
         assert_eq!(bal.actual, Engine::Light);
+        assert!(
+            bal.fallback_reason.is_some(),
+            "a neural->light fallback must carry a reason"
+        );
         // The built denoiser actually runs and preserves length.
         let x: Vec<f32> = (0..8192)
             .map(|i| 0.2 * (2.0 * PI * 200.0 * i as f32 / SR as f32).sin())

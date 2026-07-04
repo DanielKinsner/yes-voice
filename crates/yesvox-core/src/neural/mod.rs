@@ -16,6 +16,7 @@
 pub mod chunk;
 pub mod engine;
 pub mod fbank;
+pub mod integrity;
 #[cfg(feature = "neural")]
 pub mod ort_model;
 pub mod resample;
@@ -24,6 +25,7 @@ pub mod stft;
 pub use chunk::WindowedMask;
 pub use engine::{MaskModel, MossformerEngine};
 pub use fbank::MossformerFbank;
+pub use integrity::{sha256_hex, verify_model_integrity};
 #[cfg(feature = "neural")]
 pub use ort_model::OrtMaskModel;
 pub use resample::{from_48k, to_48k, Resampler};

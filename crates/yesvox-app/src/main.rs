@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use yesvox_core::{
-    analyze, export, read_audio, BleedVerdict, BuiltChain, Engine, Preset, Settings, VocalProcessor,
+    analyze, export, read_audio, BleedVerdict, BuiltChain, Preset, Settings, VocalProcessor,
 };
 
 fn main() -> ExitCode {
@@ -80,10 +80,9 @@ fn run(input: &Path, output: &Path) -> Result<PathBuf, Box<dyn std::error::Error
             ""
         },
     );
-    if built.resolved.binding.engine == Engine::Neural && built.engine == Engine::Light {
-        eprintln!(
-            "note: neural engine unavailable (no `neural` feature or YESVOX_MODEL_PATH) — using the light engine"
-        );
+    // Surface the specific neural→light fallback reason (#33), not a generic one.
+    if let Some(note) = &built.engine_note {
+        eprintln!("note: {note} — using the light engine");
     }
 
     // De-bleed refusal (plan §4.5): if the input looks like a mix, refuse with the

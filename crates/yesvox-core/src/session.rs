@@ -482,6 +482,8 @@ pub struct Session {
     /// When true, render proceeds even if the preflight estimate is over budget
     /// (the explicit user override).
     allow_over_budget: bool,
+    /// The neural→light fallback reason from the last render, if any (#33).
+    engine_note: Option<String>,
 }
 
 /// An opaque snapshot of a [`Session`]'s **settings state** — the fields undo/redo
@@ -536,6 +538,7 @@ impl Session {
             neural_model: std::env::var_os("YESVOX_MODEL_PATH").map(PathBuf::from),
             available_memory_override: None,
             allow_over_budget: false,
+            engine_note: None,
         }
     }
 
@@ -1338,6 +1341,8 @@ impl Session {
             self.workers,
             0.0,
         );
+        // Carry the neural→light fallback reason (if any) for the GUI/CLI (#33).
+        let engine_note = built.engine_note.take();
 
         // Apply the per-card overrides (the UI rack) over the preset's defaults,
         // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
@@ -1400,7 +1405,14 @@ impl Session {
         built.chain.reset();
         built.chain.process(&mut buffer);
         self.output = Some(buffer);
+        self.engine_note = engine_note;
         Ok(())
+    }
+
+    /// A user-presentable note when the last render fell back from the neural
+    /// engine to the light engine (#33), else `None`.
+    pub fn engine_note(&self) -> Option<&str> {
+        self.engine_note.as_deref()
     }
 
     /// Export the last render to `path` (never-overwrites, returns the written
@@ -1931,6 +1943,23 @@ mod tests {
         ] {
             assert!(!format!("{err}").is_empty());
         }
+    }
+
+    #[test]
+    fn render_surfaces_the_neural_light_fallback_note() {
+        // In the default build (no `neural` feature) a Balanced/HQ render requests
+        // the neural engine and falls back to light — the reason must surface on
+        // the session for the GUI/CLI (#33).
+        let path = temp("engine-note");
+        degraded_fixture(&path);
+        let mut s = Session::new();
+        s.set_quality_mode(QualityMode::Balanced);
+        s.open(&path).expect("open");
+        assert!(s.engine_note().is_none(), "no note before a render");
+        s.render().expect("render");
+        let note = s.engine_note().expect("a fallback note after render");
+        assert!(!note.is_empty(), "the note is user-presentable");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

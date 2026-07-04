@@ -30,6 +30,9 @@ pub struct BuiltChain {
     /// The engine actually built — may be [`Engine::Light`] even when the binding
     /// asked for neural, if the `neural` feature/model is unavailable.
     pub engine: Engine,
+    /// A user-presentable reason when a neural request fell back to light (#33):
+    /// feature off, no model, or a load/integrity failure. `None` otherwise.
+    pub engine_note: Option<String>,
 }
 
 impl BuiltChain {
@@ -64,6 +67,7 @@ impl BuiltChain {
             preset,
             resolved,
             engine: built.actual,
+            engine_note: built.fallback_reason,
         }
     }
 }
