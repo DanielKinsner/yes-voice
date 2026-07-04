@@ -18,7 +18,7 @@ use crate::card::CardId;
 use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
-use crate::modules::{BleedVerdict, DeClip, LoudnessTarget};
+use crate::modules::{BleedVerdict, DeClip, DePop, LoudnessTarget};
 use crate::playback::PlaybackSource;
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
@@ -500,6 +500,30 @@ impl DeClipAdvanced {
     }
 }
 
+/// Advanced-only De-pop controls. The cutoff is intentionally bounded to the
+/// v1 plan's plosive low-cut sweep so it cannot become a general tone shaper.
+#[derive(Clone, Copy)]
+struct DePopAdvanced {
+    cutoff_hz: f32,
+    strength: f32,
+}
+
+impl Default for DePopAdvanced {
+    fn default() -> Self {
+        DePopAdvanced {
+            cutoff_hz: 120.0,
+            strength: 1.0,
+        }
+    }
+}
+
+impl DePopAdvanced {
+    fn set(&mut self, cutoff_hz: f32, strength: f32) {
+        self.cutoff_hz = cutoff_hz.clamp(80.0, 120.0);
+        self.strength = strength.clamp(0.0, 1.0);
+    }
+}
+
 /// A stateful vocal-editing session.
 pub struct Session {
     settings: Settings,
@@ -513,6 +537,7 @@ pub struct Session {
     transient_cards: TransientCards,
     debleed: DeBleedAdvanced,
     declip: DeClipAdvanced,
+    depop: DePopAdvanced,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -556,6 +581,7 @@ pub struct SessionSnapshot {
     transient_cards: TransientCards,
     debleed: DeBleedAdvanced,
     declip: DeClipAdvanced,
+    depop: DePopAdvanced,
     flow: f32,
     polish: f32,
     loudness_override: Option<LoudnessTarget>,
@@ -589,6 +615,7 @@ impl Session {
             transient_cards: TransientCards::default(),
             debleed: DeBleedAdvanced::default(),
             declip: DeClipAdvanced::default(),
+            depop: DePopAdvanced::default(),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -676,6 +703,18 @@ impl Session {
     /// Set Advanced Declip threshold/strength. Values clamp to `[0, 1]`.
     pub fn set_declip_settings(&mut self, threshold: f32, strength: f32) {
         self.declip.set(threshold, strength);
+        self.output = None;
+    }
+
+    /// Advanced De-pop low-cut cutoff and repair strength.
+    pub fn depop_settings(&self) -> (f32, f32) {
+        (self.depop.cutoff_hz, self.depop.strength)
+    }
+
+    /// Set Advanced De-pop cutoff/strength. Cutoff clamps to the v1 80-120 Hz
+    /// plosive sweep; strength clamps to `[0, 1]`.
+    pub fn set_depop_settings(&mut self, cutoff_hz: f32, strength: f32) {
+        self.depop.set(cutoff_hz, strength);
         self.output = None;
     }
 
@@ -1400,6 +1439,7 @@ impl Session {
             transient_cards: self.transient_cards,
             debleed: self.debleed,
             declip: self.declip,
+            depop: self.depop,
             flow: self.flow,
             polish: self.polish,
             loudness_override: self.loudness_override,
@@ -1418,6 +1458,7 @@ impl Session {
         self.transient_cards = snapshot.transient_cards;
         self.debleed = snapshot.debleed;
         self.declip = snapshot.declip;
+        self.depop = snapshot.depop;
         self.flow = snapshot.flow;
         self.polish = snapshot.polish;
         self.loudness_override = snapshot.loudness_override;
@@ -1499,6 +1540,8 @@ impl Session {
             .set_thresholds(debleed_warn, debleed_block);
         let (declip_threshold, declip_strength) = self.declip_settings();
         built.chain.declip = DeClip::new(declip_threshold, declip_strength);
+        let (depop_cutoff_hz, depop_strength) = self.depop_settings();
+        built.chain.depop = DePop::with_settings(depop_cutoff_hz, depop_strength);
 
         // Apply the per-card overrides (the UI rack) over the preset's defaults,
         // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
@@ -1644,6 +1687,7 @@ impl PreparedExport {
 mod tests {
     use super::*;
     use crate::audio::{ContainerMetadata, SampleEncoding, WavMetadataChunk};
+    use crate::dsp::goertzel_power;
     use crate::io::{read_wav, write_wav, write_wav_with};
     use crate::settings::{ExportOptions, DEFAULT_FLAC_COMPRESSION_LEVEL};
     use std::f32::consts::PI;
@@ -1688,6 +1732,21 @@ mod tests {
         let x: Vec<f32> = (0..n)
             .map(|i| (1.0 * (2.0 * PI * 150.0 * i as f32 / SR as f32).sin()).clamp(-0.80, 0.80))
             .collect();
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
+    fn plosive_fixture(path: &Path) -> AudioBuffer {
+        let n = 48_000;
+        let mut x: Vec<f32> = (0..n)
+            .map(|i| 0.2 * (2.0 * PI * 200.0 * i as f32 / SR as f32).sin())
+            .collect();
+        let at = 10_000;
+        for t in 0..(0.030 * SR as f32) as usize {
+            let env = (-(t as f32) / (0.012 * SR as f32)).exp();
+            x[at + t] += 0.8 * env * (2.0 * PI * 80.0 * t as f32 / SR as f32).cos();
+        }
         let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
         write_wav(path, &buf).expect("write fixture");
         buf
@@ -3198,6 +3257,52 @@ mod tests {
         assert!(
             max_abs(&wet) > max_abs(&dry) + 0.02,
             "Declip strength should restore peaks above the clipped plateau"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn advanced_depop_settings_clamp_and_restore() {
+        let mut s = Session::new();
+        assert_eq!(s.depop_settings(), (120.0, 1.0));
+
+        s.set_depop_settings(90.0, 0.40);
+        let snapshot = s.snapshot();
+        assert_eq!(s.depop_settings(), (90.0, 0.40));
+
+        s.set_depop_settings(40.0, 1.5);
+        assert_eq!(s.depop_settings(), (80.0, 1.0));
+
+        s.restore_snapshot(&snapshot);
+        assert_eq!(s.depop_settings(), (90.0, 0.40));
+    }
+
+    #[test]
+    fn advanced_depop_settings_reach_rendered_plosive_filter() {
+        let path = temp("advanced-depop-render");
+        plosive_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        for stage in Stage::ALL {
+            s.set_stage_enabled(stage, false);
+        }
+        s.set_stage_enabled(Stage::DePop, true);
+
+        s.set_depop_settings(120.0, 0.0);
+        s.render().expect("dry depop render");
+        let dry = s.output().unwrap().channel(0).to_vec();
+
+        s.set_depop_settings(120.0, 1.0);
+        s.render().expect("wet depop render");
+        let wet = s.output().unwrap().channel(0).to_vec();
+
+        let at = 10_000;
+        let dry_low = goertzel_power(&dry[at..at + 1440], SR as f32, 80.0);
+        let wet_low = goertzel_power(&wet[at..at + 1440], SR as f32, 80.0);
+        assert!(
+            wet_low < dry_low * 0.5,
+            "De-pop strength should reduce plosive low end: {dry_low} -> {wet_low}"
         );
 
         let _ = std::fs::remove_file(&path);

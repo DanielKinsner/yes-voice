@@ -42,6 +42,13 @@ impl DePop {
         DePop::default()
     }
 
+    /// New de-pop with explicit Advanced low-cut settings.
+    pub fn with_settings(cutoff_hz: f32, strength: f32) -> Self {
+        let mut depop = DePop::new();
+        depop.set_settings(cutoff_hz, strength);
+        depop
+    }
+
     /// Enable or bypass.
     pub fn set_enabled(&mut self, on: bool) {
         self.enabled = on;
@@ -50,6 +57,18 @@ impl DePop {
     /// Whether the module is active.
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Low-cut cutoff and blend strength.
+    pub fn settings(&self) -> (f32, f32) {
+        (self.cutoff_hz, self.strength)
+    }
+
+    /// Set low-cut cutoff and blend strength. The v1 de-pop lane is scoped to
+    /// the plan's 80-120 Hz sweep, with strength as a wet blend.
+    pub fn set_settings(&mut self, cutoff_hz: f32, strength: f32) {
+        self.cutoff_hz = cutoff_hz.clamp(80.0, 120.0);
+        self.strength = strength.clamp(0.0, 1.0);
     }
 }
 
