@@ -24,6 +24,9 @@
 #endif
 
 [Setup]
+; Resolve every relative path from the repo root, not packaging/windows/ —
+; without this the recipe's repo-root-relative paths never compile (#20).
+SourceDir=..\..
 AppId={{4734FC0B-3D2C-4C96-8E0F-6D4F72F6F61E}
 AppName=YesVox
 AppVersion={#AppVersion}
