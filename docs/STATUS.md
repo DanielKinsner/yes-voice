@@ -91,11 +91,18 @@ this order (each TDD'd, each its own green commit):
   export unit). The GUI runs render/export/batch off the UI thread, polls
   events each frame, and the 0/0.55/1.0 progress heuristic is gone.
 
-1. **#23 playback trust loop** — cpal transport, volume-matched A/B at a shared
-   playhead, reblend/difference audition. **Decided: v1 ship-blocker.** ←
+- ✅ **#23 playback trust loop** (done 2026-07-03). `yesvox_core::playback`
+  (device-independent Transport: play/pause/seek/fill, shared playhead across
+  A/B sources; `PlaybackSource` + `Session::playback_buffer`), all tested
+  without a device. GUI-side cpal `Player` (`crates/yesvox-gui/src/audio.rs`)
+  opens an f32 output stream, surfaces device failures as a status line, and
+  wires the play button, transport-bar + waveform seek, real position readout,
+  reblend-strip play, and instant A/B/Volume-Match/reblend source switching.
+  cpal added to CI (Linux ALSA); its licenses were already covered.
+
+1. **#24 Standard wiring sweep + chrome triage** (wire-or-remove policy; preset
+   picker, card dials, loudness target, file fields; drop PNG-only chrome). ←
    **current**
-2. **#24 Standard wiring sweep + chrome triage** (wire-or-remove policy; preset
-   picker, card dials, loudness target, file fields; drop PNG-only chrome).
 3. **#25 undo/redo** — bounded settings snapshot stack (G18 decided).
 4. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
    filesystem/atomic export, resource guards, model-load validation,
