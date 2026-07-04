@@ -1,6 +1,6 @@
 # YesVox — build status & pick-up guide
 
-> Resume-from-anywhere snapshot. Last updated **2026-07-03**. For product intent
+> Resume-from-anywhere snapshot. Last updated **2026-07-04**. For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
 > for the GUI target see [`ui/yesvox-v1-ui-reference.md`](ui/yesvox-v1-ui-reference.md).
@@ -178,11 +178,11 @@ fallback, monitor-strip per-frame perf, long-file K validation).
 
 ## Next steps (in order)
 
-1. **#26 Advanced screen mock (hitl gate for #18):** enumerate the real
-   per-module engine parameters, draft a 1920×1080 mock in the Standard
-   reference's visual language (docs/ui/yesvox-v1-reference.png), get Dan's
-   approval, commit it as docs/ui/yesvox-v1-advanced-reference.png. An agent
-   can do everything except the approval.
+1. ✅ **#26 Advanced screen mock (hitl gate for #18):** approved by Dan on
+   2026-07-04 and committed as
+   `docs/ui/yesvox-v1-advanced-reference.png`. #18 should follow
+   `docs/ui/advanced-parameter-inventory.md` for real controls and preserve the
+   approved structure/style while avoiding crowded dense-card layouts.
 2. **Close out #17:** verify zero dead chrome remains in the shell (every
    drawn control mutates state or is gone), update the issue, close it.
 3. **#35 playback/worker polish (afk):** small, well-scoped — good filler.
@@ -213,6 +213,10 @@ fallback, monitor-strip per-frame perf, long-file K validation).
   weights-license audit now; signing + merchant-of-record activation at v1.1.
   Declip/de-bleed stay card-less/automatic (by design, answers the product.md
   de-bleed-trigger question).
+- **2026-07-04:** #26 Advanced reference mock approved. The PNG is a
+  structure/style reference; `advanced-parameter-inventory.md` remains the
+  control contract. #18 must keep dense Advanced capability scannable and avoid
+  over-crowded module cards.
 - **Known-good / known-weak (2026-07-03 audits):** DSP core verdict = real,
   competent work (BS.1770-4 loudness, RBJ biquads, adaptive notch cascade,
   split-band de-ess with de-ess→breath HF handoff, torch-golden-pinned

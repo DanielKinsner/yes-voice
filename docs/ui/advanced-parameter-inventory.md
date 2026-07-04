@@ -1,11 +1,15 @@
 # YesVox Advanced Parameter Inventory
 
-> Issue: #26. Status: draft contract for the Advanced mock and #18 build.
+> Issue: #26. Status: approved control contract for the #18 Advanced build.
 > Source of truth: current engine code in `crates/yesvox-core/src/modules/`,
 > `chain.rs`, `preset.rs`, `settings.rs`, `quality.rs`, and `session.rs`.
 
 This file is the control contract. The generated PNG is allowed to be a layout
 and style reference, but #18 should use this inventory for labels and bindings.
+Dan approved the draft direction on 2026-07-04 with one implementation caveat:
+some areas feel prone to crowding, so #18 should keep the same structure and
+style while using grouping, disclosure, and spacing to keep dense Advanced
+modules scannable.
 
 ## Legend
 
@@ -244,8 +248,10 @@ limiter.
   controls, and the same typography feel.
 - Full-width spectrogram replaces the Standard waveform. Brush-heal editing is
   not in v1 and should not appear as an active tool.
-- Expanded rack should show the module inventory above. Prefer dense module
-  panels grouped by Restore, Polish, Finish, Monitor, and Export.
+- Expanded rack should show the module inventory above. Prefer scannable module
+  panels grouped by Restore, Polish, Finish, Monitor, and Export; do not squeeze
+  every low-level parameter into the first visible row when a disclosure row,
+  secondary tab, or compact readout would reduce crowding.
 - Include content-mode override and preset/quality controls.
 - Include A/B/C compare using real monitor sources: Original, Processed,
   Difference or Reblend.
