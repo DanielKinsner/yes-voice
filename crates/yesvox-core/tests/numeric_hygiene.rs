@@ -67,6 +67,13 @@ proptest! {
         // The full rack must keep the output finite.
         render_full_chain(&mut buf);
         prop_assert!(all_finite(&buf), "the chain produced a non-finite output");
+
+        // …and export must round-trip it without reintroducing anything hostile.
+        let out = temp("proptest-export");
+        write_wav(&out, &buf).expect("export rendered buffer");
+        let reloaded = read_wav(&out).expect("re-decode exported buffer");
+        prop_assert!(all_finite(&reloaded), "exported audio decoded non-finite");
+        let _ = std::fs::remove_file(&out);
     }
 }
 
