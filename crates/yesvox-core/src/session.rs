@@ -22,7 +22,7 @@ use crate::modules::{BleedVerdict, LoudnessTarget};
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
 use crate::quality::QualityMode;
-use crate::settings::{ContentMode, Settings};
+use crate::settings::{ContentMode, ExportOptions, Settings};
 
 /// Why a session action failed — each renders an actionable message.
 #[derive(Debug)]
@@ -1209,6 +1209,52 @@ impl Session {
         let target = self.export_target().ok_or(SessionError::NotLoaded)?;
         self.export(&target)
     }
+
+    /// Build a detached, `Send` [`PreparedExport`] for the last render + the
+    /// composed target, so the disk write can run off the UI thread (#22).
+    /// Snapshots the output buffer + options now; equivalent to
+    /// [`Session::export_to_target`] but the returned unit borrows nothing.
+    /// Errors if nothing is loaded (no target) or rendered (no output).
+    pub fn prepare_export(&self) -> Result<PreparedExport, SessionError> {
+        let target = self.export_target().ok_or(SessionError::NotLoaded)?;
+        let buffer = self
+            .output
+            .as_ref()
+            .ok_or(SessionError::NotRendered)?
+            .clone();
+        let opts = self
+            .settings
+            .export
+            .to_options(buffer.bits_per_sample(), buffer.encoding());
+        Ok(PreparedExport {
+            target,
+            buffer,
+            opts,
+        })
+    }
+}
+
+/// A self-contained, `Send` export unit: everything needed to write the last
+/// render to disk, detached from the [`Session`] so it can run on a worker
+/// thread (#22). Produced by [`Session::prepare_export`].
+pub struct PreparedExport {
+    target: PathBuf,
+    buffer: AudioBuffer,
+    opts: ExportOptions,
+}
+
+impl PreparedExport {
+    /// The destination path (before the writer's never-overwrite suffixing).
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// Write the snapshotted buffer to disk, returning the path actually written
+    /// (auto-suffixed on collision). Same never-overwrite semantics as
+    /// [`Session::export`].
+    pub fn write(self) -> Result<PathBuf, IoError> {
+        export(&self.target, &self.buffer, self.opts)
+    }
 }
 
 #[cfg(test)]
@@ -1535,6 +1581,42 @@ mod tests {
 
         let _ = std::fs::remove_file(&in_path);
         let _ = std::fs::remove_file(&written);
+    }
+
+    #[test]
+    fn prepare_export_matches_export_to_target_byte_for_byte() {
+        // The off-thread export path (#22): a detached PreparedExport must write
+        // exactly what the synchronous export_to_target would.
+        let in_path = temp("prep-in");
+        degraded_fixture(&in_path);
+        let dir = std::env::temp_dir();
+
+        let mut s = Session::new();
+        s.open(&in_path).expect("open");
+        s.render().expect("render");
+        s.set_output_location(&dir);
+        s.set_output_name(&format!("yesvox-prep-{}", std::process::id()));
+
+        let sync_path = s.export_to_target().expect("export_to_target");
+        // Same composed target → the never-overwrite writer auto-suffixes.
+        let prepared = s.prepare_export().expect("prepare_export");
+        assert_eq!(
+            prepared.target(),
+            sync_path.as_path(),
+            "planned target should match"
+        );
+        let prep_path = prepared.write().expect("prepared write");
+
+        assert_ne!(sync_path, prep_path, "second write must be suffixed");
+        assert_eq!(
+            std::fs::read(&sync_path).unwrap(),
+            std::fs::read(&prep_path).unwrap(),
+            "PreparedExport bytes differ from export_to_target"
+        );
+
+        for p in [in_path, sync_path, prep_path] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 
     #[test]

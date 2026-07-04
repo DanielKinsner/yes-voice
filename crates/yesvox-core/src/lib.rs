@@ -63,7 +63,9 @@ pub use render_queue::{
     BatchControl, BatchFailure, BatchPresetMode, BatchProgress, BatchSummary, JobStatus, QueueItem,
     QueueStateError, RenderQueue,
 };
-pub use session::{IsolationVerdict, OutputFormat, Session, SessionError, VocalIsolationCheck};
+pub use session::{
+    IsolationVerdict, OutputFormat, PreparedExport, Session, SessionError, VocalIsolationCheck,
+};
 pub use settings::{
     ContentMode, ExportOptions, ExportSettings, Settings, SettingsError, SingingSettings,
     DEFAULT_FLAC_COMPRESSION_LEVEL, SCHEMA_VERSION,
