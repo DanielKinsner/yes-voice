@@ -119,7 +119,7 @@ this order (each TDD'd, each its own green commit):
 
 1. **#28–#34 hardening H1–H7** — numerics, panic-safety, decoder fuzz-lite,
    filesystem/atomic export, resource guards, model-load validation,
-   determinism. Interleavable AFK filler. ← **current (#32)**
+   determinism. Interleavable AFK filler. ← **current (#33)**
    - ✅ **#28 H1 numeric hygiene** (done 2026-07-03): decode-time
      `AudioBuffer::sanitize` (NaN/±Inf→0, clamp ±4, counted →
      `AnalysisReport::non_finite_samples`), biquad denormal flush-to-zero,
@@ -140,6 +140,12 @@ this order (each TDD'd, each its own green commit):
      both writers; hazard tests (missing dir, dir-target, injected write
      failure) + real Windows share-mode lock tests (locked in/out →
      friendly error, temp cleaned).
+   - ✅ **#32 H5 resource guards** (done 2026-07-03): ingest caps (zero-length,
+     >192 kHz, >2 h) with friendly rejects; enforcing RAM preflight in render
+     (GlobalMemoryStatusEx budget on Windows, override + allow-over-budget);
+     a counting-allocator test measured the real render peak and CORRECTED
+     `working_set_k` 8→16 (8 under-estimated); docs honesty (whole-buffer
+     model, denoise-only streaming).
 3. **#26 Advanced screen mock (hitl)** → **#18 Advanced build** (decided:
    separate screen, Standard visual language, mock-first approval).
 4. **#20 v1.0 lane** — weights license audit + unsigned Windows installer
