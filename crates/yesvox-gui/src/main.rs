@@ -275,8 +275,6 @@ struct YesVoxApp {
     status: String,
     reblend_amount: f32,
     volume_match: bool,
-    preview_lufs: bool,
-    add_to_library: bool,
     batch_queue: BatchQueueUi,
     isolation_check: Option<VocalIsolationCheck>,
     /// In-flight background jobs (#22). Processing runs off the UI thread; the
@@ -291,6 +289,8 @@ struct YesVoxApp {
     /// no device. Holds the shared transport; switching A/B source preserves the
     /// playhead.
     player: Option<Player>,
+    /// Whether the top-bar preset dropdown is showing (#24).
+    preset_menu_open: bool,
 }
 
 impl YesVoxApp {
@@ -331,8 +331,6 @@ impl YesVoxApp {
             status: "Ready - import a vocal".to_owned(),
             reblend_amount: 0.25,
             volume_match: false,
-            preview_lufs: false,
-            add_to_library: true,
             batch_queue: BatchQueueUi::default(),
             isolation_check: None,
             render_job: None,
@@ -340,6 +338,46 @@ impl YesVoxApp {
             batch_job: None,
             job_progress: 0.0,
             player: None,
+            preset_menu_open: false,
+        }
+    }
+
+    /// Draw the preset dropdown (when open) over everything else, and apply a
+    /// selection. Rendered last in `ui()` so it sits above the panels (#24).
+    fn draw_preset_menu(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, c: CanvasMap) {
+        if !self.preset_menu_open {
+            return;
+        }
+        let presets = Preset::ALL;
+        let row_h = 34.0;
+        let menu = rect(1700.0, 58.0, 205.0, 12.0 + row_h * presets.len() as f32);
+        paint_panel(painter, c, menu, 8, alpha(PANEL_2, 250), BORDER);
+        let current = self.session.preset();
+        let mut pick = None;
+        for (i, preset) in presets.iter().enumerate() {
+            let row = rect(
+                menu.left() + 8.0,
+                menu.top() + 6.0 + row_h * i as f32,
+                menu.width() - 16.0,
+                row_h - 4.0,
+            );
+            if self.segment_button(
+                ui,
+                painter,
+                c,
+                row,
+                preset.name,
+                *preset == current,
+                ("preset_pick", preset.name),
+            ) {
+                pick = Some(*preset);
+            }
+        }
+        if let Some(preset) = pick {
+            self.session.select_preset(preset);
+            self.stop_playback(); // preset changes the render
+            self.preset_menu_open = false;
+            self.status = format!("Preset - {}", preset.name);
         }
     }
 
@@ -667,9 +705,13 @@ impl YesVoxApp {
     }
 
     fn bit_depth_label(&self) -> String {
+        // Show the export override when set, else the source's depth.
         self.session
-            .input()
-            .map(|b| format!("{}-bit", b.bits_per_sample()))
+            .settings()
+            .export
+            .bit_depth_override
+            .or_else(|| self.session.input().map(|b| b.bits_per_sample()))
+            .map(|b| format!("{b}-bit"))
             .unwrap_or_else(|| "--bit".to_owned())
     }
 
@@ -727,6 +769,7 @@ impl eframe::App for YesVoxApp {
         self.draw_center(ui, &painter, canvas, layout);
         self.draw_right_sidebar(ui, &painter, canvas, layout);
         self.draw_status_bar(&painter, canvas, layout);
+        self.draw_preset_menu(ui, &painter, canvas); // overlay, drawn last
     }
 }
 
@@ -790,24 +833,18 @@ impl YesVoxApp {
             };
             self.refresh_playback_source(); // instant A/B at the shared playhead
         }
-        self.outline_button(
-            ui,
-            painter,
-            c,
-            rect(1564.0, 14.0, 95.0, 40.0),
-            "Presets v",
-            "top_presets",
-        );
-        self.icon_button(ui, painter, c, rect(1673.0, 14.0, 38.0, 40.0), "Gear", true);
-        self.icon_button(ui, painter, c, rect(1724.0, 14.0, 38.0, 40.0), "Help", true);
-        self.outline_button(
+        // Preset picker (#24): the top-bar dropdown is the only way to change
+        // preset. Gear/Help/"Back to Suite" were PNG-only dead chrome — removed.
+        if self.outline_button(
             ui,
             painter,
             c,
             rect(1775.0, 14.0, 130.0, 40.0),
-            "< Back to Suite",
-            "top_back",
-        );
+            "Presets v",
+            "top_presets",
+        ) {
+            self.preset_menu_open = !self.preset_menu_open;
+        }
     }
 
     fn draw_left_sidebar(
@@ -1202,19 +1239,8 @@ impl YesVoxApp {
                     "Strong",
                     TEXT_MUTED,
                 );
-                self.outline_button(
-                    ui,
-                    painter,
-                    c,
-                    rect(
-                        macro_rect.left() + 2.0,
-                        macro_rect.bottom() - 2.0,
-                        120.0,
-                        34.0,
-                    ),
-                    "Auto Polish",
-                    "auto_polish",
-                );
+                // "Auto Polish" removed (#24): it overlapped Smart Assist and
+                // was never wired.
             }
         }
     }
@@ -1258,14 +1284,9 @@ impl YesVoxApp {
         self.micro_text(painter, c, r.left() + 12.0, r.top() + 68.0, a, TEXT_MUTED);
         self.micro_text(painter, c, r.left() + 12.0, r.top() + 95.0, b, TEXT_MUTED);
         if card == CardId::Loudness {
-            self.outline_button(
-                ui,
-                painter,
-                c,
-                rect(r.left() + 12.0, r.bottom() - 38.0, 112.0, 28.0),
-                "Target",
-                ("card_target", card.label()),
-            );
+            // The loudness *target* is selected in the OUTPUT panel; the card's
+            // duplicate "Target" button was removed (#24). The knob shows the
+            // current target.
             self.loudness_knob(painter, c, egui::pos2(r.right() - 38.0, r.bottom() - 50.0));
         } else {
             let current = self.session.card_amount(card);
@@ -1281,16 +1302,8 @@ impl YesVoxApp {
                 self.session.set_card_amount(card, next);
             }
         }
-        if card != CardId::Loudness {
-            self.outline_button(
-                ui,
-                painter,
-                c,
-                rect(r.left() + 12.0, r.bottom() - 38.0, 112.0, 28.0),
-                "Advanced",
-                ("card_advanced", card.label()),
-            );
-        }
+        // Per-card "Advanced" buttons removed (#24): the Advanced screen is a
+        // separate, deferred surface (#26 → #18); no dead links to it in v1.
     }
 
     fn draw_right_sidebar(
@@ -1335,15 +1348,7 @@ impl YesVoxApp {
             "Preserves character and natural ambience.",
             TEXT_MUTED,
         );
-        self.outline_button(
-            ui,
-            painter,
-            c,
-            rect(1608.0, 304.0, 264.0, 40.0),
-            "Save as New Preset",
-            "save_preset",
-        );
-
+        // "Save as New Preset" removed (#24): no user-preset store exists.
         let out = rect(1588.0, 372.0, 304.0, 294.0);
         paint_panel(painter, c, out, 8, alpha(PANEL_2, 230), BORDER_DIM);
         self.section_label(painter, c, 1608.0, 404.0, "OUTPUT");
@@ -1432,24 +1437,8 @@ impl YesVoxApp {
         let location = truncate_middle(&location, 30);
         self.body_text(painter, c, 1622.0, 858.0, &location, TEXT);
         self.folder_icon(painter, c, egui::pos2(1850.0, 856.0));
-        if self.checkbox(
-            ui,
-            painter,
-            c,
-            rect(1608.0, 878.0, 18.0, 18.0),
-            self.add_to_library,
-            "suite_library",
-        ) {
-            self.add_to_library = !self.add_to_library;
-        }
-        self.small_text(
-            painter,
-            c,
-            1640.0,
-            888.0,
-            "Add to Yes Suite Library",
-            TEXT_MUTED,
-        );
+        // "Add to Yes Suite Library" removed (#24): the suite handoff is a
+        // designed-for seam, not a built-in v1 feature.
 
         paint_panel(
             painter,
@@ -1985,17 +1974,7 @@ impl YesVoxApp {
             self.refresh_playback_source();
         }
         self.body_text(painter, c, 1165.0, 390.0, "Volume Match", TEXT_MUTED);
-        if self.checkbox(
-            ui,
-            painter,
-            c,
-            rect(1285.0, 374.0, 18.0, 18.0),
-            self.preview_lufs,
-            "preview_lufs",
-        ) {
-            self.preview_lufs = !self.preview_lufs;
-        }
-        self.body_text(painter, c, 1314.0, 390.0, "Preview LUFS", TEXT_MUTED);
+        // "Preview LUFS" checkbox removed (#24): it was never wired.
     }
 
     fn draw_waveform(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
@@ -2627,13 +2606,35 @@ impl YesVoxApp {
     ) {
         self.small_text(painter, c, x, y + 20.0, label, TEXT_MUTED);
         let field = rect(x + 124.0, y, 172.0, 40.0);
-        if self.outline_button(ui, painter, c, field, value, id) && label == "Format" {
-            let next = if self.session.output_format() == OutputFormat::Wav {
-                OutputFormat::Flac
-            } else {
-                OutputFormat::Wav
-            };
-            self.session.set_output_format(next);
+        if self.outline_button(ui, painter, c, field, value, id) {
+            match label {
+                "Format" => {
+                    let next = if self.session.output_format() == OutputFormat::Wav {
+                        OutputFormat::Flac
+                    } else {
+                        OutputFormat::Wav
+                    };
+                    self.session.set_output_format(next);
+                }
+                "Bit Depth" => {
+                    let current = self
+                        .session
+                        .settings()
+                        .export
+                        .bit_depth_override
+                        .or_else(|| self.session.input().map(|b| b.bits_per_sample()))
+                        .unwrap_or(24);
+                    self.session
+                        .set_bit_depth(Some(if current >= 24 { 16 } else { 24 }));
+                }
+                "Loudness Target" => {
+                    let next = cycle_loudness(self.session.loudness_target());
+                    self.session.set_loudness_target(next);
+                    self.stop_playback(); // target change invalidates the render
+                }
+                // Sample Rate is a read-only chip (locked to the input — decided).
+                _ => {}
+            }
         }
         painter.text(
             c.pos(field.right() - 22.0, field.center().y),
@@ -3286,6 +3287,18 @@ fn loudness_label(t: LoudnessTarget) -> String {
         LoudnessTarget::MatchInput => "Match input".to_owned(),
         LoudnessTarget::PeakNormalize => "Peak norm".to_owned(),
         LoudnessTarget::Custom(v) => format!("{v:.1} LUFS"),
+    }
+}
+
+/// Cycle the loudness target through the product.md §7 list, including one
+/// `Custom` value (#24). A dedicated numeric editor for Custom is a later polish.
+fn cycle_loudness(t: LoudnessTarget) -> LoudnessTarget {
+    match t {
+        LoudnessTarget::Podcast => LoudnessTarget::Streaming,
+        LoudnessTarget::Streaming => LoudnessTarget::MatchInput,
+        LoudnessTarget::MatchInput => LoudnessTarget::PeakNormalize,
+        LoudnessTarget::PeakNormalize => LoudnessTarget::Custom(-18.0),
+        LoudnessTarget::Custom(_) => LoudnessTarget::Podcast,
     }
 }
 
