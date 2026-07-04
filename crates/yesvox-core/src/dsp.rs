@@ -2,8 +2,14 @@
 //!
 //! These are the building blocks the repair rack is assembled from — biquad
 //! filters (RBJ cookbook designs) and a Goertzel single-bin power detector.
-//! Everything here is alloc-free in its hot path so it stays preview-safe
-//! (plan §1.1) even though v1 only renders offline.
+//! The *primitives in this module* are alloc-free in their hot path. That is
+//! **not** a claim about the render as a whole (#32): v1's memory model is
+//! **whole-buffer** — every stage processes the entire f32 buffer and several
+//! make full-length copies, so peak memory scales with file length. Only the
+//! denoiser streams in overlapping chunks; a truly alloc-free, whole-chain
+//! streaming preview is post-v1. The enforcing RAM preflight
+//! ([`crate::denoise::ChunkPolicy::preflight`]) bounds that whole-buffer peak
+//! in the meantime.
 
 use std::f32::consts::PI;
 

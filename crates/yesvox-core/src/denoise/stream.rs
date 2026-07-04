@@ -5,8 +5,11 @@
 //! recombined with a raised-cosine **equal-gain** crossfade. Equal-gain (the two
 //! weights sum to 1) is what lets the chunked result match a single-shot
 //! reference within tolerance, since neighbouring chunks agree across the
-//! overlap. A RAM preflight estimates peak memory and warns before a file would
-//! blow the budget.
+//! overlap. **Streaming is denoise-only** — every other rack stage is
+//! whole-buffer (see `dsp.rs`). The RAM preflight estimates the whole-buffer
+//! peak from a measured working-set multiplier and — as of #32 — the render
+//! *refuses* (not just warns) when the estimate exceeds the budget, unless the
+//! user overrides.
 
 use super::engine::Denoiser;
 use super::pool::WorkerPool;
