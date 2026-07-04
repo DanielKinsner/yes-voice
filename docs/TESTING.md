@@ -13,7 +13,11 @@ Runs, in order, failing fast:
 1. `cargo fmt --check` — formatting is enforced, not advisory.
 2. `cargo clippy --all-targets -- -D warnings` — warnings are errors on our code.
 3. `cargo test` — unit + integration + the guarantee tests.
-4. `cargo deny check` — code-license + advisory (`cargo-audit`) hygiene.
+4. `cargo deny check` — code-license + advisory hygiene. `cargo-deny`'s
+   `[advisories]` section is our advisory scanner (we do **not** run
+   `cargo-audit` separately); it is a **required** step — if `cargo-deny` isn't
+   installed, `cargo xtask gate` fails with an install hint rather than skipping
+   the check.
 
 CI (`.github/workflows/ci.yml`) runs the **identical** command on Windows + macOS + Linux on every push and PR. A slice is "done" only when the gate is green. Fix red before stopping.
 
@@ -25,20 +29,36 @@ These convert the product's promises into contracts and run on every push. They 
 |---|---|---|
 | **NULL** | engine with all modules bypassed reproduces the input within float epsilon | `tests/guarantee_null.rs` |
 | **OFFLINE** | zero network syscalls between decode and export | `tests/guarantee_offline.rs` |
-| **NON-DESTRUCTIVE** | input file's bytes (SHA-256) are identical before/after a full session | `tests/guarantee_nondestructive.rs` |
+| **NON-DESTRUCTIVE** | input file's bytes are byte-for-byte identical before/after a full session (exact compare, not a hash) | `tests/guarantee_nondestructive.rs` |
 | **SAME-LENGTH** | output sample count == input sample count per channel (non-resampling path) | `tests/guarantee_same_length.rs` |
 
-As modules land, each adds its own mechanical gate (per-module null, no-double-repair, loudness within ±0.3 LU, metadata round-trip, fp16 numerics, …). See the plan's acceptance-criteria matrix.
+The OFFLINE guarantee is enforced two ways: the runtime pipeline test plus a
+**source-level scan** (`tests/guarantee_offline.rs`) that fails if any networking
+symbol appears in `yesvox-core/src`. The batch path has its own guarantee
+coverage (`tests/guarantee_batch.rs`), and NULL/SAME-LENGTH also run around a
+mock (non-`SpectralDenoiser`) engine (`tests/guarantee_neural_plumbing.rs`).
+
+As modules land, each adds its own mechanical gate (per-module null, no-double-repair, loudness within ±0.5 LU of target, metadata round-trip, fp16 numerics, …). See the plan's acceptance-criteria matrix.
 
 ## Goldens — bless deliberately, never silently
 
-DSP byte-identity buffers and analysis-report goldens regenerate **only** via:
+Golden reference numbers (the torch/clearvoice parity values for the always-on
+host DSP) live in `crates/yesvox-core/tests/goldens/<name>.golden` — one
+`label = value` per line — **not** as source literals. The test-only harness
+`yesvox_core::golden` computes the values and compares them against the file
+within per-value tolerances kept in the test. Regeneration happens **only** via:
 
 ```
 YESVOX_BLESS=1 cargo test <golden_test>      # or: cargo xtask bless
 ```
 
-An autonomous build loop must **never** make a red golden green by re-blessing it — that hides a real DSP change. Re-bless only when a tuning change is intentional, and commit the golden diff as its own `chore(golden):` commit.
+`check()` overwrites a `.golden` file only when `YESVOX_BLESS=1` is set; the
+canonical gate (`cargo xtask gate` / CI `cargo test`) never sets it, so an
+autonomous build loop **cannot** make a red golden green by re-blessing it —
+that hides a real DSP change. Blessing is idempotent on unchanged deterministic
+code (re-blessing produces byte-identical files). Re-bless only when a tuning
+change is intentional, and commit the golden diff as its own `chore(golden):`
+commit.
 
 ## Lanes (grow as the engine grows)
 

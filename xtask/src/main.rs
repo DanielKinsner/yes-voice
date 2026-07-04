@@ -1,8 +1,10 @@
 //! Project automation. `cargo xtask gate` runs the full local gate, identical
 //! to CI (docs/TESTING.md): fmt --check -> clippy -D warnings -> test -> deny.
 //!
-//! `cargo deny` is optional locally — if it isn't installed the step is skipped
-//! with a warning, because CI installs and enforces it.
+//! Every step is **required**. `cargo deny` is an external tool; if it is not
+//! installed the gate fails with an install hint rather than silently skipping
+//! the license/advisory check (a silent skip let supply-chain drift slip past
+//! the local gate — #27, finding 8).
 
 use std::process::{Command, ExitCode};
 
@@ -47,18 +49,19 @@ fn bless() -> ExitCode {
     }
 }
 
-/// One step of the gate: the command, its args, and whether it is required
-/// (skipped-with-warning when the tool is absent if not required).
+/// One step of the gate: the command, its args, and whether it is an external
+/// cargo subcommand (an installed tool, not a rustup component). External tools
+/// get an availability preflight so a missing install fails loudly with a hint.
 struct Step {
     args: &'static [&'static str],
-    required: bool,
+    external: bool,
 }
 
 fn gate() -> ExitCode {
     let steps = [
         Step {
             args: &["fmt", "--all", "--check"],
-            required: true,
+            external: false,
         },
         Step {
             args: &[
@@ -69,26 +72,29 @@ fn gate() -> ExitCode {
                 "-D",
                 "warnings",
             ],
-            required: true,
+            external: false,
         },
         Step {
             args: &["test", "--all"],
-            required: true,
+            external: false,
         },
         Step {
             args: &["deny", "check"],
-            required: false,
+            external: true,
         },
     ];
 
     for step in &steps {
         let pretty = format!("cargo {}", step.args.join(" "));
-        if !step.required && !subcommand_available(step.args[0]) {
+        // Every step is required. An external tool that isn't installed fails the
+        // gate with a hint — never a silent skip (#27, finding 8).
+        if step.external && !subcommand_available(step.args[0]) {
             eprintln!(
-                "warning: skipping `{pretty}` (cargo-{} not installed; CI enforces it)",
-                step.args[0]
+                "gate: `{pretty}` cannot run — cargo-{tool} is required but not installed.\n\
+                 Install it with `cargo install cargo-{tool}` (CI enforces this license/advisory gate).",
+                tool = step.args[0]
             );
-            continue;
+            return ExitCode::FAILURE;
         }
         eprintln!("\n=== {pretty} ===");
         match Command::new("cargo").args(step.args).status() {
@@ -108,7 +114,8 @@ fn gate() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Whether `cargo <sub> --version` runs, used to detect optional subcommands.
+/// Whether `cargo <sub> --version` runs, used to detect an installed external
+/// cargo subcommand.
 fn subcommand_available(sub: &str) -> bool {
     Command::new("cargo")
         .args([sub, "--version"])
