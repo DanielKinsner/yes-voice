@@ -277,12 +277,17 @@ mod tests {
 
     #[test]
     fn poll_drains_events_and_marks_finished() {
+        use std::time::{Duration, Instant};
         let mut handle = spawn(|ctx| {
             ctx.progress(1.0);
             Ok(7u8)
         });
+        // Sleep-poll (not yield_now): under the full parallel test suite the
+        // worker thread can be starved, and yield_now is only a hint — sleeping
+        // reliably lets it run. Generous deadline so this can never flake.
         let mut done = None;
-        for _ in 0..10_000 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
             for ev in handle.poll() {
                 if let JobEvent::Done(v) = ev {
                     done = Some(v);
@@ -291,7 +296,7 @@ mod tests {
             if handle.is_finished() {
                 break;
             }
-            std::thread::yield_now();
+            std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(done, Some(7));
         assert!(handle.is_finished());
