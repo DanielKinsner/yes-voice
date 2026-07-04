@@ -8,6 +8,11 @@ publish = false
 name = "yesvox-gui"
 path = "src/main.rs"
 
+[features]
+# The v1.0 package builds with the neural HQ engine (#20):
+# `cargo build --release --features neural`.
+neural = ["yesvox-core/neural"]
+
 [dependencies]
 cpal = "0.16"
 eframe = "0.35.0"

@@ -8,6 +8,11 @@ publish = false
 name = "yesvox"
 path = "src/main.rs"
 
+[features]
+# The v1.0 package builds with the neural HQ engine (#20):
+# `cargo build --release --features neural`.
+neural = ["yesvox-core/neural"]
+
 [dependencies]
 yesvox-core = { path = "../yesvox-core" }
 
