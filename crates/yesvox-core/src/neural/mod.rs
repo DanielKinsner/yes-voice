@@ -25,7 +25,10 @@ pub mod stft;
 pub use chunk::WindowedMask;
 pub use engine::{MaskModel, MossformerEngine};
 pub use fbank::MossformerFbank;
-pub use integrity::{bundled_model_in, default_model_path, sha256_hex, verify_model_integrity};
+pub use integrity::{
+    bundled_model_in, configure_bundled_ort_runtime, default_model_path, sha256_hex,
+    verify_model_integrity,
+};
 #[cfg(feature = "neural")]
 pub use ort_model::OrtMaskModel;
 pub use resample::{from_48k, to_48k, Resampler};

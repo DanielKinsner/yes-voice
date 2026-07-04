@@ -17,6 +17,9 @@ use yesvox_core::{
 };
 
 fn main() -> ExitCode {
+    // Installed layout (#20): point ort at the bundled onnxruntime before any
+    // neural load — the load-dynamic probe hangs without a path (#33).
+    yesvox_core::neural::configure_bundled_ort_runtime();
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
         let exe = args.first().map(String::as_str).unwrap_or("yesvox");

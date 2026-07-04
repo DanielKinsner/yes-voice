@@ -56,6 +56,9 @@ const VIOLET: egui::Color32 = egui::Color32::from_rgb(103, 67, 238);
 const AMBER: egui::Color32 = egui::Color32::from_rgb(241, 211, 91);
 
 fn main() -> eframe::Result {
+    // Installed layout (#20): point ort at the bundled onnxruntime before any
+    // neural load — the load-dynamic probe hangs without a path (#33).
+    yesvox_core::neural::configure_bundled_ort_runtime();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(DEFAULT_VIEWPORT_SIZE)

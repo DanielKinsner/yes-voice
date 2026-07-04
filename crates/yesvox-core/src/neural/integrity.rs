@@ -49,6 +49,43 @@ fn find_manifest_model(dir: &Path, manifest: &[(&str, &str)]) -> Option<PathBuf>
         .find(|path| path.is_file())
 }
 
+/// The platform's ONNX Runtime dynamic-library file name.
+fn ort_dylib_name() -> &'static str {
+    if cfg!(windows) {
+        "onnxruntime.dll"
+    } else if cfg!(target_os = "macos") {
+        "libonnxruntime.dylib"
+    } else {
+        "libonnxruntime.so"
+    }
+}
+
+/// The bundled ONNX Runtime dylib inside `dir`, if present.
+fn bundled_ort_dylib_in(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join(ort_dylib_name());
+    path.is_file().then_some(path)
+}
+
+/// Point `ort`'s load-dynamic probe at the runtime the installer staged next
+/// to the executable (#20) when the user has not set `ORT_DYLIB_PATH`. Must
+/// run at process start, before the first neural model load — without a path
+/// the probe hangs (#33). A no-op when the override is set or nothing is
+/// bundled (the dev/light-engine case).
+pub fn configure_bundled_ort_runtime() {
+    if std::env::var_os("ORT_DYLIB_PATH").is_some() {
+        return;
+    }
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    else {
+        return;
+    };
+    if let Some(dylib) = bundled_ort_dylib_in(&dir) {
+        std::env::set_var("ORT_DYLIB_PATH", dylib);
+    }
+}
+
 /// Verify `path` against the shipped-weight manifest. `Ok(())` when the file
 /// matches its pinned hash *or* is not a shipped weight (user-provided). `Err`
 /// with a user-presentable message on a hash mismatch or read failure.
@@ -232,6 +269,22 @@ mod tests {
             find_manifest_model(&dir, manifest),
             Some(dir.join("shipped.onnx"))
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundled_ort_dylib_discovery_matches_only_the_platform_name() {
+        let dir = std::env::temp_dir().join(format!("yesvox-ort-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp runtime dir");
+
+        assert_eq!(bundled_ort_dylib_in(&dir), None);
+        std::fs::write(dir.join("unrelated.dll"), b"nope").expect("write unrelated");
+        assert_eq!(bundled_ort_dylib_in(&dir), None);
+
+        let expected = dir.join(ort_dylib_name());
+        std::fs::write(&expected, b"runtime").expect("write runtime");
+        assert_eq!(bundled_ort_dylib_in(&dir), Some(expected));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
