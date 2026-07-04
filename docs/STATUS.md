@@ -1,18 +1,24 @@
 # YesVox — build status & pick-up guide
 
-> Resume-from-anywhere snapshot. Last updated **2026-07-04**. For product intent
+> Resume-from-anywhere snapshot. Last updated **2026-07-04** (post-#36, #20
+> installer built + locally smoked, #21 lanes). For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
 > for the GUI target see [`ui/yesvox-v1-ui-reference.md`](ui/yesvox-v1-ui-reference.md).
 
 ## Where we are
 
-**#20 — v1.0 packaging lane is next.** The engine (`yesvox-core` rack) already
+**The v1.0 unsigned Windows installer exists and passed a local
+install → neural render → uninstall smoke (2026-07-04).** What remains on #20
+is the clean-Windows-VM smoke (Dan); on #21, Dan's real-stem corpus and the
+suite round-trip on a clean machine. The engine (`yesvox-core` rack) already
 existed; #17 built the agent-callable, mechanically-tested `Session` surface the
 UI needs, then a custom-painted **egui shell** over it. #26 supplied the
-approved Advanced reference, #35 closed the deferred playback/worker polish, and
-#18 built the Advanced screen, CPU spectrogram fallback, A/B/C compare, and
-signed parameter coverage checklist.
+approved Advanced reference, #35 closed the deferred playback/worker polish,
+#18 built the Advanced screen (CPU spectrogram fallback, A/B/C compare, signed
+parameter coverage), and #36 closed the adversarial-review findings on it
+(mid-render settings lock, view-independent render cancel + Esc, audible-cache
+trim, preview-rate badge).
 
 - **Workspace:** `yesvox-core` (lib), `yesvox-app` (headless CLI, bin `yesvox`),
   **`yesvox-gui`** (the egui app, bin `yesvox-gui`, **new**), `xtask`.
@@ -199,30 +205,32 @@ long-file memory-budget validation.
    `docs/ui/advanced-parameter-inventory.md` and
    `docs/ui/yesvox-v1-advanced-reference.png`, with the final coverage/sign-off
    recorded in `docs/advanced-param-coverage.md`.
-5. **#20 v1.0 lane:** weights license audit (redistribution rights for every
-   bundled weight, recorded in docs) → unsigned Windows installer (Inno/NSIS,
-   bundled weights + ORT, ≤2 GB, clean-VM smoke test). **Started 2026-07-04:**
-   `docs/model-weights-license-audit.md`, `licenses/model-weights.tsv`, and
-   per-model `WEIGHTS_LICENSE.md` records now approve DFN3 + MossFormer2 as
-   source-license candidates and add a mechanical cargo-test audit. The Windows
-   package recipe (`packaging/windows/yesvox.iss`) now requires staged runtime
-   files + model payloads, installs notices/license records, and is guarded by
-   `xtask/tests/windows_package_contract.rs`; `cargo xtask package-audit` is
-   skip-safe until `YESVOX_MODEL_BUNDLE_DIR` is staged, then verifies staged
-   model hashes against `bundled` manifest rows and the v1.0 2 GiB ceiling.
-   Remaining blocker: exact shipped artifacts/hashes, final upstream
-   license/NOTICE text for those payloads, integrity manifest entries, and
-   clean-Windows-VM smoke.
-6. **#21 eval lanes:** CI-safe perf ceiling + local Criterion; `cargo xtask
-   eval` real-stem no-regression harness (corpus dir via env var, never
-   committed; Dan supplies stems); optional non-blocking listen. **Started
-   2026-07-04:** `tests/perf_budget.rs` adds the fixed synthetic 3-minute
-   full-chain render tripwire, `benches/render_bench.rs` adds local Criterion
-   benches for per-module and 30 s full-chain precision tracking, and
-   `cargo xtask eval` now runs the skip-safe local real-stem harness when
-   `YESVOX_EVAL_CORPUS` points at Dan's uncommitted corpus. Remaining lanes are
-   Dan's local corpus, clean-machine suite round-trip, and optional listening
-   checklist.
+5. **#20 v1.0 lane — installer built + locally smoked (2026-07-04).** The
+   MossFormer2 payload is pinned end-to-end: the golden-validated fp32 ONNX
+   export is the `bundled` row in `licenses/model-weights.tsv` (shipped
+   SHA-256 recorded), mirrored into the load-time integrity manifest
+   (cross-checked by `xtask/tests/weights_license_audit.rs`), with the full
+   Apache-2.0 text in `THIRD-PARTY-NOTICES.txt`. Both binaries gained a
+   `neural` passthrough feature; the app now **discovers** the bundled model
+   (`{app}\models`, manifest names only) and the bundled ONNX Runtime dylib
+   next to the exe (no env vars needed; `YESVOX_MODEL_PATH`/`ORT_DYLIB_PATH`
+   still override). The recipe compiles from the repo root (`SourceDir` fix)
+   → `target/package/yesvox-v1-unsigned.exe` (~215 MB), and a local silent
+   install → installed CLI renders with `denoiser Neural` → silent uninstall
+   all passed. See `packaging/windows/README.md` for the verified steps +
+   SmartScreen notes. **Remaining:** clean-Windows-VM smoke (Dan). DFN3 is
+   explicitly not in the v1.0 bundle (unwired).
+6. **#21 eval lanes:** perf tripwire (`tests/perf_budget.rs`), local Criterion
+   benches, and the skip-safe `cargo xtask eval` real-stem harness are in.
+   **Lane 3 (2026-07-04):** `tests/eval_lane3.rs` pins silence/hard-clipping
+   refusal as clean typed errors, a recoverably-clipped full-chain render
+   inside the −1 dBTP ceiling, and the YesStems→YesVox→yes-master round-trip
+   (SR/bit-depth/channels/length/metadata). Measured on this reference
+   machine (release, 30 s clip, full CLI): neural 11.8 s, light 0.9 s — well
+   under the 60 s drop-to-export budget. Optional non-blocking listen doc:
+   `docs/listening-checklist.md`. **Remaining:** Dan's corpus for
+   `YESVOX_EVAL_CORPUS`, and the clean-machine round-trip once the VM smoke
+   happens.
 
 ## Decisions on record
 
