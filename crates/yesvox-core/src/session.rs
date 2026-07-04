@@ -18,7 +18,7 @@ use crate::card::CardId;
 use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
-use crate::modules::{BleedVerdict, DeClip, DeHum, DePop, LoudnessTarget};
+use crate::modules::{BleedVerdict, DeClip, DeHum, DePop, DeReverb, LoudnessTarget};
 use crate::playback::PlaybackSource;
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
@@ -554,6 +554,36 @@ impl DeHumAdvanced {
     }
 }
 
+/// Advanced-only De-reverb controls. Defaults track the content mode so singing
+/// keeps its sustain-preserving character when De-reverb is explicitly enabled.
+#[derive(Clone, Copy)]
+struct DeReverbAdvanced {
+    strength: f32,
+    tail_preservation: f32,
+}
+
+impl DeReverbAdvanced {
+    fn for_content(mode: ContentMode) -> Self {
+        let module = match mode {
+            ContentMode::Voiceover => DeReverb::voiceover(),
+            ContentMode::Singing => DeReverb::singing(),
+        };
+        let (strength, tail_preservation) = module.settings();
+        DeReverbAdvanced {
+            strength,
+            tail_preservation,
+        }
+    }
+
+    fn set(&mut self, strength: f32, tail_preservation: f32) {
+        let mut module = DeReverb::new(strength, tail_preservation);
+        module.set_settings(strength, tail_preservation);
+        let (strength, tail_preservation) = module.settings();
+        self.strength = strength;
+        self.tail_preservation = tail_preservation;
+    }
+}
+
 fn machine_max_worker_count() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get().max(1))
@@ -579,6 +609,7 @@ pub struct Session {
     declip: DeClipAdvanced,
     depop: DePopAdvanced,
     dehum: DeHumAdvanced,
+    dereverb: DeReverbAdvanced,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -626,6 +657,7 @@ pub struct SessionSnapshot {
     declip: DeClipAdvanced,
     depop: DePopAdvanced,
     dehum: DeHumAdvanced,
+    dereverb: DeReverbAdvanced,
     workers: usize,
     flow: f32,
     polish: f32,
@@ -646,6 +678,7 @@ impl Session {
         let settings = Settings::default();
         let preset = Preset::default_for(settings.content_mode);
         let workers = default_worker_count();
+        let content_mode = settings.content_mode;
         Session {
             settings,
             preset,
@@ -660,6 +693,7 @@ impl Session {
             declip: DeClipAdvanced::default(),
             depop: DePopAdvanced::default(),
             dehum: DeHumAdvanced::default(),
+            dereverb: DeReverbAdvanced::for_content(content_mode),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -708,8 +742,10 @@ impl Session {
     /// to apply one configuration across many files).
     pub fn with_config(settings: Settings, preset: Preset) -> Self {
         let mut s = Session::new();
+        let content_mode = settings.content_mode;
         s.settings = settings;
         s.preset = preset;
+        s.dereverb = DeReverbAdvanced::for_content(content_mode);
         s
     }
 
@@ -809,6 +845,23 @@ impl Session {
     /// no De-hum render has produced a readout yet.
     pub fn dehum_tracked_frequency(&self) -> f32 {
         self.dehum_tracked_hz
+    }
+
+    /// Advanced De-reverb strength and tail-preservation tier.
+    pub fn dereverb_settings(&self) -> (f32, f32) {
+        (self.dereverb.strength, self.dereverb.tail_preservation)
+    }
+
+    /// Set Advanced De-reverb controls. Strength clamps to the v1 restoration
+    /// range; tail preservation clamps to `[0, 1]`.
+    pub fn set_dereverb_settings(&mut self, strength: f32, tail_preservation: f32) {
+        self.dereverb.set(strength, tail_preservation);
+        self.output = None;
+    }
+
+    /// Analyzer-measured RT60 in seconds for the De-reverb auto-soften readout.
+    pub fn dereverb_rt60(&self) -> f32 {
+        self.report.map(|r| r.reverb_time_s).unwrap_or(0.0)
     }
 
     /// Set a visible Standard card's amount. Finish sub-controls that share
@@ -1163,6 +1216,7 @@ impl Session {
         self.cards = [Card::default(); STAGE_COUNT];
         self.finish_cards = FinishCards::default();
         self.transient_cards = TransientCards::default();
+        self.dereverb = DeReverbAdvanced::for_content(self.settings.content_mode);
         self.loudness_override = None;
     }
 
@@ -1535,6 +1589,7 @@ impl Session {
             declip: self.declip,
             depop: self.depop,
             dehum: self.dehum,
+            dereverb: self.dereverb,
             workers: self.workers,
             flow: self.flow,
             polish: self.polish,
@@ -1556,6 +1611,7 @@ impl Session {
         self.declip = snapshot.declip;
         self.depop = snapshot.depop;
         self.dehum = snapshot.dehum;
+        self.dereverb = snapshot.dereverb;
         self.workers = snapshot.workers.clamp(1, Self::max_worker_count());
         self.flow = snapshot.flow;
         self.polish = snapshot.polish;
@@ -1644,6 +1700,11 @@ impl Session {
         let (dehum_nominal, dehum_harmonics, dehum_q, dehum_track) = self.dehum_settings();
         built.chain.dehum =
             DeHum::with_settings(dehum_nominal, dehum_harmonics, dehum_q, dehum_track);
+        let dereverb_enabled = built.chain.dereverb.enabled();
+        let (dereverb_strength, dereverb_tail_preservation) = self.dereverb_settings();
+        built.chain.dereverb = DeReverb::new(dereverb_strength, dereverb_tail_preservation);
+        built.chain.dereverb.set_enabled(dereverb_enabled);
+        built.chain.dereverb.set_rt60(report.reverb_time_s);
 
         // Apply the per-card overrides (the UI rack) over the preset's defaults,
         // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
@@ -1871,8 +1932,29 @@ mod tests {
         buf
     }
 
+    fn reverberant_fixture(path: &Path) -> AudioBuffer {
+        let n = 48_000;
+        let burst = 12_000usize;
+        let mut x = vec![0.0f32; n];
+        for (i, sample) in x.iter_mut().enumerate().take(burst) {
+            *sample = 0.5 * (2.0 * PI * 300.0 * i as f32 / SR as f32).sin();
+        }
+        let delay = 1200usize;
+        let decay = 0.6;
+        for i in delay..n {
+            x[i] += decay * x[i - delay];
+        }
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
     fn max_abs(samples: &[f32]) -> f32 {
         samples.iter().map(|s| s.abs()).fold(0.0, f32::max)
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        (samples.iter().map(|v| v * v).sum::<f32>() / samples.len().max(1) as f32).sqrt()
     }
 
     /// A clean, quiet 220 Hz tone — integrated loudness well below −16 LUFS, so a
@@ -3495,6 +3577,64 @@ mod tests {
         assert!(
             (s.dehum_tracked_frequency() - 60.0).abs() < 0.5,
             "tracked frequency should surface the rendered De-hum estimate"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn advanced_dereverb_settings_clamp_restore_and_follow_content_defaults() {
+        let mut s = Session::new();
+        assert_eq!(s.dereverb_settings(), (1.2, 0.1));
+
+        s.set_content_mode(ContentMode::Singing);
+        assert_eq!(s.dereverb_settings(), (0.8, 0.85));
+
+        s.set_dereverb_settings(1.6, 0.35);
+        let snapshot = s.snapshot();
+        assert_eq!(s.dereverb_settings(), (1.6, 0.35));
+
+        s.set_dereverb_settings(-1.0, 2.0);
+        assert_eq!(s.dereverb_settings(), (0.0, 1.0));
+
+        s.restore_snapshot(&snapshot);
+        assert_eq!(s.dereverb_settings(), (1.6, 0.35));
+
+        s.select_preset(Preset::NARRATION);
+        assert_eq!(s.dereverb_settings(), (1.2, 0.1));
+        s.select_preset(Preset::LEAD_VOCAL);
+        assert_eq!(s.dereverb_settings(), (0.8, 0.85));
+    }
+
+    #[test]
+    fn advanced_dereverb_settings_reach_rendered_tail_and_rt60_readout() {
+        let path = temp("advanced-dereverb-render");
+        reverberant_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        assert_eq!(
+            s.dereverb_rt60(),
+            s.report().expect("analysis report").reverb_time_s
+        );
+        for stage in Stage::ALL {
+            s.set_stage_enabled(stage, false);
+        }
+        s.set_stage_enabled(Stage::DeReverb, true);
+
+        s.set_dereverb_settings(0.0, 0.0);
+        s.render().expect("dry dereverb render");
+        let dry = s.output().unwrap().channel(0).to_vec();
+
+        s.set_dereverb_settings(1.2, 0.1);
+        s.render().expect("wet dereverb render");
+        let wet = s.output().unwrap().channel(0).to_vec();
+
+        let tail_start = 16_000;
+        let dry_tail = rms(&dry[tail_start..]);
+        let wet_tail = rms(&wet[tail_start..]);
+        assert!(
+            wet_tail < dry_tail * 0.75,
+            "De-reverb strength should reduce the late room tail: {dry_tail} -> {wet_tail}"
         );
 
         let _ = std::fs::remove_file(&path);

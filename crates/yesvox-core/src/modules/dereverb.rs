@@ -51,7 +51,7 @@ impl DeReverb {
         let ifft = planner.plan_fft_inverse(frame);
         DeReverb {
             enabled: true,
-            strength,
+            strength: strength.clamp(0.0, 2.0),
             tail_preservation: tail_preservation.clamp(0.0, 1.0),
             direct_protect: 3.0,
             floor: 0.1,
@@ -83,6 +83,18 @@ impl DeReverb {
     /// Whether the module is active.
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Current Advanced settings: subtraction strength and tail preservation.
+    pub fn settings(&self) -> (f32, f32) {
+        (self.strength, self.tail_preservation)
+    }
+
+    /// Set Advanced strength/tail preservation. Strength is bounded to the v1
+    /// restoration range; tail preservation is a normalized sustain-protect tier.
+    pub fn set_settings(&mut self, strength: f32, tail_preservation: f32) {
+        self.strength = strength.clamp(0.0, 2.0);
+        self.tail_preservation = tail_preservation.clamp(0.0, 1.0);
     }
 
     /// Feed the measured RT60 so an already-dry input is softened automatically.
