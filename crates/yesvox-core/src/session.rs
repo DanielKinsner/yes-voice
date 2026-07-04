@@ -19,7 +19,7 @@ use crate::chain::{Stage, STAGE_COUNT};
 use crate::io::{export, read_audio, IoError};
 use crate::loudness::integrated_lufs;
 use crate::modules::{
-    BleedVerdict, DeClip, DeEss, DeEssMode, DeHum, DePop, DeReverb, LoudnessTarget,
+    BleedVerdict, BreathControl, DeClip, DeEss, DeEssMode, DeHum, DePop, DeReverb, LoudnessTarget,
 };
 use crate::playback::PlaybackSource;
 use crate::preset::Preset;
@@ -619,6 +619,30 @@ impl DeEssAdvanced {
     }
 }
 
+/// Advanced-only Breath controls. The preset supplies the attenuation default;
+/// singing presets leave the stage off but keep the engine's explicit override
+/// value available if the user turns Breath on.
+#[derive(Clone, Copy)]
+struct BreathAdvanced {
+    strength_db: f32,
+}
+
+impl BreathAdvanced {
+    fn for_preset(preset: Preset) -> Self {
+        let mut module = BreathControl::for_content(preset.content_mode);
+        if let Some(db) = preset.breath_db {
+            module.set_strength_db(db);
+        }
+        BreathAdvanced {
+            strength_db: module.strength_db(),
+        }
+    }
+
+    fn set_strength_db(&mut self, db: f32) {
+        self.strength_db = db.clamp(0.0, 12.0);
+    }
+}
+
 fn machine_max_worker_count() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get().max(1))
@@ -646,6 +670,7 @@ pub struct Session {
     dehum: DeHumAdvanced,
     dereverb: DeReverbAdvanced,
     deess: DeEssAdvanced,
+    breath: BreathAdvanced,
     /// Global dry→wet master over the whole rack (the "Flow Amount" macro), `[0, 1]`.
     /// 1 = full effect, 0 = the rack is the identity. Composes multiplicatively
     /// with each card's own mix.
@@ -697,6 +722,7 @@ pub struct SessionSnapshot {
     dehum: DeHumAdvanced,
     dereverb: DeReverbAdvanced,
     deess: DeEssAdvanced,
+    breath: BreathAdvanced,
     workers: usize,
     flow: f32,
     polish: f32,
@@ -734,6 +760,7 @@ impl Session {
             dehum: DeHumAdvanced::default(),
             dereverb: DeReverbAdvanced::for_content(content_mode),
             deess: DeEssAdvanced::for_preset(preset),
+            breath: BreathAdvanced::for_preset(preset),
             flow: 1.0,
             polish: 0.5,
             loudness_override: None,
@@ -788,6 +815,7 @@ impl Session {
         s.preset = preset;
         s.dereverb = DeReverbAdvanced::for_content(content_mode);
         s.deess = DeEssAdvanced::for_preset(preset);
+        s.breath = BreathAdvanced::for_preset(preset);
         s
     }
 
@@ -922,6 +950,23 @@ impl Session {
     /// Last successful render's De-ess HF reduction in dB after stage mix, or
     /// `0.0` before a De-ess render has produced a readout.
     pub fn deess_hf_reduction_db(&self) -> f32 {
+        self.deess_hf_reduction_db
+    }
+
+    /// Advanced Breath attenuation in dB.
+    pub fn breath_strength_db(&self) -> f32 {
+        self.breath.strength_db
+    }
+
+    /// Set Advanced Breath attenuation. Clamped to the effective v1 range:
+    /// above 12 dB the module's minimum gain would dominate.
+    pub fn set_breath_strength_db(&mut self, db: f32) {
+        self.breath.set_strength_db(db);
+        self.output = None;
+    }
+
+    /// Last successful render's De-ess HF reduction handed to Breath, in dB.
+    pub fn breath_shared_hf_reduction_db(&self) -> f32 {
         self.deess_hf_reduction_db
     }
 
@@ -1279,6 +1324,7 @@ impl Session {
         self.transient_cards = TransientCards::default();
         self.dereverb = DeReverbAdvanced::for_content(self.settings.content_mode);
         self.deess = DeEssAdvanced::for_preset(self.preset);
+        self.breath = BreathAdvanced::for_preset(self.preset);
         self.loudness_override = None;
         self.deess_hf_reduction_db = 0.0;
     }
@@ -1655,6 +1701,7 @@ impl Session {
             dehum: self.dehum,
             dereverb: self.dereverb,
             deess: self.deess,
+            breath: self.breath,
             workers: self.workers,
             flow: self.flow,
             polish: self.polish,
@@ -1678,6 +1725,7 @@ impl Session {
         self.dehum = snapshot.dehum;
         self.dereverb = snapshot.dereverb;
         self.deess = snapshot.deess;
+        self.breath = snapshot.breath;
         self.workers = snapshot.workers.clamp(1, Self::max_worker_count());
         self.flow = snapshot.flow;
         self.polish = snapshot.polish;
@@ -1780,6 +1828,13 @@ impl Session {
             .chain
             .deess
             .set_sensitivity(deess_ess_ratio, deess_min_gain);
+        let breath_enabled = built.chain.breath.enabled();
+        built.chain.breath = BreathControl::for_content(self.settings.content_mode);
+        built.chain.breath.set_enabled(breath_enabled);
+        built
+            .chain
+            .breath
+            .set_strength_db(self.breath_strength_db());
 
         // Apply the per-card overrides (the UI rack) over the preset's defaults,
         // each scaled by the rack-wide macros (Flow Amount, …) via effective_mix.
@@ -2034,6 +2089,25 @@ mod tests {
                 0.35 * (2.0 * PI * 220.0 * t).sin() + 0.35 * (2.0 * PI * 7000.0 * t).sin()
             })
             .collect();
+        let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
+        write_wav(path, &buf).expect("write fixture");
+        buf
+    }
+
+    fn breathy_fixture(path: &Path) -> AudioBuffer {
+        let seg = 12_000usize;
+        let mut x = vec![0.0f32; seg * 3];
+        for i in 0..seg {
+            let t = i as f32 / SR as f32;
+            x[i] = 0.4 * (2.0 * PI * 200.0 * t).sin();
+            x[seg * 2 + i] = 0.4 * (2.0 * PI * 200.0 * t).sin();
+        }
+        let mut state = 0x1234u32;
+        for i in 0..seg {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let noise = (state >> 9) as f32 / (1u32 << 23) as f32 - 0.5;
+            x[seg + i] = 0.12 * noise;
+        }
         let buf = AudioBuffer::new(SR, 24, SampleEncoding::Int, vec![x]);
         write_wav(path, &buf).expect("write fixture");
         buf
@@ -3786,6 +3860,79 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn advanced_breath_settings_clamp_restore_and_follow_preset_defaults() {
+        let mut s = Session::new();
+        assert_eq!(s.breath_strength_db(), 6.0);
+
+        s.select_preset(Preset::NARRATION);
+        assert_eq!(s.breath_strength_db(), 3.0);
+
+        s.select_preset(Preset::LEAD_VOCAL);
+        assert_eq!(s.breath_strength_db(), 9.0);
+        assert!(
+            !s.resolve_stage_enabled(Stage::Breath),
+            "singing presets keep breath control off by default"
+        );
+
+        s.set_breath_strength_db(4.5);
+        let snapshot = s.snapshot();
+        assert_eq!(s.breath_strength_db(), 4.5);
+
+        s.set_breath_strength_db(99.0);
+        assert_eq!(s.breath_strength_db(), 12.0);
+
+        s.restore_snapshot(&snapshot);
+        assert_eq!(s.breath_strength_db(), 4.5);
+    }
+
+    #[test]
+    fn advanced_breath_settings_reach_rendered_attenuation_and_sidechain_readout() {
+        let path = temp("advanced-breath-render");
+        breathy_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        for stage in Stage::ALL {
+            s.set_stage_enabled(stage, false);
+        }
+        s.set_stage_enabled(Stage::Breath, true);
+
+        s.set_breath_strength_db(0.0);
+        s.render().expect("dry breath render");
+        let dry = s.output().unwrap().channel(0).to_vec();
+
+        s.set_breath_strength_db(9.0);
+        s.render().expect("wet breath render");
+        let wet = s.output().unwrap().channel(0).to_vec();
+
+        let breath = 12_000..24_000;
+        let dry_breath = rms(&dry[breath.clone()]);
+        let wet_breath = rms(&wet[breath]);
+        assert!(
+            wet_breath < dry_breath * 0.7,
+            "Breath strength should attenuate breath frames: {dry_breath} -> {wet_breath}"
+        );
+        assert_eq!(s.breath_shared_hf_reduction_db(), 0.0);
+
+        let sidechain_path = temp("advanced-breath-sidechain-render");
+        sibilant_fixture(&sidechain_path);
+        s.open(&sidechain_path).expect("open sidechain fixture");
+        for stage in Stage::ALL {
+            s.set_stage_enabled(stage, false);
+        }
+        s.set_stage_enabled(Stage::DeEss, true);
+        s.set_stage_enabled(Stage::Breath, true);
+        s.set_deess_settings(DeEssMode::Split, 0.20, 0.0);
+        s.render().expect("sidechain render");
+        assert!(
+            s.breath_shared_hf_reduction_db() > 1.0,
+            "Breath readout should surface the de-ess shared-HF handoff"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&sidechain_path);
     }
 
     #[test]

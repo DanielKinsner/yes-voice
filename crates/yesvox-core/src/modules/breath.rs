@@ -58,6 +58,11 @@ impl BreathControl {
         self.enabled
     }
 
+    /// Requested breath attenuation in dB.
+    pub fn strength_db(&self) -> f32 {
+        self.breath_db
+    }
+
     /// Set the requested breath attenuation in dB.
     pub fn set_strength_db(&mut self, db: f32) {
         self.breath_db = db.max(0.0);
