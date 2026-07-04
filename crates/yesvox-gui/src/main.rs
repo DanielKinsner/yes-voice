@@ -1268,13 +1268,18 @@ impl YesVoxApp {
             );
             self.loudness_knob(painter, c, egui::pos2(r.right() - 38.0, r.bottom() - 50.0));
         } else {
-            let amount = visual_card_amount(card, self.session.card_amount(card));
-            self.percent_knob(
+            let current = self.session.card_amount(card);
+            let next = self.knob_control(
+                ui,
                 painter,
                 c,
                 egui::pos2(r.right() - 38.0, r.bottom() - 58.0),
-                amount,
+                current,
+                ("card_amount", card.label()),
             );
+            if (next - current).abs() > 1e-6 {
+                self.session.set_card_amount(card, next);
+            }
         }
         if card != CardId::Loudness {
             self.outline_button(
@@ -2857,6 +2862,33 @@ impl YesVoxApp {
         );
     }
 
+    /// An interactive percent knob: vertical drag (up = increase) adjusts the
+    /// value, which is returned clamped to `[0, 1]`. Paints the [`percent_knob`]
+    /// visual. Used to wire the card amount dials to `set_card_amount` (#24).
+    fn knob_control(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        value: f32,
+        id: impl Hash + Debug,
+    ) -> f32 {
+        let hit = rect(center.x - 30.0, center.y - 30.0, 60.0, 60.0);
+        let resp = ui.interact(
+            c.rect(hit),
+            ui.make_persistent_id(id),
+            egui::Sense::click_and_drag(),
+        );
+        let mut next = value.clamp(0.0, 1.0);
+        if resp.dragged() {
+            // Screen-space vertical drag; ~250 px sweeps the full range.
+            next = (next - resp.drag_delta().y * 0.004).clamp(0.0, 1.0);
+        }
+        self.percent_knob(painter, c, center, next);
+        next
+    }
+
     fn loudness_knob(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2) {
         let sc = c.pos(center.x, center.y);
         let r = c.v(27.0);
@@ -3079,17 +3111,6 @@ fn card_blurb(card: CardId) -> (&'static str, &'static str) {
         CardId::PresenceAir => ("Adds clarity and air", "in an adaptive way."),
         CardId::Leveling => ("Smooths vocal level", "consistently."),
         CardId::Loudness => ("Sets loudness to", "target level."),
-    }
-}
-
-fn visual_card_amount(card: CardId, session_amount: f32) -> f32 {
-    match card {
-        // G11 will make these independent in the core. Until then the reference
-        // shell displays the intended card split rather than leaking the shared
-        // transient-stage amount.
-        CardId::DeClickDePop => 0.55,
-        CardId::MouthClicks => 0.60,
-        _ => session_amount,
     }
 }
 
