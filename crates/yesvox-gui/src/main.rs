@@ -102,6 +102,19 @@ impl GuiBatchPresetMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputFieldChrome {
+    Selector,
+    ReadOnly,
+}
+
+fn output_field_chrome(label: &str) -> OutputFieldChrome {
+    match label {
+        "Sample Rate" => OutputFieldChrome::ReadOnly,
+        _ => OutputFieldChrome::Selector,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BatchQueueRow {
     input: PathBuf,
@@ -2740,46 +2753,60 @@ impl YesVoxApp {
     ) {
         self.small_text(painter, c, x, y + 20.0, label, TEXT_MUTED);
         let field = rect(x + 124.0, y, 172.0, 40.0);
-        if self.outline_button(ui, painter, c, field, value, id) {
-            match label {
-                "Format" => {
-                    let next = if self.session.output_format() == OutputFormat::Wav {
-                        OutputFormat::Flac
-                    } else {
-                        OutputFormat::Wav
-                    };
-                    self.session.set_output_format(next);
-                    self.commit_edit("format");
+        match output_field_chrome(label) {
+            OutputFieldChrome::Selector => {
+                if self.outline_button(ui, painter, c, field, value, id) {
+                    match label {
+                        "Format" => {
+                            let next = if self.session.output_format() == OutputFormat::Wav {
+                                OutputFormat::Flac
+                            } else {
+                                OutputFormat::Wav
+                            };
+                            self.session.set_output_format(next);
+                            self.commit_edit("format");
+                        }
+                        "Bit Depth" => {
+                            let current = self
+                                .session
+                                .settings()
+                                .export
+                                .bit_depth_override
+                                .or_else(|| self.session.input().map(|b| b.bits_per_sample()))
+                                .unwrap_or(24);
+                            self.session
+                                .set_bit_depth(Some(if current >= 24 { 16 } else { 24 }));
+                            self.commit_edit("bit_depth");
+                        }
+                        "Loudness Target" => {
+                            let next = cycle_loudness(self.session.loudness_target());
+                            self.session.set_loudness_target(next);
+                            self.commit_edit("loudness");
+                            self.stop_playback(); // target change invalidates the render
+                        }
+                        _ => {}
+                    }
                 }
-                "Bit Depth" => {
-                    let current = self
-                        .session
-                        .settings()
-                        .export
-                        .bit_depth_override
-                        .or_else(|| self.session.input().map(|b| b.bits_per_sample()))
-                        .unwrap_or(24);
-                    self.session
-                        .set_bit_depth(Some(if current >= 24 { 16 } else { 24 }));
-                    self.commit_edit("bit_depth");
-                }
-                "Loudness Target" => {
-                    let next = cycle_loudness(self.session.loudness_target());
-                    self.session.set_loudness_target(next);
-                    self.commit_edit("loudness");
-                    self.stop_playback(); // target change invalidates the render
-                }
-                // Sample Rate is a read-only chip (locked to the input — decided).
-                _ => {}
+                painter.text(
+                    c.pos(field.right() - 22.0, field.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    "v",
+                    c.font(14.0),
+                    TEXT_MUTED,
+                );
+            }
+            OutputFieldChrome::ReadOnly => {
+                paint_panel(painter, c, field, 5, FIELD, BORDER_DIM);
+                self.body_text(
+                    painter,
+                    c,
+                    field.left() + 14.0,
+                    field.center().y,
+                    value,
+                    TEXT,
+                );
             }
         }
-        painter.text(
-            c.pos(field.right() - 22.0, field.center().y),
-            egui::Align2::CENTER_CENTER,
-            "v",
-            c.font(14.0),
-            TEXT_MUTED,
-        );
     }
 }
 
@@ -3550,6 +3577,23 @@ mod tests {
         assert!(
             seen.iter().any(|t| matches!(t, LoudnessTarget::Custom(_))),
             "cycle includes a Custom target"
+        );
+    }
+
+    #[test]
+    fn output_field_chrome_only_marks_mutable_rows_as_selectors() {
+        assert_eq!(output_field_chrome("Format"), OutputFieldChrome::Selector);
+        assert_eq!(
+            output_field_chrome("Bit Depth"),
+            OutputFieldChrome::Selector
+        );
+        assert_eq!(
+            output_field_chrome("Loudness Target"),
+            OutputFieldChrome::Selector
+        );
+        assert_eq!(
+            output_field_chrome("Sample Rate"),
+            OutputFieldChrome::ReadOnly
         );
     }
 
