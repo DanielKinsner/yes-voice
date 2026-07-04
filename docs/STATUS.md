@@ -7,10 +7,10 @@
 
 ## Where we are
 
-Building **#17 — the Standard view**. The engine (`yesvox-core` rack) already
-existed; this phase builds the agent-callable, mechanically-tested `Session`
-surface the UI needs, then a custom-painted **egui shell** over it. Both are
-underway and **green**.
+**#17 — the Standard view is closed.** The engine (`yesvox-core` rack) already
+existed; this phase built the agent-callable, mechanically-tested `Session`
+surface the UI needs, then a custom-painted **egui shell** over it. The current
+pick-up item is **#35 playback/worker polish**, then **#18 Advanced build**.
 
 - **Workspace:** `yesvox-core` (lib), `yesvox-app` (headless CLI, bin `yesvox`),
   **`yesvox-gui`** (the egui app, bin `yesvox-gui`, **new**), `xtask`.
@@ -66,6 +66,7 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **#19h** | **FLAC level persistence + encoder wiring** — `ExportSettings` now persists/clamps the planned 0–8 FLAC compression level, `ExportOptions` carries it to the FLAC writer, and tests prove level 0 vs 8 reach the encoder without changing decoded audio. |
 | **#19i** | **Original-file metadata round-trip coverage** — decoded buffers now carry source container metadata through render/export; WAV `bext`/`iXML`/`LIST` plus unknown RIFF chunks and FLAC Vorbis/application blocks round-trip mechanically in `io_export` tests. |
 | **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
+| **#17 close-out** | **Zero-dead-chrome shell pass** — verified the drawn controls against the current shell, fixed the read-only Sample Rate row so it no longer paints as a selector, and removed static help/favorite icons that looked actionable but had no wired behavior. |
 
 ## Next up (re-planned 2026-07-03 — grill session)
 
@@ -183,8 +184,9 @@ fallback, monitor-strip per-frame perf, long-file K validation).
    `docs/ui/yesvox-v1-advanced-reference.png`. #18 should follow
    `docs/ui/advanced-parameter-inventory.md` for real controls and preserve the
    approved structure/style while avoiding crowded dense-card layouts.
-2. **Close out #17:** verify zero dead chrome remains in the shell (every
-   drawn control mutates state or is gone), update the issue, close it.
+2. ✅ **#17 Standard view close-out:** shell chrome verified; every remaining
+   drawn control either mutates state, starts a real job/playback action, seeks,
+   imports/exports, or is static display text/chip.
 3. **#35 playback/worker polish (afk):** small, well-scoped — good filler.
 4. **#18 Advanced build:** only after the #26 mock is approved.
 5. **#20 v1.0 lane:** weights license audit (redistribution rights for every
@@ -223,9 +225,9 @@ fallback, monitor-strip per-frame perf, long-file K validation).
   MossFormer2 host chain). Weak spots now tracked: gate integrity (#27),
   NaN/panic hygiene (#28/#29), no resource caps (#32), neural expect-crashes
   (#33), streaming is denoise-only (docs honesty in #32).
-- **Still stubbed/deferred:** "Save as New Preset" + "Add to Suite Library"
-  (no user-preset store; suite handoff is a designed-for seam, not built-in) —
-  now slated for removal from the shell in #24.
+- **Deferred but not in the Standard shell:** "Save as New Preset" + "Add to
+  Suite Library" (no user-preset store; suite handoff is a designed-for seam,
+  not built-in). They remain future product seams, not v1 dead chrome.
 
 ## GUI dependency note (read before touching the shell)
 
