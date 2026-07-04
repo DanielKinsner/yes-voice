@@ -9,7 +9,9 @@ name = "yesvox-gui"
 path = "src/main.rs"
 
 [dependencies]
+cpal = "0.16"
 eframe = "0.35.0"
 rfd = "0.17.2"
 yesvox-core = { path = "../yesvox-core" }
 # eframe added via `cargo add` so the version resolves to the latest stable.
+# cpal is the offline audio-output device for the #23 playback trust loop.
