@@ -54,6 +54,43 @@ fn export_never_overwrites_and_auto_suffixes() {
 }
 
 #[test]
+fn export_onto_the_input_path_preserves_the_source_bytes() {
+    // The specific non-destructive hazard (#27, finding 6): the user picks the
+    // *input file's own path* as the export destination. Export must refuse to
+    // clobber it — here by auto-suffixing — so the original source survives
+    // byte-for-byte.
+    let in_path = common::temp_wav("export-onto-source-in");
+    common::remove(&[&in_path]);
+
+    // A real source on disk, distinct from what we'll export.
+    let source = tone(2_400, 16, SampleEncoding::Int);
+    write_wav(&in_path, &source).expect("write source");
+    let source_bytes_before = common::read_bytes(&in_path);
+
+    // "Processed" output that differs from the source, exported to the SAME path.
+    let processed = tone(2_400, 24, SampleEncoding::Int);
+    let opts = ExportOptions {
+        bit_depth: 24,
+        encoding: SampleEncoding::Int,
+        dither: false,
+        flac_compression_level: DEFAULT_FLAC_COMPRESSION_LEVEL,
+    };
+    let written = export(&in_path, &processed, opts).expect("export onto input path");
+
+    assert_ne!(
+        written, in_path,
+        "export onto the input path must not target the input itself"
+    );
+    let source_bytes_after = common::read_bytes(&in_path);
+    assert_eq!(
+        source_bytes_before, source_bytes_after,
+        "the input/source file was modified by exporting onto its own path"
+    );
+
+    common::remove(&[&in_path, &written]);
+}
+
+#[test]
 fn dither_perturbs_within_one_lsb_and_no_dither_is_exact() {
     let buf = tone(4_000, 16, SampleEncoding::Int);
     let dithered_path = common::temp_wav("dither-on");
