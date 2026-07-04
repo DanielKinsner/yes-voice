@@ -176,6 +176,44 @@ fn advanced_debleed_control_rects(card: egui::Rect) -> AdvancedDeBleedControlRec
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedDeClipPanel {
+    threshold: f32,
+    strength: f32,
+    amount: f32,
+}
+
+impl AdvancedDeClipPanel {
+    fn from_session(session: &Session) -> Self {
+        let (threshold, strength) = session.declip_settings();
+        AdvancedDeClipPanel {
+            threshold,
+            strength,
+            amount: session.stage_mix(Stage::DeClip),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_declip_settings(self.threshold, self.strength);
+        session.set_stage_mix(Stage::DeClip, self.amount);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedDeClipControlRects {
+    threshold_slider: egui::Rect,
+    strength_slider: egui::Rect,
+    amount_knob: egui::Rect,
+}
+
+fn advanced_declip_control_rects(card: egui::Rect) -> AdvancedDeClipControlRects {
+    AdvancedDeClipControlRects {
+        threshold_slider: rect(card.left() + 86.0, card.top() + 57.0, 90.0, 5.0),
+        strength_slider: rect(card.left() + 86.0, card.top() + 88.0, 90.0, 5.0),
+        amount_knob: rect(card.right() - 72.0, card.top() + 50.0, 60.0, 60.0),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BatchQueueRow {
     input: PathBuf,
@@ -1699,6 +1737,8 @@ impl YesVoxApp {
         for (i, (card, module)) in l.module_cards.iter().zip(modules).enumerate() {
             if i == 0 {
                 self.advanced_debleed_card(ui, painter, c, *card);
+            } else if i == 1 {
+                self.advanced_declip_card(ui, painter, c, *card);
             } else {
                 self.advanced_module_card(painter, c, *card, module);
             }
@@ -2037,6 +2077,79 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_debleed");
+        }
+    }
+
+    fn advanced_declip_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "2", "Declip");
+        let controls = advanced_declip_control_rects(r);
+        let original = AdvancedDeClipPanel::from_session(&self.session);
+        let mut panel = original;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 60.0,
+            &format!("Thresh {:.2}", panel.threshold),
+            TEXT_MUTED,
+        );
+        panel.threshold = self.slider(
+            ui,
+            painter,
+            c,
+            controls.threshold_slider,
+            panel.threshold,
+            "advanced_declip_threshold",
+            BLUE,
+            CYAN,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 91.0,
+            &format!("Strength {:.2}", panel.strength),
+            TEXT_MUTED,
+        );
+        panel.strength = self.slider(
+            ui,
+            painter,
+            c,
+            controls.strength_slider,
+            panel.strength,
+            "advanced_declip_strength",
+            BLUE,
+            CYAN,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            controls.amount_knob.left() + 7.0,
+            controls.amount_knob.top() - 5.0,
+            "Amount",
+            TEXT_MUTED,
+        );
+        panel.amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.amount_knob.center(),
+            panel.amount,
+            "advanced_declip_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_declip");
         }
     }
 
@@ -4364,6 +4477,53 @@ mod tests {
         for (i, a) in rects.iter().enumerate() {
             for b in rects.iter().skip(i + 1) {
                 assert!(!a.intersects(*b), "De-bleed controls must not crowd");
+            }
+        }
+    }
+
+    #[test]
+    fn advanced_declip_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedDeClipPanel::from_session(&session);
+
+        assert_eq!(panel.threshold, 0.98);
+        assert_eq!(panel.strength, 1.0);
+        assert_eq!(panel.amount, session.stage_mix(Stage::DeClip));
+
+        let edited = AdvancedDeClipPanel {
+            threshold: 0.79,
+            strength: 0.55,
+            amount: 0.42,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert_eq!(session.declip_settings(), (0.79, 0.55));
+        assert_eq!(session.stage_mix(Stage::DeClip), 0.42);
+        assert_eq!(AdvancedDeClipPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_declip_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[1];
+        let controls = advanced_declip_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.threshold_slider,
+            controls.strength_slider,
+            controls.amount_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "Declip controls must not crowd");
             }
         }
     }
