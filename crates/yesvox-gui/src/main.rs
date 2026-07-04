@@ -570,6 +570,81 @@ fn advanced_breath_control_rects(card: egui::Rect) -> AdvancedBreathControlRects
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedFinishPanel {
+    presence_air_enabled: bool,
+    leveling_enabled: bool,
+    loudness_enabled: bool,
+    presence_db: f32,
+    air_db: f32,
+    presence_air_amount: f32,
+    leveling_amount: f32,
+    loudness_target: LoudnessTarget,
+}
+
+impl AdvancedFinishPanel {
+    fn from_session(session: &Session) -> Self {
+        let (presence_db, air_db) = session.presence_air_eq();
+        AdvancedFinishPanel {
+            presence_air_enabled: session.presence_air_enabled(),
+            leveling_enabled: session.leveling_enabled(),
+            loudness_enabled: session.loudness_enabled(),
+            presence_db,
+            air_db,
+            presence_air_amount: session.presence_air_amount(),
+            leveling_amount: session.leveling_amount(),
+            loudness_target: session.loudness_target(),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_presence_air_enabled(self.presence_air_enabled);
+        session.set_leveling_enabled(self.leveling_enabled);
+        session.set_loudness_enabled(self.loudness_enabled);
+        session.set_presence_air_eq(self.presence_db, self.air_db);
+        session.set_presence_air_amount(self.presence_air_amount);
+        session.set_leveling_amount(self.leveling_amount);
+        session.set_loudness_target(self.loudness_target);
+    }
+
+    fn target_short_label(self) -> &'static str {
+        match self.loudness_target {
+            LoudnessTarget::Podcast => "-16",
+            LoudnessTarget::Streaming => "-14",
+            LoudnessTarget::MatchInput => "Match",
+            LoudnessTarget::PeakNormalize => "Peak",
+            LoudnessTarget::Custom(_) => "Custom",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedFinishControlRects {
+    presence_toggle: egui::Rect,
+    presence_slider: egui::Rect,
+    air_slider: egui::Rect,
+    presence_amount_knob: egui::Rect,
+    leveling_toggle: egui::Rect,
+    leveling_slider: egui::Rect,
+    loudness_toggle: egui::Rect,
+    target_button: egui::Rect,
+    loudness_knob: egui::Rect,
+}
+
+fn advanced_finish_control_rects(card: egui::Rect) -> AdvancedFinishControlRects {
+    AdvancedFinishControlRects {
+        presence_toggle: rect(card.left() + 12.0, card.top() + 49.0, 18.0, 18.0),
+        presence_slider: rect(card.left() + 84.0, card.top() + 56.0, 66.0, 5.0),
+        air_slider: rect(card.left() + 84.0, card.top() + 82.0, 66.0, 5.0),
+        presence_amount_knob: rect(card.left() + 28.0, card.top() + 92.0, 54.0, 54.0),
+        leveling_toggle: rect(card.left() + 92.0, card.top() + 112.0, 18.0, 18.0),
+        leveling_slider: rect(card.left() + 124.0, card.top() + 121.0, 56.0, 5.0),
+        loudness_toggle: rect(card.left() + 154.0, card.top() + 49.0, 18.0, 18.0),
+        target_button: rect(card.left() + 180.0, card.top() + 45.0, 72.0, 24.0),
+        loudness_knob: rect(card.left() + 196.0, card.top() + 92.0, 54.0, 54.0),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BatchQueueRow {
     input: PathBuf,
@@ -2090,7 +2165,7 @@ impl YesVoxApp {
             ("9", "Breath", "Attenuation dB", "De-ess sidechain"),
             ("10", "Finish", "Presence + leveling", "Loudness limiter"),
         ];
-        for (i, (card, module)) in l.module_cards.iter().zip(modules).enumerate() {
+        for (i, (card, _module)) in l.module_cards.iter().zip(modules).enumerate() {
             if i == 0 {
                 self.advanced_debleed_card(ui, painter, c, *card);
             } else if i == 1 {
@@ -2110,7 +2185,7 @@ impl YesVoxApp {
             } else if i == 8 {
                 self.advanced_breath_card(ui, painter, c, *card);
             } else {
-                self.advanced_module_card(painter, c, *card, module);
+                self.advanced_finish_card(ui, painter, c, *card);
             }
         }
 
@@ -2289,54 +2364,6 @@ impl YesVoxApp {
             l.export.top() + 202.0,
             "Memory preflight enforced before render",
             TEXT_MUTED,
-        );
-    }
-
-    fn advanced_module_card(
-        &self,
-        painter: &egui::Painter,
-        c: CanvasMap,
-        r: egui::Rect,
-        (index, title, line1, line2): (&str, &str, &str, &str),
-    ) {
-        self.advanced_card_header(painter, c, r, index, title);
-        self.micro_text(
-            painter,
-            c,
-            r.left() + 12.0,
-            r.top() + 56.0,
-            line1,
-            TEXT_MUTED,
-        );
-        self.micro_text(
-            painter,
-            c,
-            r.left() + 12.0,
-            r.top() + 78.0,
-            line2,
-            TEXT_MUTED,
-        );
-        paint_panel(
-            painter,
-            c,
-            rect(r.left() + 12.0, r.bottom() - 18.0, r.width() - 24.0, 5.0),
-            3,
-            FIELD,
-            egui::Color32::TRANSPARENT,
-        );
-        paint_h_gradient(
-            painter,
-            c,
-            rect(
-                r.left() + 12.0,
-                r.bottom() - 18.0,
-                (r.width() - 24.0) * 0.58,
-                5.0,
-            ),
-            BLUE,
-            CYAN,
-            14,
-            3,
         );
     }
 
@@ -3255,6 +3282,201 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_breath");
+        }
+    }
+
+    fn advanced_finish_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "10", "Finish");
+        let controls = advanced_finish_control_rects(r);
+        let original = AdvancedFinishPanel::from_session(&self.session);
+        let mut panel = original;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 34.0,
+            r.top() + 58.0,
+            "Presence",
+            if panel.presence_air_enabled {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+        if self.checkbox(
+            ui,
+            painter,
+            c,
+            controls.presence_toggle,
+            panel.presence_air_enabled,
+            "advanced_finish_presence_enabled",
+        ) {
+            panel.presence_air_enabled = !panel.presence_air_enabled;
+        }
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 84.0,
+            r.top() + 50.0,
+            &format!("{:.1} dB", panel.presence_db),
+            TEXT_MUTED,
+        );
+        panel.presence_db = self.slider(
+            ui,
+            painter,
+            c,
+            controls.presence_slider,
+            panel.presence_db / 3.0,
+            "advanced_finish_presence_db",
+            BLUE,
+            CYAN,
+        ) * 3.0;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 34.0,
+            r.top() + 84.0,
+            "Air",
+            TEXT_MUTED,
+        );
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 84.0,
+            r.top() + 76.0,
+            &format!("{:.1} dB", panel.air_db),
+            TEXT_MUTED,
+        );
+        panel.air_db = self.slider(
+            ui,
+            painter,
+            c,
+            controls.air_slider,
+            panel.air_db / 3.0,
+            "advanced_finish_air_db",
+            VIOLET,
+            CYAN,
+        ) * 3.0;
+
+        self.micro_text(
+            painter,
+            c,
+            controls.presence_amount_knob.left() + 3.0,
+            controls.presence_amount_knob.top() - 7.0,
+            "P/A Amount",
+            TEXT_MUTED,
+        );
+        panel.presence_air_amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.presence_amount_knob.center(),
+            panel.presence_air_amount,
+            "advanced_finish_presence_amount",
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 114.0,
+            r.top() + 112.0,
+            "Leveling",
+            if panel.leveling_enabled {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+        if self.checkbox(
+            ui,
+            painter,
+            c,
+            controls.leveling_toggle,
+            panel.leveling_enabled,
+            "advanced_finish_leveling_enabled",
+        ) {
+            panel.leveling_enabled = !panel.leveling_enabled;
+        }
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 124.0,
+            r.top() + 136.0,
+            &format!("{:.0}%", panel.leveling_amount * 100.0),
+            TEXT_MUTED,
+        );
+        panel.leveling_amount = self.slider(
+            ui,
+            painter,
+            c,
+            controls.leveling_slider,
+            panel.leveling_amount,
+            "advanced_finish_leveling_amount",
+            BLUE,
+            PURPLE,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 180.0,
+            r.top() + 38.0,
+            "Target",
+            TEXT_MUTED,
+        );
+        if self.checkbox(
+            ui,
+            painter,
+            c,
+            controls.loudness_toggle,
+            panel.loudness_enabled,
+            "advanced_finish_loudness_enabled",
+        ) {
+            panel.loudness_enabled = !panel.loudness_enabled;
+        }
+        if self.outline_button(
+            ui,
+            painter,
+            c,
+            controls.target_button,
+            panel.target_short_label(),
+            "advanced_finish_loudness_target",
+        ) {
+            panel.loudness_target = cycle_loudness(panel.loudness_target);
+        }
+        self.loudness_target_knob(
+            painter,
+            c,
+            controls.loudness_knob.center(),
+            panel.loudness_target,
+        );
+        self.micro_text(
+            painter,
+            c,
+            controls.loudness_knob.left() + 4.0,
+            controls.loudness_knob.bottom() + 2.0,
+            if panel.loudness_enabled {
+                "Limiter on"
+            } else {
+                "Limiter off"
+            },
+            if panel.loudness_enabled {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_finish");
         }
     }
 
@@ -5045,6 +5267,41 @@ impl YesVoxApp {
         );
     }
 
+    fn loudness_target_knob(
+        &self,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        center: egui::Pos2,
+        target: LoudnessTarget,
+    ) {
+        let sc = c.pos(center.x, center.y);
+        let r = c.v(27.0);
+        painter.circle_stroke(sc, r, egui::Stroke::new(c.v(1.0), BORDER_DIM));
+        arc(
+            painter,
+            sc,
+            r,
+            -210.0,
+            60.0,
+            egui::Stroke::new(c.v(3.0), CYAN),
+        );
+        let (main, sub) = match target {
+            LoudnessTarget::Podcast => ("-16", "LUFS"),
+            LoudnessTarget::Streaming => ("-14", "LUFS"),
+            LoudnessTarget::MatchInput => ("Match", "LUFS"),
+            LoudnessTarget::PeakNormalize => ("Peak", "dBTP"),
+            LoudnessTarget::Custom(_) => ("Custom", "LUFS"),
+        };
+        painter.text(sc, egui::Align2::CENTER_CENTER, main, c.font(13.0), TEXT);
+        painter.text(
+            sc + egui::vec2(0.0, c.v(14.0)),
+            egui::Align2::CENTER_CENTER,
+            sub,
+            c.font(9.0),
+            TEXT_MUTED,
+        );
+    }
+
     fn vertical_meter(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect, value: f32) {
         paint_panel(
             painter,
@@ -5996,6 +6253,74 @@ mod tests {
             !controls.strength_slider.intersects(controls.amount_knob),
             "Breath controls must not crowd"
         );
+    }
+
+    #[test]
+    fn advanced_finish_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedFinishPanel::from_session(&session);
+
+        assert!(panel.presence_air_enabled);
+        assert!(panel.leveling_enabled);
+        assert!(panel.loudness_enabled);
+        assert_eq!(panel.presence_db, 1.5);
+        assert_eq!(panel.air_db, 0.0);
+        assert_eq!(panel.presence_air_amount, session.presence_air_amount());
+        assert_eq!(panel.leveling_amount, session.leveling_amount());
+        assert_eq!(panel.loudness_target, LoudnessTarget::Podcast);
+
+        let edited = AdvancedFinishPanel {
+            presence_air_enabled: true,
+            leveling_enabled: false,
+            loudness_enabled: true,
+            presence_db: 2.25,
+            air_db: 0.75,
+            presence_air_amount: 0.62,
+            leveling_amount: 0.31,
+            loudness_target: LoudnessTarget::Streaming,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert!(session.presence_air_enabled());
+        assert!(!session.leveling_enabled());
+        assert!(session.loudness_enabled());
+        assert_eq!(session.presence_air_eq(), (2.25, 0.75));
+        assert_eq!(session.presence_air_amount(), 0.62);
+        assert_eq!(session.leveling_amount(), 0.31);
+        assert_eq!(session.loudness_target(), LoudnessTarget::Streaming);
+        assert_eq!(AdvancedFinishPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_finish_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[9];
+        let controls = advanced_finish_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.presence_toggle,
+            controls.presence_slider,
+            controls.air_slider,
+            controls.presence_amount_knob,
+            controls.leveling_toggle,
+            controls.leveling_slider,
+            controls.loudness_toggle,
+            controls.target_button,
+            controls.loudness_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "Finish controls must not crowd");
+            }
+        }
     }
 
     #[test]
