@@ -257,6 +257,44 @@ fn advanced_declick_control_rects(card: egui::Rect) -> AdvancedDeClickControlRec
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedDePopPanel {
+    cutoff_hz: f32,
+    strength: f32,
+    amount: f32,
+}
+
+impl AdvancedDePopPanel {
+    fn from_session(session: &Session) -> Self {
+        let (cutoff_hz, strength) = session.depop_settings();
+        AdvancedDePopPanel {
+            cutoff_hz,
+            strength,
+            amount: session.stage_mix(Stage::DePop),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_depop_settings(self.cutoff_hz, self.strength);
+        session.set_stage_mix(Stage::DePop, self.amount);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedDePopControlRects {
+    cutoff_slider: egui::Rect,
+    strength_slider: egui::Rect,
+    amount_knob: egui::Rect,
+}
+
+fn advanced_depop_control_rects(card: egui::Rect) -> AdvancedDePopControlRects {
+    AdvancedDePopControlRects {
+        cutoff_slider: rect(card.left() + 86.0, card.top() + 57.0, 90.0, 5.0),
+        strength_slider: rect(card.left() + 86.0, card.top() + 88.0, 90.0, 5.0),
+        amount_knob: rect(card.right() - 72.0, card.top() + 50.0, 60.0, 60.0),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BatchQueueRow {
     input: PathBuf,
@@ -1784,6 +1822,8 @@ impl YesVoxApp {
                 self.advanced_declip_card(ui, painter, c, *card);
             } else if i == 2 {
                 self.advanced_declick_card(ui, painter, c, *card);
+            } else if i == 3 {
+                self.advanced_depop_card(ui, painter, c, *card);
             } else {
                 self.advanced_module_card(painter, c, *card, module);
             }
@@ -2300,6 +2340,81 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_declick");
+        }
+    }
+
+    fn advanced_depop_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "4", "De-pop");
+        let controls = advanced_depop_control_rects(r);
+        let original = AdvancedDePopPanel::from_session(&self.session);
+        let mut panel = original;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 60.0,
+            &format!("Low-cut {:.0} Hz", panel.cutoff_hz),
+            TEXT_MUTED,
+        );
+        let cutoff_t = ((panel.cutoff_hz - 80.0) / 40.0).clamp(0.0, 1.0);
+        let next_cutoff_t = self.slider(
+            ui,
+            painter,
+            c,
+            controls.cutoff_slider,
+            cutoff_t,
+            "advanced_depop_cutoff",
+            BLUE,
+            CYAN,
+        );
+        panel.cutoff_hz = 80.0 + next_cutoff_t * 40.0;
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 91.0,
+            &format!("Strength {:.2}", panel.strength),
+            TEXT_MUTED,
+        );
+        panel.strength = self.slider(
+            ui,
+            painter,
+            c,
+            controls.strength_slider,
+            panel.strength,
+            "advanced_depop_strength",
+            BLUE,
+            CYAN,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            controls.amount_knob.left() + 7.0,
+            controls.amount_knob.top() - 5.0,
+            "Amount",
+            TEXT_MUTED,
+        );
+        panel.amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.amount_knob.center(),
+            panel.amount,
+            "advanced_depop_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_depop");
         }
     }
 
@@ -4726,6 +4841,53 @@ mod tests {
         for (i, a) in rects.iter().enumerate() {
             for b in rects.iter().skip(i + 1) {
                 assert!(!a.intersects(*b), "De-click controls must not crowd");
+            }
+        }
+    }
+
+    #[test]
+    fn advanced_depop_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedDePopPanel::from_session(&session);
+
+        assert_eq!(panel.cutoff_hz, 120.0);
+        assert_eq!(panel.strength, 1.0);
+        assert_eq!(panel.amount, session.stage_mix(Stage::DePop));
+
+        let edited = AdvancedDePopPanel {
+            cutoff_hz: 90.0,
+            strength: 0.65,
+            amount: 0.44,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert_eq!(session.depop_settings(), (90.0, 0.65));
+        assert_eq!(session.stage_mix(Stage::DePop), 0.44);
+        assert_eq!(AdvancedDePopPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_depop_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[3];
+        let controls = advanced_depop_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.cutoff_slider,
+            controls.strength_slider,
+            controls.amount_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "De-pop controls must not crowd");
             }
         }
     }
