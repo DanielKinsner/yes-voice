@@ -19,9 +19,9 @@ use audio::Player;
 use eframe::egui;
 use yesvox_core::worker::{spawn, JobEvent, JobHandle};
 use yesvox_core::{
-    AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, History,
-    JobStatus, LoudnessTarget, OutputFormat, PlaybackSource, Preset, QualityMode, RenderQueue,
-    Session, SessionError, SessionSnapshot, Stage, VocalIsolationCheck,
+    AudioBuffer, BatchControl, BatchPresetMode, BatchSummary, CardId, ContentMode, DeEssMode,
+    History, JobStatus, LoudnessTarget, OutputFormat, PlaybackSource, Preset, QualityMode,
+    RenderQueue, Session, SessionError, SessionSnapshot, Stage, VocalIsolationCheck,
 };
 
 /// Undo/redo depth cap (#25).
@@ -462,6 +462,67 @@ fn advanced_dereverb_control_rects(card: egui::Rect) -> AdvancedDeReverbControlR
     AdvancedDeReverbControlRects {
         strength_slider: rect(card.left() + 86.0, card.top() + 57.0, 74.0, 5.0),
         tail_slider: rect(card.left() + 86.0, card.top() + 88.0, 74.0, 5.0),
+        amount_knob: rect(card.right() - 68.0, card.top() + 52.0, 56.0, 56.0),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AdvancedDeEssPanel {
+    mode: DeEssMode,
+    ess_ratio: f32,
+    min_gain: f32,
+    hf_reduction_db: f32,
+    amount: f32,
+}
+
+impl AdvancedDeEssPanel {
+    fn from_session(session: &Session) -> Self {
+        let (mode, ess_ratio, min_gain) = session.deess_settings();
+        AdvancedDeEssPanel {
+            mode,
+            ess_ratio,
+            min_gain,
+            hf_reduction_db: session.deess_hf_reduction_db(),
+            amount: session.stage_mix(Stage::DeEss),
+        }
+    }
+
+    fn apply_to_session(self, session: &mut Session) {
+        session.set_deess_settings(self.mode, self.ess_ratio, self.min_gain);
+        session.set_stage_mix(Stage::DeEss, self.amount);
+    }
+
+    fn mode_label(self) -> &'static str {
+        match self.mode {
+            DeEssMode::Split => "Split",
+            DeEssMode::Wide => "Wide",
+        }
+    }
+
+    fn hf_label(self) -> String {
+        if self.hf_reduction_db > 0.0 {
+            format!("HF {:.1} dB", self.hf_reduction_db)
+        } else {
+            "HF --".to_owned()
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedDeEssControlRects {
+    split_button: egui::Rect,
+    wide_button: egui::Rect,
+    ess_ratio_slider: egui::Rect,
+    min_gain_slider: egui::Rect,
+    amount_knob: egui::Rect,
+}
+
+fn advanced_deess_control_rects(card: egui::Rect) -> AdvancedDeEssControlRects {
+    AdvancedDeEssControlRects {
+        split_button: rect(card.left() + 12.0, card.top() + 42.0, 52.0, 20.0),
+        wide_button: rect(card.left() + 68.0, card.top() + 42.0, 52.0, 20.0),
+        ess_ratio_slider: rect(card.left() + 86.0, card.top() + 78.0, 90.0, 5.0),
+        min_gain_slider: rect(card.left() + 86.0, card.top() + 101.0, 90.0, 5.0),
         amount_knob: rect(card.right() - 68.0, card.top() + 52.0, 56.0, 56.0),
     }
 }
@@ -2001,6 +2062,8 @@ impl YesVoxApp {
                 self.advanced_denoise_card(ui, painter, c, *card);
             } else if i == 6 {
                 self.advanced_dereverb_card(ui, painter, c, *card);
+            } else if i == 7 {
+                self.advanced_deess_card(ui, painter, c, *card);
             } else {
                 self.advanced_module_card(painter, c, *card, module);
             }
@@ -2949,6 +3012,125 @@ impl YesVoxApp {
         if panel != original {
             panel.apply_to_session(&mut self.session);
             self.commit_edit("advanced_dereverb");
+        }
+    }
+
+    fn advanced_deess_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        c: CanvasMap,
+        r: egui::Rect,
+    ) {
+        self.advanced_card_header(painter, c, r, "8", "De-ess");
+        let controls = advanced_deess_control_rects(r);
+        let original = AdvancedDeEssPanel::from_session(&self.session);
+        let mut panel = original;
+        let mode_label = panel.mode_label();
+        let hf_label = panel.hf_label();
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 128.0,
+            r.top() + 25.0,
+            mode_label,
+            TEXT_MUTED,
+        );
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 178.0,
+            r.top() + 25.0,
+            &hf_label,
+            if panel.hf_reduction_db > 0.0 {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
+
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.split_button,
+            "Split",
+            panel.mode == DeEssMode::Split,
+            "advanced_deess_split",
+        ) {
+            panel.mode = DeEssMode::Split;
+        }
+        if self.segment_button(
+            ui,
+            painter,
+            c,
+            controls.wide_button,
+            "Wide",
+            panel.mode == DeEssMode::Wide,
+            "advanced_deess_wide",
+        ) {
+            panel.mode = DeEssMode::Wide;
+        }
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 81.0,
+            &format!("Ratio {:.2}", panel.ess_ratio),
+            TEXT_MUTED,
+        );
+        panel.ess_ratio = self.slider(
+            ui,
+            painter,
+            c,
+            controls.ess_ratio_slider,
+            panel.ess_ratio,
+            "advanced_deess_ratio",
+            BLUE,
+            CYAN,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            r.left() + 12.0,
+            r.top() + 104.0,
+            &format!("Min {:.2}", panel.min_gain),
+            TEXT_MUTED,
+        );
+        panel.min_gain = self.slider(
+            ui,
+            painter,
+            c,
+            controls.min_gain_slider,
+            panel.min_gain,
+            "advanced_deess_min_gain",
+            BLUE,
+            CYAN,
+        );
+
+        self.micro_text(
+            painter,
+            c,
+            controls.amount_knob.left() + 5.0,
+            controls.amount_knob.top() - 5.0,
+            "Amount",
+            TEXT_MUTED,
+        );
+        panel.amount = self.knob_control(
+            ui,
+            painter,
+            c,
+            controls.amount_knob.center(),
+            panel.amount,
+            "advanced_deess_amount",
+        );
+
+        if panel != original {
+            panel.apply_to_session(&mut self.session);
+            self.commit_edit("advanced_deess");
         }
     }
 
@@ -5588,6 +5770,64 @@ mod tests {
         for (i, a) in rects.iter().enumerate() {
             for b in rects.iter().skip(i + 1) {
                 assert!(!a.intersects(*b), "De-reverb controls must not crowd");
+            }
+        }
+    }
+
+    #[test]
+    fn advanced_deess_panel_round_trips_session_controls() {
+        let mut session = Session::new();
+        let panel = AdvancedDeEssPanel::from_session(&session);
+
+        assert_eq!(panel.mode, DeEssMode::Split);
+        assert_eq!(panel.mode_label(), "Split");
+        assert_eq!(panel.ess_ratio, 0.45);
+        assert_eq!(panel.min_gain, 0.1);
+        assert_eq!(panel.hf_label(), "HF --");
+        assert_eq!(panel.amount, session.stage_mix(Stage::DeEss));
+
+        let edited = AdvancedDeEssPanel {
+            mode: DeEssMode::Wide,
+            ess_ratio: 0.32,
+            min_gain: 0.08,
+            hf_reduction_db: panel.hf_reduction_db,
+            amount: 0.48,
+        };
+        edited.apply_to_session(&mut session);
+
+        assert_eq!(session.deess_settings(), (DeEssMode::Wide, 0.32, 0.08));
+        assert_eq!(session.stage_mix(Stage::DeEss), 0.48);
+        assert_eq!(
+            AdvancedDeEssPanel::from_session(&session).mode_label(),
+            "Wide"
+        );
+        assert_eq!(AdvancedDeEssPanel::from_session(&session), edited);
+    }
+
+    #[test]
+    fn advanced_deess_controls_fit_without_overlapping() {
+        let card = AdvancedLayout::new().module_cards[7];
+        let controls = advanced_deess_control_rects(card);
+        let padded = card.shrink(8.0);
+        let rects = [
+            controls.split_button,
+            controls.wide_button,
+            controls.ess_ratio_slider,
+            controls.min_gain_slider,
+            controls.amount_knob,
+        ];
+
+        for r in rects {
+            assert!(padded.contains(r.min), "control left/top must stay padded");
+            assert!(
+                padded.contains(r.max),
+                "control right/bottom must stay padded"
+            );
+        }
+
+        for (i, a) in rects.iter().enumerate() {
+            for b in rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "De-ess controls must not crowd");
             }
         }
     }
