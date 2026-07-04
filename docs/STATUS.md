@@ -7,10 +7,12 @@
 
 ## Where we are
 
-**#18 — Advanced build is next.** The engine (`yesvox-core` rack) already
+**#20 — v1.0 packaging lane is next.** The engine (`yesvox-core` rack) already
 existed; #17 built the agent-callable, mechanically-tested `Session` surface the
 UI needs, then a custom-painted **egui shell** over it. #26 supplied the
-approved Advanced reference and #35 closed the deferred playback/worker polish.
+approved Advanced reference, #35 closed the deferred playback/worker polish, and
+#18 built the Advanced screen, CPU spectrogram fallback, A/B/C compare, and
+signed parameter coverage checklist.
 
 - **Workspace:** `yesvox-core` (lib), `yesvox-app` (headless CLI, bin `yesvox`),
   **`yesvox-gui`** (the egui app, bin `yesvox-gui`, **new**), `xtask`.
@@ -68,6 +70,7 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
 | **#17 close-out** | **Zero-dead-chrome shell pass** — verified the drawn controls against the current shell, fixed the read-only Sample Rate row so it no longer paints as a selector, and removed static help/favorite icons that looked actionable but had no wired behavior. |
 | **#35** | **Playback/worker polish close-out** — render jobs now poll cancel between DSP stages and expose a render-cancel affordance; playback resamples preview buffers to the output device rate without touching export; the monitor strip caches the audible buffer/metrics and avoids resetting an unchanged playback source; memory-budget coverage now includes an opt-in two-minute render measurement (`YESVOX_LONG_MEMORY_BUDGET=1`). |
+| **#18** | **Advanced screen** — separate Advanced view over the approved #26 structure/style, full module rack in canonical order, A/B/C with loudness-matched pinned snapshots, real CPU STFT spectrogram fallback with cache, monitor/reblend strip, and signed parameter coverage in `docs/advanced-param-coverage.md`. |
 
 ## Next up (re-planned 2026-07-03 — grill session)
 
@@ -192,11 +195,10 @@ long-file memory-budget validation.
 3. ✅ **#35 playback/worker polish (afk):** done 2026-07-04. Render cancel,
    device-rate preview resampling, monitor cache/source reuse, and opt-in
    long-file memory-budget validation are landed and locally gated.
-4. **#18 Advanced build:** current pickup. Use
-   `docs/ui/advanced-parameter-inventory.md` as the control contract and
-   `docs/ui/yesvox-v1-advanced-reference.png` as the approved style/structure
-   reference; preserve the dense Advanced capability while avoiding crowded
-   dense-card layouts.
+4. ✅ **#18 Advanced build:** done 2026-07-04. Advanced follows
+   `docs/ui/advanced-parameter-inventory.md` and
+   `docs/ui/yesvox-v1-advanced-reference.png`, with the final coverage/sign-off
+   recorded in `docs/advanced-param-coverage.md`.
 5. **#20 v1.0 lane:** weights license audit (redistribution rights for every
    bundled weight, recorded in docs) → unsigned Windows installer (Inno/NSIS,
    bundled weights + ORT, ≤2 GB, clean-VM smoke test).

@@ -11,6 +11,11 @@ some areas feel prone to crowding, so #18 should keep the same structure and
 style while using grouping, disclosure, and spacing to keep dense Advanced
 modules scannable.
 
+Post-build note: the signed #18 coverage checklist is
+[`docs/advanced-param-coverage.md`](../advanced-param-coverage.md). The tables
+below remain the source inventory used for #18, while the coverage checklist is
+the current truth for what is wired versus deliberately fixed/internal in v1.
+
 ## Legend
 
 - **Session wired now:** already exposed through `Session` or the existing GUI
