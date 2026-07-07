@@ -4,7 +4,7 @@
 Integrate it behind the Rust `Denoiser` seam (#10). fp16 is deferred — ship the
 fp32 graph as the fallback.
 
-## Run (single command)
+## Run
 
 ```bash
 pip install -r requirements.txt
@@ -13,6 +13,26 @@ python export_and_verify.py        # downloads the checkpoint, exports, gates
 
 Outputs (gitignored): `mossformer2_se_48k.onnx`, the fp16 attempt, and a
 PASS/FAIL line per gate with an overall GO/NO-GO.
+
+> **Install note (2026-07-07):** modern pip's strict resolver rejects
+> `pip install -r requirements.txt` — `clearvoice` pins `numpy<2.0` while this
+> file pins `numpy>=2.2` on purpose (onnx/numba need the 2.2 line). The intent
+> is numpy 2.2 *with* clearvoice, so install the deps first and clearvoice with
+> `--no-deps`:
+> ```bash
+> pip install "numpy>=2.2,<2.3" torch torchaudio ml_dtypes onnx onnxruntime \
+>   onnxscript onnxconverter-common pesq
+> pip install --no-deps clearvoice
+> pip install "numpy>=2.2,<2.3" einops gdown huggingface-hub joblib librosa \
+>   opencv-python pydub python_speech_features rotary_embedding_torch \
+>   scenedetect scikit_learn scipy soundfile torchinfo torchvision tqdm yamlargparse
+> ```
+> On Windows, run with `PYTHONUTF8=1` so the `Δ` in the gate log doesn't trip the
+> cp1252 console. **Reproducibility caveat:** the ONNX export is deterministic
+> within a fixed toolchain but the bytes (hence SHA-256) depend on the torch/onnx
+> versions — a different toolchain than the one that produced the pinned
+> `bundled_sha256` will not byte-match, and re-blessing that hash is a deliberate
+> `#20`/S2 decision, never automatic.
 
 ## What the export looks like (the good news)
 

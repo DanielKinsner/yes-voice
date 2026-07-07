@@ -4,21 +4,31 @@ This directory holds the source-controlled unsigned Windows setup recipe for
 #20. It is not a final release artifact by itself because neural weights and
 runtime binaries are staged outside git.
 
-## Verified build steps (first exercised end-to-end 2026-07-04)
+## Verified build steps (first exercised end-to-end 2026-07-04; rebuilt with the
+## W1 build stamp 2026-07-07)
 
 ```powershell
 # 1. Release binaries with the neural HQ engine (#20 passthrough feature):
 cargo build --release -p yesvox-gui -p yesvox-app --features neural
 
-# 2. Stage runtime + model payloads (defaults shown; env vars override):
+# 2. Stage runtime + model payloads into the default dirs:
 #    target\runtime-bundle\  onnxruntime.dll, onnxruntime_providers_shared.dll
-#    target\model-bundle\    mossformer2_se_48k.onnx (the bundled-hash artifact)
+#      -> from the microsoft/onnxruntime release matching the `ort` crate in
+#         Cargo.lock (2.0.0-rc.12 wraps ONNX Runtime 1.26; the win-x64 1.26.0
+#         release zip provides both DLLs). The `api-24` feature only needs
+#         ORT >= 1.24, so any 1.26.x works.
+#    target\model-bundle\    mossformer2_se_48k.onnx (regenerate via
+#      spikes\mossformer2-onnx\export_and_verify.py; must match the bundled
+#      SHA-256 in licenses\model-weights.tsv or package-audit fails).
 
-# 3. Audit the staged model payloads against licenses/model-weights.tsv:
-cargo xtask package-audit          # requires YESVOX_MODEL_BUNDLE_DIR or the default dir
+# 3. Audit the staged model payloads against licenses/model-weights.tsv.
+#    NOTE: you MUST set YESVOX_MODEL_BUNDLE_DIR — without it package-audit is
+#    skip-safe (prints a notice, exits 0) and audits nothing.
+$env:YESVOX_MODEL_BUNDLE_DIR = "target\model-bundle"
+cargo xtask package-audit
 
 # 4. Compile the setup (Inno Setup 6):
-$env:YESVOX_PACKAGE_VERSION = "1.0.0-rc1"
+$env:YESVOX_PACKAGE_VERSION = "1.0.0-rc.2"
 ISCC.exe packaging\windows\yesvox.iss
 # -> target\package\yesvox-v1-unsigned.exe
 ```
