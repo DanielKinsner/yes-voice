@@ -1852,6 +1852,8 @@ impl eframe::App for YesVoxApp {
                 self.draw_status_bar(&painter, canvas, ReferenceLayout::new());
             }
         }
+        // Always-visible build stamp (#20/W1), painted over both views.
+        self.draw_build_stamp(&painter, canvas);
         self.draw_preset_menu(ui, &painter, canvas); // overlay, drawn last
     }
 }
@@ -4218,6 +4220,35 @@ impl YesVoxApp {
             rect(1760.0, 1049.0, 142.0, 24.0),
             &self.processing_label().to_ascii_uppercase(),
             true,
+        );
+    }
+
+    /// The always-visible build-stamp text (#20/W1): `v<version> · <hash> ·
+    /// <engine>`, where the engine is the one the last render actually used (a
+    /// neutral `—` before any render), plus a `· fallback` marker when the
+    /// neural engine degraded to light (`engine_note` set). Its whole job is to
+    /// kill stale-build ghost bugs and make a neural→light fallback visible in
+    /// the app, not only in the CLI. The painted chip is visual; this composes
+    /// the string so it can be tested mechanically.
+    fn build_stamp_text(&self) -> String {
+        let engine = self.session.last_engine_label().unwrap_or("—");
+        let mut stamp = yesvox_core::version::gui_stamp(engine);
+        if self.session.engine_note().is_some() {
+            stamp.push_str(" · fallback");
+        }
+        stamp
+    }
+
+    /// Paint the build stamp, dim, in the free slot of the always-visible status
+    /// strip (drawn in both Standard and Advanced views).
+    fn draw_build_stamp(&self, painter: &egui::Painter, c: CanvasMap) {
+        self.small_text(
+            painter,
+            c,
+            360.0,
+            1066.0,
+            &self.build_stamp_text(),
+            TEXT_DIM,
         );
     }
 }
@@ -6961,6 +6992,48 @@ mod tests {
             preview_rate_badge(48_000, 44_100).as_deref(),
             Some("Preview 48.0 kHz - source 44.1 kHz")
         );
+    }
+
+    #[test]
+    fn build_stamp_shows_version_and_the_active_engine() {
+        // #20/W1: the always-visible stamp reports version + hash + the engine
+        // that actually ran, so a stale build or a neural->light fallback is
+        // visible in the app. The painted chip is visual; this pins the text.
+        use yesvox_core::{write_wav, AudioBuffer, SampleEncoding};
+        let mut app = YesVoxApp::from_session(YesVoxApp::default_session());
+
+        // Before any render: version + hash + a neutral engine placeholder.
+        let before = app.build_stamp_text();
+        assert!(
+            before.starts_with(&format!("v{}", yesvox_core::version::VERSION)),
+            "stamp must start with the version: {before:?}"
+        );
+        assert!(
+            before.contains('—'),
+            "no engine word before a render: {before:?}"
+        );
+
+        // After a render, the actual engine word appears (Light in the default,
+        // no-`neural`-feature build).
+        let mut path = std::env::temp_dir();
+        path.push(format!("yesvox-gui-stamp-{}.wav", std::process::id()));
+        let sr = 48_000u32;
+        let samples: Vec<f32> = (0..(sr as usize / 4))
+            .map(|i| 0.1 * (2.0 * std::f32::consts::PI * 220.0 * (i as f32 / sr as f32)).sin())
+            .collect();
+        write_wav(
+            &path,
+            &AudioBuffer::new(sr, 24, SampleEncoding::Int, vec![samples]),
+        )
+        .expect("write fixture");
+        app.session.open(&path).expect("open");
+        app.session.render().expect("render");
+        assert!(
+            app.build_stamp_text().contains("Light"),
+            "stamp must show the engine after render: {:?}",
+            app.build_stamp_text()
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
