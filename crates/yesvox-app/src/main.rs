@@ -17,10 +17,19 @@ use yesvox_core::{
 };
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Build stamp (#20/W1): `yesvox --version` / `-V` reports the version +
+    // build hash so a tester can confirm which build they are running. Handled
+    // before anything else (no file work, no ort probe) so it always answers.
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("yesvox {}", yesvox_core::version::version_line());
+        return ExitCode::SUCCESS;
+    }
+
     // Installed layout (#20): point ort at the bundled onnxruntime before any
     // neural load — the load-dynamic probe hangs without a path (#33).
     yesvox_core::neural::configure_bundled_ort_runtime();
-    let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
         let exe = args.first().map(String::as_str).unwrap_or("yesvox");
         eprintln!("usage: {exe} <input.{{wav,flac}}> <output.{{wav,flac}}>");
