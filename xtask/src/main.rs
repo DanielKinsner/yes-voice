@@ -50,10 +50,18 @@ fn main() -> ExitCode {
     match task.as_str() {
         "gate" => gate(),
         "bless" => bless(),
-        "eval" => eval(),
+        "eval" => {
+            // `eval --check` previews the corpus without rendering (#21/W4);
+            // bare `eval` runs the real render harness.
+            if std::env::args().any(|a| a == "--check") {
+                eval_check()
+            } else {
+                eval()
+            }
+        }
         "package-audit" => package_audit(),
         other => {
-            eprintln!("unknown xtask: {other:?}\n\ntasks:\n  gate           fmt --check + clippy -D warnings + test + deny\n  bless          deliberately regenerate goldens (YESVOX_BLESS=1 cargo test)\n  eval           run local #21 corpus eval (YESVOX_EVAL_CORPUS)\n  package-audit  audit staged #20 model package payloads (YESVOX_MODEL_BUNDLE_DIR)");
+            eprintln!("unknown xtask: {other:?}\n\ntasks:\n  gate           fmt --check + clippy -D warnings + test + deny\n  bless          deliberately regenerate goldens (YESVOX_BLESS=1 cargo test)\n  eval           run local #21 corpus eval (YESVOX_EVAL_CORPUS); add --check to preflight only\n  package-audit  audit staged #20 model package payloads (YESVOX_MODEL_BUNDLE_DIR)");
             ExitCode::from(2)
         }
     }
@@ -298,6 +306,82 @@ fn eval() -> ExitCode {
         }
         Err(e) => {
             eprintln!("eval: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// A single stem the eval would run, resolved WITHOUT rendering — the unit
+/// `cargo xtask eval --check` reports (#21/W4).
+#[derive(Debug)]
+struct PreflightStem {
+    relative: String,
+    mode: ContentMode,
+    preset: &'static str,
+}
+
+/// Resolve every stem the corpus would evaluate — its mode and the preset the
+/// run would pick — without opening or rendering any audio. Reuses the exact
+/// loader `run_eval` uses, so the preview matches the run and every corpus
+/// problem (bad extension, unreadable manifest row, too few stems, empty dir)
+/// surfaces here as the same precise error the real eval would hit.
+fn preflight(root: &Path) -> Result<Vec<PreflightStem>, String> {
+    if !root.is_dir() {
+        return Err(format!(
+            "{EVAL_CORPUS_ENV} must point at a directory, got {}",
+            root.display()
+        ));
+    }
+    let stems = load_stems(root)?;
+    validate_corpus_shape(&stems)?;
+    Ok(stems
+        .iter()
+        .map(|stem| PreflightStem {
+            relative: stem.relative.clone(),
+            mode: stem.mode,
+            preset: Preset::default_for(stem.mode).name,
+        })
+        .collect())
+}
+
+/// `cargo xtask eval --check`: preflight the corpus without rendering. Skip-safe
+/// exactly like `eval` (unset env -> exit 0 with a notice) so it stays gate-safe;
+/// with a corpus set it lists every stem plus the mode/preset it would use, or
+/// fails loudly with the precise reason the corpus is malformed. Dan runs this
+/// himself to check a corpus before the (slow) real eval, so the text is
+/// friendly.
+fn eval_check() -> ExitCode {
+    let Some(root) = std::env::var_os(EVAL_CORPUS_ENV).map(PathBuf::from) else {
+        eprintln!(
+            "eval --check: skipped — {EVAL_CORPUS_ENV} is not set. \
+             Set it to a local license-clean corpus dir to preflight #21 real-stem evaluation."
+        );
+        return ExitCode::SUCCESS;
+    };
+
+    match preflight(&root) {
+        Ok(stems) => {
+            let voiceover = stems
+                .iter()
+                .filter(|stem| stem.mode == ContentMode::Voiceover)
+                .count();
+            let singing = stems.len() - voiceover;
+            eprintln!(
+                "eval --check: {} stems ready ({voiceover} voiceover, {singing} singing) — nothing rendered:",
+                stems.len()
+            );
+            for stem in &stems {
+                eprintln!(
+                    "  {} — {} — preset {}",
+                    stem.relative,
+                    mode_label(stem.mode),
+                    stem.preset
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("eval --check: {e}");
             ExitCode::FAILURE
         }
     }
@@ -1032,4 +1116,110 @@ fn subcommand_available(sub: &str) -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod eval_check_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_corpus(tag: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("yesvox-eval-check-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create corpus dir");
+        dir
+    }
+
+    /// Empty (0-byte) files with the right extension. The preflight checks
+    /// extension + existence but never decodes, so their emptiness is the proof
+    /// that `eval --check` does not render.
+    fn touch_wavs(dir: &Path, n: usize) {
+        fs::create_dir_all(dir).expect("mk subdir");
+        for i in 0..n {
+            fs::write(dir.join(format!("stem{i}.wav")), b"").expect("touch wav");
+        }
+    }
+
+    #[test]
+    fn preflight_rejects_a_non_directory() {
+        let dir = temp_corpus("nondir");
+        let file = dir.join("not-a-dir.wav");
+        fs::write(&file, b"").unwrap();
+        assert!(preflight(&file).is_err(), "a file is not a corpus dir");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preflight_rejects_an_empty_corpus() {
+        let dir = temp_corpus("empty");
+        let err = preflight(&dir).unwrap_err();
+        assert!(err.contains("no eval stems"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preflight_lists_loose_files_with_mode_and_preset_without_rendering() {
+        let dir = temp_corpus("loose");
+        touch_wavs(&dir.join("voiceover"), EVAL_MIN_PER_MODE);
+        touch_wavs(&dir.join("singing"), EVAL_MIN_PER_MODE);
+        let stems = preflight(&dir).expect("preflight ok on empty (undecoded) files");
+        assert_eq!(stems.len(), EVAL_MIN_PER_MODE * 2);
+        assert_eq!(
+            stems
+                .iter()
+                .filter(|s| s.mode == ContentMode::Voiceover)
+                .count(),
+            EVAL_MIN_PER_MODE
+        );
+        // Each stem carries the preset the eval would actually use for its mode.
+        for s in &stems {
+            assert_eq!(s.preset, Preset::default_for(s.mode).name);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preflight_reads_a_manifest() {
+        let dir = temp_corpus("manifest");
+        for i in 0..(EVAL_MIN_PER_MODE * 2) {
+            fs::write(dir.join(format!("s{i}.wav")), b"").unwrap();
+        }
+        let mut manifest = String::from("path\tmode\n");
+        for i in 0..(EVAL_MIN_PER_MODE * 2) {
+            let mode = if i < EVAL_MIN_PER_MODE {
+                "voiceover"
+            } else {
+                "singing"
+            };
+            manifest.push_str(&format!("s{i}.wav\t{mode}\n"));
+        }
+        fs::write(dir.join("manifest.tsv"), manifest).unwrap();
+        let stems = preflight(&dir).expect("manifest preflight ok");
+        assert_eq!(stems.len(), EVAL_MIN_PER_MODE * 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preflight_reports_a_malformed_manifest_row() {
+        let dir = temp_corpus("badrow");
+        fs::write(dir.join("a.wav"), b"").unwrap();
+        fs::write(dir.join("manifest.tsv"), "path\tmode\na.wav\tsideways\n").unwrap();
+        let err = preflight(&dir).unwrap_err();
+        assert!(
+            err.contains("mode must be voiceover or singing"),
+            "got: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preflight_requires_the_minimum_per_mode() {
+        let dir = temp_corpus("toofew");
+        touch_wavs(&dir.join("voiceover"), EVAL_MIN_PER_MODE);
+        touch_wavs(&dir.join("singing"), 2);
+        let err = preflight(&dir).unwrap_err();
+        assert!(err.contains("at least"), "got: {err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
