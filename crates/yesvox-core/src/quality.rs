@@ -44,6 +44,14 @@ impl Engine {
     pub fn is_generative(self) -> bool {
         matches!(self, Engine::Neural)
     }
+
+    /// The user-facing engine word painted in the CLI/GUI build stamp (#20/W1).
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::Light => "Light",
+            Engine::Neural => "Neural",
+        }
+    }
 }
 
 /// The fixed engine + pass budget an intensity binds to.
@@ -162,6 +170,13 @@ pub fn wet_dry_blend(original: &[f32], processed: &[f32], t: f32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_label_is_the_user_facing_word() {
+        // The GUI build stamp and CLI paint these verbatim (#20/W1).
+        assert_eq!(Engine::Neural.label(), "Neural");
+        assert_eq!(Engine::Light.label(), "Light");
+    }
 
     #[test]
     fn bindings_match_the_plan() {

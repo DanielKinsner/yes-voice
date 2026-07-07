@@ -24,7 +24,7 @@ use crate::modules::{
 use crate::playback::PlaybackSource;
 use crate::preset::Preset;
 use crate::processor::VocalProcessor;
-use crate::quality::QualityMode;
+use crate::quality::{Engine, QualityMode};
 use crate::settings::{ContentMode, ExportOptions, Settings};
 
 /// Why a session action failed — each renders an actionable message.
@@ -715,6 +715,9 @@ pub struct Session {
     allow_over_budget: bool,
     /// The neural→light fallback reason from the last render, if any (#33).
     engine_note: Option<String>,
+    /// The engine the last successful render actually used (#20/W1), `None`
+    /// before any render — surfaced as the GUI build-stamp engine word.
+    last_engine: Option<Engine>,
     /// Last successful render's De-hum tracked fundamental, `0.0` before render.
     dehum_tracked_hz: f32,
     /// Last successful render's De-ess HF reduction handed to Breath, in dB.
@@ -790,6 +793,7 @@ impl Session {
             available_memory_override: None,
             allow_over_budget: false,
             engine_note: None,
+            last_engine: None,
             dehum_tracked_hz: 0.0,
             deess_hf_reduction_db: 0.0,
         }
@@ -1829,8 +1833,10 @@ impl Session {
             self.workers,
             0.0,
         );
-        // Carry the neural→light fallback reason (if any) for the GUI/CLI (#33).
+        // Carry the neural→light fallback reason (if any) for the GUI/CLI (#33)
+        // and the engine that actually ran, for the build stamp (#20/W1).
         let engine_note = built.engine_note.take();
+        let engine = built.engine;
 
         built.chain.debleed = crate::modules::DeBleed::for_source(self.debleed_source_imported());
         let (debleed_warn, debleed_block) = self.debleed_thresholds();
@@ -1935,6 +1941,7 @@ impl Session {
         let deess_hf_reduction_db = built.chain.last_shared_hf_db;
         self.output = Some(buffer);
         self.engine_note = engine_note;
+        self.last_engine = Some(engine);
         self.dehum_tracked_hz = dehum_tracked_hz;
         self.deess_hf_reduction_db = deess_hf_reduction_db;
         Ok(())
@@ -1944,6 +1951,13 @@ impl Session {
     /// engine to the light engine (#33), else `None`.
     pub fn engine_note(&self) -> Option<&str> {
         self.engine_note.as_deref()
+    }
+
+    /// The engine word (`"Neural"` / `"Light"`) the last successful render
+    /// actually used, or `None` before any render — the GUI build stamp paints
+    /// this so a neural→light fallback is visible (#20/W1).
+    pub fn last_engine_label(&self) -> Option<&'static str> {
+        self.last_engine.map(Engine::label)
     }
 
     /// Export the last render to `path` (never-overwrites, returns the written
@@ -2679,6 +2693,24 @@ mod tests {
         s.render().expect("render");
         let note = s.engine_note().expect("a fallback note after render");
         assert!(!note.is_empty(), "the note is user-presentable");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn render_records_the_active_engine_label() {
+        // The GUI build stamp shows which engine actually ran (#20/W1). Before a
+        // render there is no engine; in the default build (no `neural` feature)
+        // every render resolves to Light.
+        let path = temp("engine-label");
+        degraded_fixture(&path);
+        let mut s = Session::new();
+        s.open(&path).expect("open");
+        assert!(
+            s.last_engine_label().is_none(),
+            "no engine label before a render"
+        );
+        s.render().expect("render");
+        assert_eq!(s.last_engine_label(), Some("Light"));
         let _ = std::fs::remove_file(&path);
     }
 
