@@ -1,7 +1,8 @@
 # YesVox — build status & pick-up guide
 
-> Resume-from-anywhere snapshot. Last updated **2026-07-04** (post-#36, #20
-> installer built + locally smoked, #21 lanes). For product intent
+> Resume-from-anywhere snapshot. Last updated **2026-07-07** (test-readiness
+> wave planned; previously post-#36, #20 installer built + locally smoked,
+> #21 lanes). For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
 > for the GUI target see [`ui/yesvox-v1-ui-reference.md`](ui/yesvox-v1-ui-reference.md).
@@ -231,6 +232,14 @@ long-file memory-budget validation.
    `docs/listening-checklist.md`. **Remaining:** Dan's corpus for
    `YESVOX_EVAL_CORPUS`, and the clean-machine round-trip once the VM smoke
    happens.
+7. **Test-readiness wave (W1–W4, planned 2026-07-07, afk):** the
+   decision-complete execution plan is
+   [`plans/2026-07-07-test-readiness-wave-execution-plan.md`](plans/2026-07-07-test-readiness-wave-execution-plan.md)
+   — hand-test runbook (W3), version/build stamp + GUI engine surface (W1),
+   `xtask eval` corpus preflight + doc (W4), installer rebuild on the office
+   PC with the stamp in it (W2). Unblocks Dan's #20 VM smoke and #21 corpus
+   work; gate stays the merge bar (CI minutes exhausted). Environment notes
+   for the office PC: `gh` unauthenticated, Inno Setup 6 not yet installed.
 
 ## Decisions on record
 
