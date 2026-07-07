@@ -40,6 +40,7 @@ pub mod render_queue;
 pub mod session;
 pub mod settings;
 pub mod singing;
+pub mod version;
 pub mod worker;
 
 pub use analysis::{
