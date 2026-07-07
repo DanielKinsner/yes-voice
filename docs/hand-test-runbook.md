@@ -149,3 +149,111 @@ Go to **Settings → Apps**, find **YesVox**, and uninstall (or run
 
 **Smoke verdict:** all eleven PASS = #20 clean-VM smoke is GO. Any FAIL = stop and
 report it with the step number.
+
+---
+
+## 2. Standard view tour
+
+**Goal:** touch every control on the Standard screen and confirm it does
+something sensible. You don't need a VM for this — run the GUI on any dev machine
+(`cargo run -p yesvox-gui`). Load a real vocal clip first (see 1.6).
+
+Control names below are exactly what's painted on screen.
+
+**2.1 — Content mode toggle (Voiceover / Singing).**
+Click **Voiceover**, then **Singing** (top-left of the canvas).
+→ The selected mode highlights; this is the user-authoritative content mode (not
+auto-detected). Switching it is undoable.
+**PASS:** the toggle switches and the highlight follows your click. **FAIL:** it
+doesn't switch, or both look selected.
+
+**2.2 — SMART ASSIST.**
+Click **SMART ASSIST**.
+→ It reads the analysis of your loaded clip and sets the cards' amounts/enables
+and the Restoration Focus / Polish Intensity dials to sensible starting points.
+You should see several card knobs and the two dials jump to new positions.
+**PASS:** controls visibly move to assisted values. **FAIL:** nothing changes, or
+it errors. (No clip loaded → it should do nothing or say so, not crash.)
+
+**2.3 — Preset gallery.**
+Pick a different **Preset** from the gallery.
+→ The selected preset highlights; the render will use that preset's character.
+**PASS:** selection changes. **FAIL:** can't change it.
+
+**2.4 — The 10 cards.**
+Each card has an **on/off toggle** and (except Loudness) an **amount knob**. The
+cards are:
+
+| Card | What it does |
+|------|--------------|
+| **Denoise** | Reduces background noise while preserving detail. |
+| **De-reverb** | Removes reverb while preserving natural space. |
+| **De-click / De-pop** | Removes clicks, pops and crackle. |
+| **Mouth Clicks** | Reduces lip smacks and mouth noises. |
+| **De-hum** | Removes electrical hum and low-frequency noise. |
+| **De-ess** | Controls harsh sibilance without dulling. |
+| **Breath Control** | Attenuates harsh breaths (voiceover-leaning). |
+| **Presence / Air** | Adds clarity and air, adaptively. |
+| **Leveling** | Smooths vocal level consistently. |
+| **Loudness** | Sets loudness to the target level (target chosen in the OUTPUT panel). |
+
+For each card: **toggle it off then on**, and **drag its knob to an extreme**,
+then render and A/B (2.7).
+→ Toggling a card off should remove that effect from the result; turning a knob
+up should make that effect stronger (more obvious noise reduction, more
+de-essing, etc.). Loudness's knob shows the current target.
+**PASS:** each card audibly/visibly changes the result in the expected
+direction. **FAIL:** a card does nothing, or does the opposite, or crashes.
+
+**2.5 — FLOW AMOUNT (the master dry→wet).**
+Drag **FLOW AMOUNT** to **0**, then render and A/B.
+→ At 0 the whole rack is nulled: the output should equal the input (no
+processing at all). Drag it back up and the processing returns.
+**PASS:** at 0 the processed output sounds identical to the input; above 0 it
+processes. **FAIL:** at 0 the output still differs from the input.
+
+**2.6 — Restoration Focus / Polish Intensity dials.**
+Turn **Restoration Focus** and **Polish Intensity** across their range and render.
+→ Restoration Focus biases toward more/less aggressive restoration (quality
+mode); Polish Intensity scales the finishing polish (de-ess + breath). Both
+should shift the sound accordingly.
+**PASS:** each dial changes the result. **FAIL:** either does nothing.
+
+**2.7 — A/B and Volume Match.**
+Use the **A/B** compare and **Volume Match**.
+→ A/B flips between the original (A) and processed (B). Volume Match
+loudness-matches the two so you judge the *change*, not just "louder = better".
+**PASS:** A/B flips instantly and Volume Match evens the loudness. **FAIL:** A/B
+doesn't switch, or one side is silent.
+
+**2.8 — Reblend strip + difference monitor.**
+Use the **Reblend** strip and the **Difference view (What was removed)** monitor.
+→ Reblend lets you audition a mix of dry+processed; the difference monitor shows
+(and its play button auditions) *only what was removed* — noise, hum, reverb
+tails. On a clean render this should be mostly the junk you wanted gone, not the
+voice.
+**PASS:** reblend auditions a blend; the difference view shows removed content.
+**FAIL:** difference view is empty on an obviously-noisy input, or plays the
+whole voice.
+
+**2.9 — Vocal Isolation Check.**
+Read the **Vocal Isolation Check** verdicts (bottom strip) after a render.
+→ It re-analyzes the *output* and reports residual noise / reverb / bleed
+verdicts. On a good render these should read clean/low.
+**PASS:** verdicts appear and match what you hear. **FAIL:** no verdicts, or they
+contradict an obviously-clean or obviously-bad result.
+
+**2.10 — Undo / Redo.**
+Change a few controls, then press **Undo** (toolbar arrow or **Ctrl+Z**) and
+**Redo** (**Ctrl+Shift+Z** or **Ctrl+Y**, or the toolbar arrow).
+→ Undo steps back through your setting changes; Redo re-applies them. The arrows
+are greyed when there's nothing to undo/redo.
+**PASS:** undo/redo walk your changes correctly. **FAIL:** they do nothing, skip
+steps, or restore the wrong values.
+
+**2.11 — Transport / seek.**
+Press **Play**, then click on the waveform / transport bar to **seek**.
+→ Playback starts; clicking moves the playhead to that spot; the position
+readout tracks it.
+**PASS:** plays and seeks. **FAIL:** won't play (note any device-error status
+line), or seeking doesn't move the playhead.
