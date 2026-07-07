@@ -257,3 +257,56 @@ Press **Play**, then click on the waveform / transport bar to **seek**.
 readout tracks it.
 **PASS:** plays and seeks. **FAIL:** won't play (note any device-error status
 line), or seeking doesn't move the playhead.
+
+---
+
+## 3. Advanced view tour
+
+**Goal:** confirm the Advanced screen exposes the full module rack and the
+deeper compare/spectrogram tools. Advanced is the same shell as Standard with
+per-module depth — the sound engine is identical, so nothing here changes what a
+render produces vs Standard at the same settings.
+
+**3.1 — Switch to Advanced.**
+Click the **Advanced** tab (top of the canvas; **Standard** is next to it).
+→ The view switches to the Advanced layout.
+**PASS:** Advanced view opens. **FAIL:** tab doesn't switch.
+
+**3.2 — Module rack in canonical order.**
+Read the module rack. It should list, in this fixed order:
+
+1. **De-bleed** · 2. **Declip** · 3. **De-click** · 4. **De-pop** ·
+5. **De-hum** · 6. **Denoise** · 7. **De-reverb** · 8. **De-ess** ·
+9. **Breath** · 10. **Finish** (Presence + leveling + loudness limiter).
+
+→ De-bleed and Declip are automatic/card-less by design (they have no Standard
+card) but appear here as modules 1–2.
+**PASS:** all ten modules present, in this order. **FAIL:** a module missing or
+out of order.
+
+**3.3 — A/B/C pinned snapshots (loudness-matched).**
+Render, then **Pin C** to capture a snapshot. Change some settings, render again,
+and flip between **A** (input), **B** (current processed) and **C** (your pinned
+snapshot).
+→ A/B/C are loudness-matched so you compare the *processing*, not level. C holds
+until you re-pin. Trying to Pin C before any render should say "Render before
+pinning C", not crash.
+**PASS:** all three sources audition and C stays pinned. **FAIL:** C is empty
+after a render, or the three aren't level-matched.
+
+**3.4 — Spectrogram.**
+Look at the **SPECTROGRAM** (full-width in Advanced).
+→ It shows the frequency content of the current audio (a real CPU STFT). Use it
+to eyeball residual noise/hum lines/reverb smear.
+**PASS:** spectrogram draws and updates with the audio. **FAIL:** blank or frozen.
+
+**3.5 — Per-parameter spot checks.**
+Open each module and exercise its parameters, using
+[`advanced-param-coverage.md`](advanced-param-coverage.md) as the checklist of
+what each module exposes (e.g. Denoise engine Natural/Balanced/HQ, De-ess
+Split/Wide, De-hum 50/60 Hz + tracking, De-reverb RT60/tail preserve, Breath
+attenuation dB, Finish presence/leveling/loudness).
+→ Each parameter should change the module's readout and, where audible, the
+render.
+**PASS:** parameters move and take effect. **FAIL:** a listed parameter is
+missing or inert.
