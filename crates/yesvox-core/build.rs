@@ -41,9 +41,5 @@ fn git_hash() -> Option<String> {
         .output()
         .map(|out| !out.stdout.is_empty())
         .unwrap_or(false);
-    Some(if dirty {
-        format!("{hash}-dirty")
-    } else {
-        hash
-    })
+    Some(if dirty { format!("{hash}-dirty") } else { hash })
 }
