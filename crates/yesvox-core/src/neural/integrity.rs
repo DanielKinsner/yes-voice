@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 /// is the fp32 ONNX export the #10 golden test validates — the v1.0 payload.
 const WEIGHT_MANIFEST: &[(&str, &str)] = &[(
     "mossformer2_se_48k.onnx",
-    "e1281db76f705da81641ded332752c5d95dc90f8b4eb6590e5cf7b2fdd20a51d",
+    "af292f1459aeb36d9a96ca956ff68e7eed646680335a953d42008b9dffe8f2a8",
 )];
 
 /// Resolve the neural model to load: the `YESVOX_MODEL_PATH` override wins;

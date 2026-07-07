@@ -17,7 +17,7 @@ out of scope for YesVox.
 | Model | Status | SPDX | Source pin | Source SHA-256 | Shipped hash |
 |---|---|---|---|---|---|
 | DeepFilterNet3 | Candidate (not in v1.0 bundle) | `MIT OR Apache-2.0` | `Rikorose/DeepFilterNet@d375b2d8309e0935d165700c91da9de862a99c31` | `c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616` | `TBD` |
-| MossFormer2_SE_48K | **Bundled** | `Apache-2.0` | `alibabasglab/MossFormer2_SE_48K@eff8c97925c8bec812af707814b3e5d777fd4503` | `03692b9f773bbd6bb43b9c5a41f96b1e28affd66e13796b7bec66ad3d8b227c6` | `e1281db76f705da81641ded332752c5d95dc90f8b4eb6590e5cf7b2fdd20a51d` |
+| MossFormer2_SE_48K | **Bundled** | `Apache-2.0` | `alibabasglab/MossFormer2_SE_48K@eff8c97925c8bec812af707814b3e5d777fd4503` | `03692b9f773bbd6bb43b9c5a41f96b1e28affd66e13796b7bec66ad3d8b227c6` | `af292f1459aeb36d9a96ca956ff68e7eed646680335a953d42008b9dffe8f2a8` |
 
 The shipped MossFormer2 artifact is the fp32 ONNX export the #10 golden test
 validates (`mossformer2_se_48k.onnx`, 226,825,667 bytes). DeepFilterNet3 is not

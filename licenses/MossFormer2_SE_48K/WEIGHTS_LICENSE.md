@@ -6,7 +6,7 @@ Distribution decision: **bundled in the v1.0 Windows package** under
 Shipped artifact (v1.0):
 - File name: `mossformer2_se_48k.onnx`
 - Shipped SHA-256:
-  `e1281db76f705da81641ded332752c5d95dc90f8b4eb6590e5cf7b2fdd20a51d`
+  `af292f1459aeb36d9a96ca956ff68e7eed646680335a953d42008b9dffe8f2a8`
 - Provenance: the fp32 ONNX export produced by
   `spikes/mossformer2-onnx/export_and_verify.py` from the pinned source
   checkpoint below. This is the exact artifact the engine's host chain is
