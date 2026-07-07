@@ -310,3 +310,184 @@ attenuation dB, Finish presence/leveling/loudness).
 render.
 **PASS:** parameters move and take effect. **FAIL:** a listed parameter is
 missing or inert.
+
+---
+
+## 4. Batch / queue
+
+**Goal:** confirm the **BATCH QUEUE** panel (right column) processes multiple
+files and survives interruption. The v1 queue exposes these buttons: **Force
+preset** / **Detect each**, a **pause/resume** button (shows `||` while running,
+`>` when paused), a **cancel** button (`x`), **+ Queue Current**, and
+**Export Batch**.
+
+> Note: reorder and retry-failed exist in the engine but are **not** buttons in
+> the v1 Standard queue — there's nothing to click for those, so they're not
+> tested here.
+
+**4.1 — Build a queue.**
+Import a vocal, click **+ Queue Current**, then load another vocal and queue it
+too.
+→ The queue summary near the panel title updates (e.g. "2 queued - 0 done -
+0 failed"). Queuing the same file twice should say "Already queued", not add a
+duplicate.
+**PASS:** the count grows; duplicates are refused. **FAIL:** count doesn't
+update, or duplicates stack.
+
+**4.2 — Force preset vs Detect each.**
+Toggle **Force preset** and **Detect each**.
+→ Force preset applies your selected preset to every file; Detect each picks a
+mode per file (falling back when detection is low-confidence). The highlighted
+segment shows the active mode.
+**PASS:** the toggle switches. **FAIL:** neither highlights, or both do.
+
+**4.3 — Export Batch, then pause / resume.**
+Click **Export Batch**. While it runs, click the **pause** button (`||`).
+→ Processing pauses at the next file boundary (the glyph flips to `>`); clicking
+`>` resumes.
+**PASS:** pause halts progress and resume continues. **FAIL:** pause does
+nothing.
+
+**4.4 — Cancel mid-batch.**
+Start a batch and click **cancel** (`x`) partway through.
+→ You should see "Batch cancel requested"; the batch stops at the next file and
+the not-yet-processed rows stay **pending** (not lost, not marked done).
+**PASS:** cancel stops it and unprocessed rows remain pending. **FAIL:** it
+finishes anyway, or loses the pending rows.
+
+**4.5 — Crash recovery.**
+Start a batch, then **force-kill the app** (Task Manager → End task) mid-batch.
+Relaunch YesVox.
+→ The queue should restore from disk and come back **paused**, with the
+done/failed/pending counts intact.
+**PASS:** the queue reappears paused after relaunch. **FAIL:** the queue is empty
+or its state is wrong.
+
+---
+
+## 5. Export matrix
+
+**Goal:** confirm the **OUTPUT** and **FILE** panels write correct files. Render
+first, then use **EXPORT VOCAL** (or **Export Batch** for queues).
+
+**5.1 — Format WAV vs FLAC.**
+In **OUTPUT**, switch **Format** between **WAV** and **FLAC**, export each, and
+open both.
+→ Both should open and play identically (FLAC is lossless).
+**PASS:** both export and play. **FAIL:** either won't write or won't open.
+
+**5.2 — Bit depth.**
+Change **Bit Depth** and export.
+→ The exported file's bit depth matches your choice.
+**PASS:** bit depth follows the selector. **FAIL:** it's ignored.
+
+**5.3 — Dither.**
+Toggle **Dither** on/off (under OUTPUT) and export at a lower bit depth.
+→ Dither adds tiny shaped noise to reduce quantization artifacts; on/off should
+both produce a valid file.
+**PASS:** both export cleanly. **FAIL:** either errors.
+
+**5.4 — Sample Rate is read-only.**
+Look at **Sample Rate** in OUTPUT.
+→ It's a **read-only chip** locked to the input's rate — there's deliberately no
+way to change it (hard guardrail). It should not behave like a dropdown.
+**PASS:** Sample Rate shows the input rate and isn't editable. **FAIL:** it lets
+you change it.
+
+**5.5 — Output name + location.**
+Edit **Output File Name**, and click the **Location** field to pick a folder.
+→ The name is editable text; Location opens a folder picker and shows the chosen
+path.
+**PASS:** name edits and folder picks stick. **FAIL:** either won't change.
+
+**5.6 — Same-path export lock.**
+Try to export on top of the **input file** (same path).
+→ It should refuse with a friendly message rather than overwrite your source.
+**PASS:** same-path export is blocked. **FAIL:** it overwrites the input.
+
+**5.7 — Locked-file error.**
+Open the intended export file in another app (so it's locked), then export.
+→ You should get a friendly error, not a crash, and your source is untouched.
+**PASS:** friendly error, no crash. **FAIL:** it crashes or corrupts something.
+
+> _(FLAC compression level and source-metadata round-trip are handled
+> automatically — there's no knob for them in v1 — and are covered by engine
+> tests. Nothing to hand-test beyond "the FLAC export opens and plays".)_
+
+---
+
+## 6. Error paths (friendly messages, never a crash)
+
+**Goal:** feed YesVox bad input and confirm it refuses with a clear message
+instead of crashing. The exact message the user should see is quoted for each.
+
+**6.1 — Corrupt / truncated file.**
+Import a file that's not really audio (rename a `.txt` to `.wav`) or a
+half-downloaded clip.
+→ You should get a clean "couldn't read this file"-style error (a decode error),
+**not** a crash.
+**PASS:** friendly error, app still usable. **FAIL:** crash or hang.
+
+**6.2 — Zero-length / empty file.**
+Import an empty audio file.
+→ Message: **"this file has no audio to process"**.
+**PASS:** that message (or close), no crash. **FAIL:** crash, or it pretends to
+process.
+
+**6.3 — Over 2 hours.**
+Import a file longer than 2 hours.
+→ Message: **"this vocal is N min, over the 2 h limit — split it into shorter
+takes"**.
+**PASS:** that message. **FAIL:** it tries to load it and struggles/crashes.
+
+**6.4 — Above 192 kHz.**
+Import a file with a sample rate over 192 kHz.
+→ Message: **"… Hz is above the 192 kHz limit — resample the vocal first"**.
+**PASS:** that message. **FAIL:** it loads it anyway.
+
+**6.5 — Looks like a mix (de-bleed refusal).**
+Import a full mix (music + vocal), not an isolated vocal.
+→ Message: **"input looks like a mix — run YesStems first"** (YesVox restores
+*isolated* vocals; separation is YesStems' job).
+**PASS:** it refuses with the YesStems pointer. **FAIL:** it processes the mix.
+
+**6.6 — Missing / corrupt neural model (light-engine fallback).**
+Test a build where the neural model is absent or corrupt (e.g. a dev build with
+no bundled model, or a deliberately damaged model file).
+→ The app should **not** crash: it falls back to the **Light** engine, and the
+build stamp's engine word reads **Light** with the reason available on hover.
+**PASS:** it renders on Light and the stamp explains why. **FAIL:** it crashes or
+silently claims Neural.
+
+**6.7 — Locked output file.**
+(Same as 5.7 — listed here too because it's an error path.) Export to a file
+another app has open → friendly error, no crash.
+**PASS:** friendly error. **FAIL:** crash.
+
+---
+
+## 7. How to report a bug
+
+When any step FAILs, capture this so it can be reproduced without you in the
+room. Copy the template and fill it in:
+
+```
+YesVox bug report
+------------------
+Build stamp:   (the full stamp — version · hash · engine, e.g. v1.0.0-rc.2 · a1b2c3d · Neural)
+Where:         GUI (Standard / Advanced) or CLI
+Content mode:  Voiceover / Singing
+Preset:        (which preset was selected)
+Settings touched: (cards/knobs/dials you changed from default)
+Source file:   (format, sample rate, bit depth, length, mono/stereo; where it came from)
+Runbook step:  (e.g. 2.5 FLOW AMOUNT null-at-0)
+What I did:    (the exact clicks)
+What I expected: (the "you should see Y" from the step)
+What I got:    (what actually happened — copy any on-screen message verbatim)
+Timestamp:     (roughly when, so logs can be matched)
+```
+
+**The single most important field is the build stamp** — without it, a fix can't
+be confirmed against the build you tested (§0). If the stamp said **Light** when
+you expected **Neural**, say so; that alone explains a lot of "it sounds worse
+than I remember" reports.
