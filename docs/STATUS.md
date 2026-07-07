@@ -1,18 +1,24 @@
 # YesVox — build status & pick-up guide
 
 > Resume-from-anywhere snapshot. Last updated **2026-07-07** (test-readiness
-> wave planned; previously post-#36, #20 installer built + locally smoked,
-> #21 lanes). For product intent
+> wave W1–W4 **executed** — build stamp, hand-test runbook, corpus kit, and a
+> **rc.2 stamped installer rebuilt + locally smoked**; previously post-#36).
+> For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
 > for the GUI target see [`ui/yesvox-v1-ui-reference.md`](ui/yesvox-v1-ui-reference.md).
 
 ## Where we are
 
-**The v1.0 unsigned Windows installer exists and passed a local
-install → neural render → uninstall smoke (2026-07-04).** What remains on #20
-is the clean-Windows-VM smoke (Dan); on #21, Dan's real-stem corpus and the
-suite round-trip on a clean machine. The engine (`yesvox-core` rack) already
+**The v1.0 unsigned Windows installer was rebuilt on 2026-07-07 carrying the W1
+build stamp, and passed a local install → `--version` (shows `1.0.0-rc.2`) →
+neural render (`denoiser Neural`) → uninstall smoke.** The MossFormer2 payload
+was re-blessed (S2, Dan-authorized) to `af292f14…` — the fresh export is
+numerically GO and deterministic on the current toolchain but was not
+byte-identical to the 07-04 artifact. What remains on #20 is the clean-Windows-VM
+smoke (Dan); on #21, Dan's real-stem corpus (`docs/eval-corpus.md`;
+`cargo xtask eval --check` previews it) and the suite round-trip on a clean
+machine. The engine (`yesvox-core` rack) already
 existed; #17 built the agent-callable, mechanically-tested `Session` surface the
 UI needs, then a custom-painted **egui shell** over it. #26 supplied the
 approved Advanced reference, #35 closed the deferred playback/worker polish,
@@ -232,14 +238,24 @@ long-file memory-budget validation.
    `docs/listening-checklist.md`. **Remaining:** Dan's corpus for
    `YESVOX_EVAL_CORPUS`, and the clean-machine round-trip once the VM smoke
    happens.
-7. **Test-readiness wave (W1–W4, planned 2026-07-07, afk):** the
-   decision-complete execution plan is
-   [`plans/2026-07-07-test-readiness-wave-execution-plan.md`](plans/2026-07-07-test-readiness-wave-execution-plan.md)
-   — hand-test runbook (W3), version/build stamp + GUI engine surface (W1),
-   `xtask eval` corpus preflight + doc (W4), installer rebuild on the office
-   PC with the stamp in it (W2). Unblocks Dan's #20 VM smoke and #21 corpus
-   work; gate stays the merge bar (CI minutes exhausted). Environment notes
-   for the office PC: `gh` unauthenticated, Inno Setup 6 not yet installed.
+7. ✅ **Test-readiness wave (W1–W4, executed 2026-07-07, afk):** all four
+   slices done, green, pushed (plan:
+   [`plans/2026-07-07-test-readiness-wave-execution-plan.md`](plans/2026-07-07-test-readiness-wave-execution-plan.md)).
+   - **W3** hand-test runbook: [`docs/hand-test-runbook.md`](hand-test-runbook.md).
+   - **W1** build stamp: `yesvox --version` → `yesvox 1.0.0-rc.2 (<hash>)`; a
+     dim always-visible GUI status-strip stamp shows version · hash · engine
+     (Neural/Light + a `· fallback` marker), sourced from `Session`'s
+     last-render engine. Crates bumped 0.0.0 → **1.0.0-rc.2** (xtask stays 0.0.0).
+   - **W4** corpus kit: `cargo xtask eval --check` preflight (skip-safe,
+     no-render) + [`docs/eval-corpus.md`](eval-corpus.md).
+   - **W2** installer rebuilt with the stamp on the office PC and locally
+     smoked (see "Where we are"). Inno Setup 6.7.3 installed; ORT 1.26.0 DLLs
+     staged. Payload re-blessed to `af292f14…` (S2, Dan-authorized).
+   - **Open (Dan's lane only):** the #20 clean-Windows-VM smoke of the rebuilt
+     installer, and the #21 corpus. `gh` is still unauthenticated on the office
+     PC (no new issues created this wave). **Follow-up worth doing:** the ONNX
+     payload is regenerated, not stored, so every rebuild risks a re-bless —
+     consider storing the audited artifact instead of regenerating it.
 
 ## Decisions on record
 
