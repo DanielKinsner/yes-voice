@@ -4888,14 +4888,14 @@ dependencies = [
 
 [[package]]
 name = "yesvox-app"
-version = "0.0.0"
+version = "1.0.0-rc.2"
 dependencies = [
  "yesvox-core",
 ]
 
 [[package]]
 name = "yesvox-core"
-version = "0.0.0"
+version = "1.0.0-rc.2"
 dependencies = [
  "claxon",
  "criterion",
@@ -4910,7 +4910,7 @@ dependencies = [
 
 [[package]]
 name = "yesvox-gui"
-version = "0.0.0"
+version = "1.0.0-rc.2"
 dependencies = [
  "cpal",
  "eframe",
