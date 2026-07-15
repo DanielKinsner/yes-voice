@@ -112,6 +112,13 @@ impl OrtMaskModel {
 
         // Mask is [1, T, 961] row-major; reshape into T rows of 961 gains.
         let bins = *shape.as_ref().last().unwrap_or(&(MASK_BINS as i64)) as usize;
+        // `chunks_exact(0)` panics; a zero-width bin dim is inside `try_run`, so
+        // that panic would escape `run`'s Err-only catch instead of degrading to
+        // the intended passthrough (#33). Convert it to an Err so the caller's
+        // passthrough path handles it.
+        if bins == 0 {
+            return Err("mask tensor reported zero-width bins".into());
+        }
         Ok(flat.chunks_exact(bins).map(|row| row.to_vec()).collect())
     }
 }
