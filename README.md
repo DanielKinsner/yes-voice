@@ -28,4 +28,6 @@ YesVox takes a flawed or raw isolated vocal and makes it sound **clean, clear, a
 
 ## Status
 
-Planning / research stage — **no application code yet.** The product definition is complete (see `docs/product.md`); the next step is turning the v1 scope into an architecture/build plan.
+**Release candidate — `1.0.0-rc.2`.** This is a working app, not a plan. Rust workspace (`yesvox-core` lib · `yesvox-app` headless CLI `yesvox` · `yesvox-gui` egui shell · `xtask`); neural denoise via MossFormer2 (ONNX Runtime) plus the full restoration/polish rack; Standard **and** Advanced views; batch/queue rendering; offline-enforced at the source level. An **unsigned Windows installer** was rebuilt and locally smoke-tested (install → `--version` → neural render → uninstall) on 2026-07-07.
+
+What's left before a public v1.0 is **verification and signing, not feature work**: a clean-Windows-VM installer smoke ([#20](https://github.com/DanielKinsner/yes-voice/issues/20)), a real vocal-stem eval corpus + full-suite round-trip ([#21](https://github.com/DanielKinsner/yes-voice/issues/21)), and code-signing (shared with the rest of the "Yes" suite) to clear the SmartScreen wall. Canonical build snapshot: [`docs/STATUS.md`](docs/STATUS.md).

@@ -123,7 +123,7 @@ YesVox is one app in the **music-first "Yes" suite**, sharing a design language 
 
 ## 12. Open questions (for planning, not blocking)
 
-- **Tech stack** final pick (Rust + egui vs C++ + Qt) — analysis in the master brief; decide at planning.
+- ~~**Tech stack** final pick (Rust + egui vs C++ + Qt)~~ **SETTLED & built: Rust + egui + ONNX Runtime (`ort`).** The workspace (`yesvox-core`/`-app`/`-gui`/`xtask`) is implemented and shipping as `1.0.0-rc.2`; see `STATUS.md`.
 - **The actual preset set** — concrete v1 presets per content type (e.g., Podcast / Narration / Dialogue-cleanup; Lead Vocal / Natural Vocal / …) and the adaptive "smart filter" tuning behavior.
 - **De-bleed trigger** — auto-detect separation artifacts vs a "this is a separated stem" preset/toggle; pure-DSP vs small ML for v1.
 - **Breath control in v1** — confirm it's v1 (vs v1.x), and its default per content mode.
