@@ -7,7 +7,12 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use yesvox_core::{read_wav, write_wav, DEFAULT_FLAC_COMPRESSION_LEVEL};
+use yesvox_core::DEFAULT_FLAC_COMPRESSION_LEVEL;
+// `read_wav`/`write_wav` are only exercised by the `#[cfg(windows)]`
+// `windows_locks` module (via its `use super::*`); importing them
+// unconditionally trips `-D unused-imports` on non-Windows gate legs.
+#[cfg(windows)]
+use yesvox_core::{read_wav, write_wav};
 use yesvox_core::{write_wav_with, AudioBuffer, ExportOptions, SampleEncoding};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
