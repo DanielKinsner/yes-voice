@@ -159,10 +159,20 @@ fn deinterleave(
     bits: u16,
     encoding: SampleEncoding,
     nch: usize,
-    interleaved: Vec<f32>,
+    mut interleaved: Vec<f32>,
     metadata: ContainerMetadata,
 ) -> AudioBuffer {
     let frames = interleaved.len() / nch;
+    // Frame-align before splitting into planar channels. A truncated/corrupt
+    // stream can carry a partial trailing frame (total sample count not a
+    // multiple of `nch`); without this the `i % nch` scatter below hands the
+    // leftover samples to the low channels, so the planes come out UNEQUAL in
+    // length. That only trips a `debug_assert!` in `AudioBuffer` (compiled out
+    // of release), and a later `buffer.channel(1)[frame]` then indexes out of
+    // bounds and panics — violating the "decode never panics" guarantee (#30).
+    // `read_flac` already truncates to STREAMINFO's sample count; do the same
+    // for every path here.
+    interleaved.truncate(frames * nch);
     let mut channels: Vec<Vec<f32>> = (0..nch).map(|_| Vec::with_capacity(frames)).collect();
     for (i, sample) in interleaved.into_iter().enumerate() {
         channels[i % nch].push(sample);
@@ -591,6 +601,35 @@ fn unique_path(desired: &Path) -> PathBuf {
         }
     }
     unreachable!("u32 range exhausted resolving a unique export path")
+}
+
+#[cfg(test)]
+mod deinterleave_tests {
+    use super::*;
+
+    #[test]
+    fn odd_length_stereo_stays_equal_length_and_never_panics() {
+        // Five samples across two channels is a partial trailing frame. The
+        // decoder must frame-align (drop the orphan sample) so both planes come
+        // out equal length; before the fix the low channel kept the extra
+        // sample, the planes were unequal, and a release build would later panic
+        // indexing channel(1) (#30).
+        let buffer = deinterleave(
+            48_000,
+            16,
+            SampleEncoding::Int,
+            2,
+            vec![0.1, 0.2, 0.3, 0.4, 0.5],
+            ContainerMetadata::default(),
+        );
+
+        assert_eq!(buffer.frames(), 2, "truncated to whole frames");
+        assert_eq!(buffer.channel(0).len(), buffer.channel(1).len());
+        assert_eq!(buffer.channel(0), &[0.1, 0.3]);
+        assert_eq!(buffer.channel(1), &[0.2, 0.4]);
+        // Exercise the index that panicked in release before the fix.
+        let _ = buffer.channel(1)[buffer.frames() - 1];
+    }
 }
 
 #[cfg(test)]
