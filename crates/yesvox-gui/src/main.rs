@@ -640,14 +640,43 @@ struct AdvancedFinishControlRects {
 fn advanced_finish_control_rects(card: egui::Rect) -> AdvancedFinishControlRects {
     AdvancedFinishControlRects {
         presence_toggle: rect(card.left() + 12.0, card.top() + 49.0, 18.0, 18.0),
-        presence_slider: rect(card.left() + 84.0, card.top() + 56.0, 66.0, 5.0),
-        air_slider: rect(card.left() + 84.0, card.top() + 82.0, 66.0, 5.0),
-        presence_amount_knob: rect(card.left() + 28.0, card.top() + 92.0, 54.0, 54.0),
-        leveling_toggle: rect(card.left() + 92.0, card.top() + 112.0, 18.0, 18.0),
-        leveling_slider: rect(card.left() + 124.0, card.top() + 121.0, 56.0, 5.0),
-        loudness_toggle: rect(card.left() + 154.0, card.top() + 49.0, 18.0, 18.0),
-        target_button: rect(card.left() + 180.0, card.top() + 45.0, 72.0, 24.0),
-        loudness_knob: rect(card.left() + 196.0, card.top() + 92.0, 54.0, 54.0),
+        presence_slider: rect(card.left() + 84.0, card.top() + 59.0, 66.0, 5.0),
+        air_slider: rect(card.left() + 84.0, card.top() + 89.0, 66.0, 5.0),
+        presence_amount_knob: rect(card.left() + 28.0, card.top() + 126.0, 54.0, 54.0),
+        leveling_toggle: rect(card.left() + 96.0, card.top() + 109.0, 18.0, 18.0),
+        leveling_slider: rect(card.left() + 124.0, card.top() + 130.0, 56.0, 5.0),
+        loudness_toggle: rect(card.left() + 166.0, card.top() + 49.0, 18.0, 18.0),
+        target_button: rect(card.left() + 188.0, card.top() + 83.0, 68.0, 24.0),
+        loudness_knob: rect(card.left() + 198.0, card.top() + 126.0, 54.0, 54.0),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdvancedFinishLabelRects {
+    presence: egui::Rect,
+    presence_value: egui::Rect,
+    air: egui::Rect,
+    air_value: egui::Rect,
+    presence_amount: egui::Rect,
+    leveling: egui::Rect,
+    leveling_value: egui::Rect,
+    loudness: egui::Rect,
+    target: egui::Rect,
+    limiter: egui::Rect,
+}
+
+fn advanced_finish_label_rects(card: egui::Rect) -> AdvancedFinishLabelRects {
+    AdvancedFinishLabelRects {
+        presence: rect(card.left() + 34.0, card.top() + 49.0, 44.0, 12.0),
+        presence_value: rect(card.left() + 84.0, card.top() + 43.0, 44.0, 12.0),
+        air: rect(card.left() + 34.0, card.top() + 79.0, 22.0, 12.0),
+        air_value: rect(card.left() + 84.0, card.top() + 73.0, 44.0, 12.0),
+        presence_amount: rect(card.left() + 26.0, card.top() + 108.0, 60.0, 12.0),
+        leveling: rect(card.left() + 118.0, card.top() + 108.0, 48.0, 12.0),
+        leveling_value: rect(card.left() + 124.0, card.top() + 140.0, 32.0, 12.0),
+        loudness: rect(card.left() + 188.0, card.top() + 49.0, 52.0, 12.0),
+        target: rect(card.left() + 188.0, card.top() + 66.0, 36.0, 12.0),
+        limiter: rect(card.left() + 194.0, card.top() + 184.0, 56.0, 12.0),
     }
 }
 
@@ -838,7 +867,7 @@ impl AdvancedLayout {
                 rect(656.0, 574.0, 250.0, 118.0),
                 rect(1232.0, 442.0, 260.0, 118.0),
                 rect(1232.0, 574.0, 260.0, 118.0),
-                rect(1544.0, 474.0, 268.0, 160.0),
+                rect(1544.0, 474.0, 268.0, 214.0),
             ],
             monitor: rect(88.0, 724.0, 870.0, 292.0),
             export: rect(970.0, 724.0, 862.0, 292.0),
@@ -1859,6 +1888,27 @@ impl eframe::App for YesVoxApp {
 }
 
 impl YesVoxApp {
+    /// Dedicated drag target for the borderless shell. It occupies the quiet
+    /// center-right title-bar gap and never overlays an application control.
+    fn top_bar_drag_rect() -> egui::Rect {
+        rect(1122.0, 4.0, 248.0, 60.0)
+    }
+
+    fn top_bar_presets_rect() -> egui::Rect {
+        rect(1570.0, 14.0, 130.0, 40.0)
+    }
+
+    /// Minimize, maximize/restore, and close targets for the undecorated
+    /// viewport. Keeping these as geometry helpers makes reachability and
+    /// collision checks mechanical.
+    fn top_bar_window_control_rects() -> [egui::Rect; 3] {
+        [
+            rect(1780.0, 14.0, 38.0, 40.0),
+            rect(1824.0, 14.0, 38.0, 40.0),
+            rect(1868.0, 14.0, 38.0, 40.0),
+        ]
+    }
+
     /// Top-bar render progress readout (#36). Lives in the bar drawn by every
     /// view, so a render is visibly in flight from Advanced too.
     fn top_bar_render_progress_rect() -> egui::Rect {
@@ -1880,6 +1930,20 @@ impl YesVoxApp {
     ) {
         paint_panel(painter, c, l.top, 0, alpha(PANEL, 235), BORDER_DIM);
         self.draw_wordmark(painter, c, egui::pos2(18.0, 35.0));
+
+        let drag_response = ui.interact(
+            c.rect(Self::top_bar_drag_rect()),
+            ui.make_persistent_id("window_drag_region"),
+            egui::Sense::click_and_drag(),
+        );
+        if drag_response.drag_started() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+        if drag_response.double_clicked() {
+            let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
 
         if self.segment_button(
             ui,
@@ -1996,17 +2060,33 @@ impl YesVoxApp {
                 self.cancel_render();
             }
         }
-        // Preset picker (#24): the top-bar dropdown is the only way to change
-        // preset. Gear/Help/"Back to Suite" were PNG-only dead chrome — removed.
-        if self.outline_button(
-            ui,
-            painter,
-            c,
-            rect(1775.0, 14.0, 130.0, 40.0),
-            "Presets v",
-            "top_presets",
-        ) {
+        // Preset picker (#24): hidden while a render owns this lane because
+        // settings are locked and the progress/cancel controls take priority.
+        if self.render_job.is_none()
+            && self.outline_button(
+                ui,
+                painter,
+                c,
+                Self::top_bar_presets_rect(),
+                "Presets v",
+                "top_presets",
+            )
+        {
             self.preset_menu_open = !self.preset_menu_open;
+        }
+
+        let [minimize, maximize, close] = Self::top_bar_window_control_rects();
+        if self.outline_button(ui, painter, c, minimize, "-", "window_minimize") {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+        if self.outline_button(ui, painter, c, maximize, "[]", "window_maximize") {
+            let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        }
+        if self.outline_button(ui, painter, c, close, "x", "window_close") {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -3487,14 +3567,15 @@ impl YesVoxApp {
     ) {
         self.advanced_card_header(painter, c, r, "10", "Finish");
         let controls = advanced_finish_control_rects(r);
+        let labels = advanced_finish_label_rects(r);
         let original = AdvancedFinishPanel::from_session(&self.session);
         let mut panel = original;
 
         self.micro_text(
             painter,
             c,
-            r.left() + 34.0,
-            r.top() + 58.0,
+            labels.presence.left(),
+            labels.presence.center().y,
             "Presence",
             if panel.presence_air_enabled {
                 CYAN
@@ -3515,8 +3596,8 @@ impl YesVoxApp {
         self.micro_text(
             painter,
             c,
-            r.left() + 84.0,
-            r.top() + 50.0,
+            labels.presence_value.left(),
+            labels.presence_value.center().y,
             &format!("{:.1} dB", panel.presence_db),
             TEXT_MUTED,
         );
@@ -3534,16 +3615,16 @@ impl YesVoxApp {
         self.micro_text(
             painter,
             c,
-            r.left() + 34.0,
-            r.top() + 84.0,
+            labels.air.left(),
+            labels.air.center().y,
             "Air",
             TEXT_MUTED,
         );
         self.micro_text(
             painter,
             c,
-            r.left() + 84.0,
-            r.top() + 76.0,
+            labels.air_value.left(),
+            labels.air_value.center().y,
             &format!("{:.1} dB", panel.air_db),
             TEXT_MUTED,
         );
@@ -3561,8 +3642,8 @@ impl YesVoxApp {
         self.micro_text(
             painter,
             c,
-            controls.presence_amount_knob.left() + 3.0,
-            controls.presence_amount_knob.top() - 7.0,
+            labels.presence_amount.left(),
+            labels.presence_amount.center().y,
             "P/A Amount",
             TEXT_MUTED,
         );
@@ -3578,8 +3659,8 @@ impl YesVoxApp {
         self.micro_text(
             painter,
             c,
-            r.left() + 114.0,
-            r.top() + 112.0,
+            labels.leveling.left(),
+            labels.leveling.center().y,
             "Leveling",
             if panel.leveling_enabled {
                 CYAN
@@ -3600,8 +3681,8 @@ impl YesVoxApp {
         self.micro_text(
             painter,
             c,
-            r.left() + 124.0,
-            r.top() + 136.0,
+            labels.leveling_value.left(),
+            labels.leveling_value.center().y,
             &format!("{:.0}%", panel.leveling_amount * 100.0),
             TEXT_MUTED,
         );
@@ -3619,8 +3700,8 @@ impl YesVoxApp {
         self.micro_text(
             painter,
             c,
-            r.left() + 180.0,
-            r.top() + 38.0,
+            labels.target.left(),
+            labels.target.center().y,
             "Target",
             TEXT_MUTED,
         );
@@ -3634,6 +3715,18 @@ impl YesVoxApp {
         ) {
             panel.loudness_enabled = !panel.loudness_enabled;
         }
+        self.micro_text(
+            painter,
+            c,
+            labels.loudness.left(),
+            labels.loudness.center().y,
+            "Loudness",
+            if panel.loudness_enabled {
+                CYAN
+            } else {
+                TEXT_MUTED
+            },
+        );
         if self.outline_button(
             ui,
             painter,
@@ -3653,8 +3746,8 @@ impl YesVoxApp {
         self.micro_text(
             painter,
             c,
-            controls.loudness_knob.left() + 4.0,
-            controls.loudness_knob.bottom() + 2.0,
+            labels.limiter.left(),
+            labels.limiter.center().y,
             if panel.loudness_enabled {
                 "Limiter on"
             } else {
@@ -6669,6 +6762,7 @@ mod tests {
     fn advanced_finish_controls_fit_without_overlapping() {
         let card = AdvancedLayout::new().module_cards[9];
         let controls = advanced_finish_control_rects(card);
+        let labels = advanced_finish_label_rects(card);
         let padded = card.shrink(8.0);
         let rects = [
             controls.presence_toggle,
@@ -6680,6 +6774,18 @@ mod tests {
             controls.loudness_toggle,
             controls.target_button,
             controls.loudness_knob,
+        ];
+        let label_rects = [
+            labels.presence,
+            labels.presence_value,
+            labels.air,
+            labels.air_value,
+            labels.presence_amount,
+            labels.leveling,
+            labels.leveling_value,
+            labels.loudness,
+            labels.target,
+            labels.limiter,
         ];
 
         for r in rects {
@@ -6693,6 +6799,29 @@ mod tests {
         for (i, a) in rects.iter().enumerate() {
             for b in rects.iter().skip(i + 1) {
                 assert!(!a.intersects(*b), "Finish controls must not crowd");
+            }
+        }
+
+        for label in label_rects {
+            assert!(
+                padded.contains(label.min),
+                "label left/top must stay padded"
+            );
+            assert!(
+                padded.contains(label.max),
+                "label right/bottom must stay padded"
+            );
+            for control in rects {
+                assert!(
+                    !label.intersects(control),
+                    "Finish labels must not overlap controls"
+                );
+            }
+        }
+
+        for (i, a) in label_rects.iter().enumerate() {
+            for b in label_rects.iter().skip(i + 1) {
+                assert!(!a.intersects(*b), "Finish labels must not crowd");
             }
         }
     }
@@ -7104,7 +7233,7 @@ mod tests {
         let progress = YesVoxApp::top_bar_render_progress_rect();
         let cancel = YesVoxApp::top_bar_render_cancel_rect();
         let ab_button = rect(1485.0, 14.0, 68.0, 40.0);
-        let presets_button = rect(1775.0, 14.0, 130.0, 40.0);
+        let window_controls = YesVoxApp::top_bar_window_control_rects();
 
         for r in [progress, cancel] {
             assert!(
@@ -7112,11 +7241,41 @@ mod tests {
                 "render chrome must stay inside the top bar"
             );
             assert!(
-                !r.intersects(ab_button) && !r.intersects(presets_button),
-                "render chrome must not crowd the A/B or Presets buttons"
+                !r.intersects(ab_button)
+                    && window_controls
+                        .iter()
+                        .all(|control| !r.intersects(*control)),
+                "render chrome must not crowd the A/B or window-control buttons"
             );
         }
         assert!(!progress.intersects(cancel));
+    }
+
+    #[test]
+    fn borderless_window_chrome_stays_reachable_and_clear() {
+        let top = ReferenceLayout::new().top;
+        let drag = YesVoxApp::top_bar_drag_rect();
+        let presets = YesVoxApp::top_bar_presets_rect();
+        let controls = YesVoxApp::top_bar_window_control_rects();
+        let progress = YesVoxApp::top_bar_render_progress_rect();
+        let cancel = YesVoxApp::top_bar_render_cancel_rect();
+
+        for r in [drag, presets].into_iter().chain(controls) {
+            assert!(
+                top.contains(r.min) && top.contains(r.max),
+                "borderless-window chrome must stay inside the top bar"
+            );
+        }
+        for (index, control) in controls.iter().enumerate() {
+            for other in controls.iter().skip(index + 1) {
+                assert!(!control.intersects(*other));
+            }
+            assert!(!control.intersects(drag));
+            assert!(!control.intersects(presets));
+            assert!(!control.intersects(progress));
+            assert!(!control.intersects(cancel));
+        }
+        assert!(!drag.intersects(presets));
     }
 
     #[test]
