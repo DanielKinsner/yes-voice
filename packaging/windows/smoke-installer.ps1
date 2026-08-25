@@ -177,18 +177,6 @@ try {
         throw "installed render changed WAV shape: input=$($inputShape | ConvertTo-Json -Compress), output=$($outputShape | ConvertTo-Json -Compress)"
     }
 
-    [pscustomobject]@{
-        Status = "green"
-        TimestampUtc = [DateTime]::UtcNow.ToString("o")
-        Installer = $installer
-        InstallerSha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
-        Version = $versionLine
-        NeuralRender = $true
-        Channels = $outputShape.Channels
-        SampleRate = $outputShape.SampleRate
-        Frames = $outputShape.Frames
-        RenderLog = $renderLog
-    } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $reportPath -Encoding utf8
 } catch {
     $failure = $_
 } finally {
@@ -215,6 +203,20 @@ foreach ($residue in @("yesvox.exe", "yesvox-gui.exe", "onnxruntime.dll", "model
 if ($failure) {
     throw $failure
 }
+
+[pscustomobject]@{
+    Status = "green"
+    TimestampUtc = [DateTime]::UtcNow.ToString("o")
+    Installer = $installer
+    InstallerSha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+    Version = $versionLine
+    NeuralRender = $true
+    Channels = $outputShape.Channels
+    SampleRate = $outputShape.SampleRate
+    Frames = $outputShape.Frames
+    RenderLog = $renderLog
+    Uninstalled = $true
+} | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $reportPath -Encoding utf8
 
 Write-Host "installer smoke: green"
 Write-Host "report: $reportPath"

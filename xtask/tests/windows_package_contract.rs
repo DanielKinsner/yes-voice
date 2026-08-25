@@ -138,6 +138,21 @@ fn windows_package_and_smoke_scripts_are_fail_closed() {
             "smoke-installer.ps1 must verify {required:?}"
         );
     }
+
+    let residue_gate = smoke
+        .find("uninstall left release payload behind")
+        .expect("smoke script must reject uninstall residue");
+    let green_report = smoke
+        .rfind("Set-Content -LiteralPath $reportPath")
+        .expect("smoke script must persist its report");
+    assert!(
+        green_report > residue_gate,
+        "a green smoke report must be written only after uninstall residue is checked"
+    );
+    assert!(
+        smoke.contains("Uninstalled = $true"),
+        "the green report must explicitly attest that uninstall verification passed"
+    );
 }
 
 fn repo_root() -> PathBuf {
