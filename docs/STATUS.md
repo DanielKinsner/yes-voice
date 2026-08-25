@@ -1,8 +1,8 @@
 # YesVox — build status & pick-up guide
 
 > Resume-from-anywhere snapshot. Last updated **2026-08-25** (RC.3 packaging,
-> neural-boundary hardening, and desktop UI/UX polish executed; installer build
-> and local install/render/uninstall smoke are now one fail-closed command).
+> neural-boundary hardening, and YES-suite brand unification executed; installer
+> build and local install/render/uninstall smoke are now one fail-closed command).
 > For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
@@ -34,7 +34,7 @@ trim, preview-rate badge).
 - **Workspace:** `yesvox-core` (lib), `yesvox-app` (headless CLI, bin `yesvox`),
   **`yesvox-gui`** (the egui app, bin `yesvox-gui`, **new**), `xtask`.
 - **The gate is green on RC.3.** `cargo xtask gate` = fmt → clippy `-D warnings`
-  → test → `cargo deny check`. Core unit tests, integration tests, and all 51
+  → test → `cargo deny check`. Core unit tests, integration tests, and all 54
   GUI tests pass.
 
 ## Build / run / verify (any machine)
@@ -112,6 +112,16 @@ A multi-agent audit of the UI reference vs the core produced a punch list
   and nine control regions from overlapping. Captured Standard and Advanced
   surfaces match the approved dark visual language; final taste approval stays
   with Dan.
+- **YES-suite brand unification:** current YES Master source and the shipped
+  reference were treated as the brand authority while YesVox kept its own
+  cyan/violet identity and restoration workflow. Standard and Advanced now use
+  the shared graphite material depth, quiet rails and active states, compact
+  marked section labels, centered primary view switch, unified listening deck,
+  dimensional 270-degree/28-tick hardware knobs, metallic slider thumbs, and
+  top-lit primary actions. The dead Standard Restore/Polish title-bar switch was
+  removed because both racks remain simultaneously visible. Palette, navigation,
+  and knob geometry are pinned by GUI tests; both views were built and captured
+  at the reference canvas for visual inspection.
 
 ## Next up (re-planned 2026-07-03 — grill session)
 
