@@ -136,6 +136,98 @@ fn package_audit_accepts_staged_payload_with_matching_bundled_hash() {
     let _ = fs::remove_dir_all(root);
 }
 
+#[test]
+fn package_audit_rejects_a_runtime_payload_with_the_wrong_hash() {
+    let root = temp_root("runtime-wrong-hash");
+    let model_dir = root.join("models");
+    fs::create_dir_all(&model_dir).expect("create staged model dir");
+    let model_payload = b"approved model";
+    fs::write(model_dir.join("approved.onnx"), model_payload).expect("write model");
+    let model_manifest = root.join("model-weights.tsv");
+    write_bundled_manifest(&model_manifest, "FakeModel", &sha256_hex(model_payload));
+
+    let runtime_dir = root.join("runtime");
+    fs::create_dir_all(&runtime_dir).expect("create staged runtime dir");
+    fs::write(runtime_dir.join("onnxruntime.dll"), b"tampered runtime").expect("write runtime");
+    let runtime_manifest = root.join("runtime-sha256.tsv");
+    write_runtime_manifest(
+        &runtime_manifest,
+        "onnxruntime.dll",
+        "1.26.0",
+        &sha256_hex(b"approved runtime"),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("package-audit")
+        .env("YESVOX_MODEL_BUNDLE_DIR", &model_dir)
+        .env("YESVOX_MODEL_WEIGHTS_MANIFEST", &model_manifest)
+        .env("YESVOX_RUNTIME_BUNDLE_DIR", &runtime_dir)
+        .env("YESVOX_RUNTIME_MANIFEST", &runtime_manifest)
+        .output()
+        .expect("run xtask package-audit");
+
+    assert!(
+        !output.status.success(),
+        "a changed native runtime must fail the package audit"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("onnxruntime.dll"),
+        "failure should name the changed runtime file; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("runtime manifest"),
+        "failure should explain that the runtime hash is not approved; stderr:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn package_audit_accepts_matching_model_and_runtime_payloads() {
+    let root = temp_root("matching-runtime");
+    let model_dir = root.join("models");
+    fs::create_dir_all(&model_dir).expect("create staged model dir");
+    let model_payload = b"approved model";
+    fs::write(model_dir.join("approved.onnx"), model_payload).expect("write model");
+    let model_manifest = root.join("model-weights.tsv");
+    write_bundled_manifest(&model_manifest, "FakeModel", &sha256_hex(model_payload));
+
+    let runtime_dir = root.join("runtime");
+    fs::create_dir_all(&runtime_dir).expect("create staged runtime dir");
+    let runtime_payload = b"approved runtime";
+    fs::write(runtime_dir.join("onnxruntime.dll"), runtime_payload).expect("write runtime");
+    let runtime_manifest = root.join("runtime-sha256.tsv");
+    write_runtime_manifest(
+        &runtime_manifest,
+        "onnxruntime.dll",
+        "1.26.0",
+        &sha256_hex(runtime_payload),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("package-audit")
+        .env("YESVOX_MODEL_BUNDLE_DIR", &model_dir)
+        .env("YESVOX_MODEL_WEIGHTS_MANIFEST", &model_manifest)
+        .env("YESVOX_RUNTIME_BUNDLE_DIR", &runtime_dir)
+        .env("YESVOX_RUNTIME_MANIFEST", &runtime_manifest)
+        .output()
+        .expect("run xtask package-audit");
+
+    assert!(
+        output.status.success(),
+        "matching native runtime should pass; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("1 runtime files"),
+        "success should report the runtime file count; stderr:\n{stderr}"
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
 fn temp_root(label: &str) -> PathBuf {
     let unique = format!(
         "yesvox-package-audit-{label}-{}-{:?}",
@@ -159,4 +251,8 @@ fn write_bundled_manifest(path: &PathBuf, model: &str, bundled_sha256: &str) {
         ),
     )
     .expect("write manifest");
+}
+
+fn write_runtime_manifest(path: &PathBuf, file: &str, version: &str, sha256: &str) {
+    fs::write(path, format!("{file}\t{version}\t{sha256}\n")).expect("write runtime manifest");
 }

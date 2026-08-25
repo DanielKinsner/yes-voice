@@ -29,8 +29,11 @@ const EVAL_REPORT_ENV: &str = "YESVOX_EVAL_REPORT";
 const MODEL_BUNDLE_ENV: &str = "YESVOX_MODEL_BUNDLE_DIR";
 const MODEL_WEIGHTS_MANIFEST_ENV: &str = "YESVOX_MODEL_WEIGHTS_MANIFEST";
 const MODEL_BUNDLE_MAX_BYTES_ENV: &str = "YESVOX_MODEL_BUNDLE_MAX_BYTES";
+const RUNTIME_BUNDLE_ENV: &str = "YESVOX_RUNTIME_BUNDLE_DIR";
+const RUNTIME_MANIFEST_ENV: &str = "YESVOX_RUNTIME_MANIFEST";
 const DEFAULT_EVAL_REPORT: &str = "target/eval/report.json";
 const DEFAULT_MODEL_WEIGHTS_MANIFEST: &str = "licenses/model-weights.tsv";
+const DEFAULT_RUNTIME_MANIFEST: &str = "packaging/windows/onnxruntime-1.26.0-sha256.tsv";
 const EVAL_MIN_PER_MODE: usize = 12;
 const MAX_MODEL_BUNDLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const LOUDNESS_TOLERANCE_LU: f32 = 2.0;
@@ -79,12 +82,27 @@ fn package_audit() -> ExitCode {
         return ExitCode::SUCCESS;
     };
 
-    match run_package_audit(&model_dir) {
-        Ok(outcome) => {
+    let runtime_dir = std::env::var_os(RUNTIME_BUNDLE_ENV).map(PathBuf::from);
+    match run_package_audit(&model_dir).and_then(|model| {
+        runtime_dir
+            .as_deref()
+            .map(run_runtime_audit)
+            .transpose()
+            .map(|runtime| (model, runtime))
+    }) {
+        Ok((outcome, runtime)) => {
             eprintln!(
                 "package-audit: green — {} model files, {} bytes, {} bundled manifest rows",
                 outcome.files, outcome.bytes, outcome.bundled_rows
             );
+            if let Some(runtime) = runtime {
+                eprintln!(
+                    "package-audit: green — {} runtime files, {} bytes",
+                    runtime.files, runtime.bytes
+                );
+            } else {
+                eprintln!("package-audit: runtime skipped — {RUNTIME_BUNDLE_ENV} is not set");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -98,6 +116,11 @@ struct PackageAuditOutcome {
     files: usize,
     bytes: u64,
     bundled_rows: usize,
+}
+
+struct RuntimeAuditOutcome {
+    files: usize,
+    bytes: u64,
 }
 
 fn run_package_audit(model_dir: &Path) -> Result<PackageAuditOutcome, String> {
@@ -174,6 +197,108 @@ fn model_weights_manifest_path() -> PathBuf {
     std::env::var_os(MODEL_WEIGHTS_MANIFEST_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| repo_root().join(DEFAULT_MODEL_WEIGHTS_MANIFEST))
+}
+
+fn runtime_manifest_path() -> PathBuf {
+    std::env::var_os(RUNTIME_MANIFEST_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root().join(DEFAULT_RUNTIME_MANIFEST))
+}
+
+fn run_runtime_audit(runtime_dir: &Path) -> Result<RuntimeAuditOutcome, String> {
+    if !runtime_dir.is_dir() {
+        return Err(format!(
+            "{RUNTIME_BUNDLE_ENV} must point at a directory, got {}",
+            runtime_dir.display()
+        ));
+    }
+
+    let manifest_path = runtime_manifest_path();
+    let raw = fs::read_to_string(&manifest_path)
+        .map_err(|e| format!("could not read {}: {e}", manifest_path.display()))?;
+    let mut expected = BTreeMap::new();
+    for (index, raw_line) in raw.lines().enumerate() {
+        let line_no = index + 1;
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = raw_line.split('\t').collect();
+        if cols.len() != 3 {
+            return Err(format!(
+                "{}:{line_no} must have 3 tab-separated columns",
+                manifest_path.display()
+            ));
+        }
+        let file = cols[0].trim().replace('\\', "/");
+        let version = cols[1].trim();
+        let hash = cols[2].trim().to_ascii_lowercase();
+        if file.is_empty() || version.is_empty() || !is_sha256(&hash) {
+            return Err(format!(
+                "{}:{line_no} needs file, version, and SHA-256",
+                manifest_path.display()
+            ));
+        }
+        if expected
+            .insert(file.clone(), (version.to_string(), hash))
+            .is_some()
+        {
+            return Err(format!(
+                "{}:{line_no} duplicates runtime file {file}",
+                manifest_path.display()
+            ));
+        }
+    }
+    if expected.is_empty() {
+        return Err(format!(
+            "runtime manifest contains no files: {}",
+            manifest_path.display()
+        ));
+    }
+
+    let mut files = Vec::new();
+    collect_payload_files(runtime_dir, runtime_dir, &mut files)?;
+    let mut seen = BTreeSet::new();
+    let mut total_bytes = 0u64;
+    for file in &files {
+        let relative = display_path(file.strip_prefix(runtime_dir).unwrap_or(file));
+        let Some((version, expected_hash)) = expected.get(&relative) else {
+            return Err(format!(
+                "{relative} is not listed in runtime manifest {}",
+                manifest_path.display()
+            ));
+        };
+        let metadata = fs::metadata(file)
+            .map_err(|e| format!("could not inspect staged runtime {}: {e}", file.display()))?;
+        total_bytes = total_bytes
+            .checked_add(metadata.len())
+            .ok_or_else(|| "staged runtime bundle size overflowed u64".to_string())?;
+        let bytes = fs::read(file)
+            .map_err(|e| format!("could not read staged runtime {}: {e}", file.display()))?;
+        let actual_hash = sha256_hex(&bytes);
+        if &actual_hash != expected_hash {
+            return Err(format!(
+                "{relative} ({actual_hash}) does not match runtime manifest {} ({version}, {expected_hash})",
+                manifest_path.display()
+            ));
+        }
+        eprintln!("package-audit: matched runtime {relative} ({version})");
+        seen.insert(relative);
+    }
+
+    for file in expected.keys() {
+        if !seen.contains(file) {
+            return Err(format!(
+                "runtime manifest entry {file} has no matching staged file in {}",
+                runtime_dir.display()
+            ));
+        }
+    }
+
+    Ok(RuntimeAuditOutcome {
+        files: files.len(),
+        bytes: total_bytes,
+    })
 }
 
 fn max_model_bundle_bytes() -> Result<u64, String> {
