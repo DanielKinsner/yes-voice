@@ -48,7 +48,7 @@ upstream revision, source artifact SHA-256, and a per-model
 `WEIGHTS_LICENSE.md` with a distribution decision and source evidence. Any row
 marked `bundled` must also carry the shipped-artifact SHA-256.
 
-When package-time model payloads are staged, run:
+When package-time model and runtime payloads are staged, run:
 
 ```
 cargo xtask package-audit
@@ -58,9 +58,11 @@ It is skip-safe when `YESVOX_MODEL_BUNDLE_DIR` is unset. When set, it walks the
 staged model directory, checks the total model payload size against the v1.0
 2 GiB ceiling, hashes every staged file, and fails unless every hash matches a
 `bundled` row in `licenses/model-weights.tsv` and every bundled row has a
-matching staged file. Tests use `YESVOX_MODEL_WEIGHTS_MANIFEST` and
-`YESVOX_MODEL_BUNDLE_MAX_BYTES` overrides so the behavior is covered without
-committing release weights.
+matching staged file. When `YESVOX_RUNTIME_BUNDLE_DIR` is also set, every staged
+ONNX Runtime filename and hash must exactly match
+`packaging/windows/onnxruntime-1.26.0-sha256.tsv`, including license and notice
+files. Tests use manifest and byte-ceiling overrides so both contracts are
+covered without committing release payloads.
 
 As modules land, each adds its own mechanical gate (per-module null, no-double-repair, loudness within ±0.5 LU of target, metadata round-trip, fp16 numerics, …). See the plan's acceptance-criteria matrix.
 
@@ -102,7 +104,7 @@ commit.
   to `target/eval/report.json` (override with `YESVOX_EVAL_REPORT`) and fails
   on length, loudness/true-peak, F0 continuity, HNR, spectral-envelope, or
   singing-tail/vibrato regressions.
-- **Neural lane** (`--features neural`) — the `ort` ONNX engine is off by default, so the fast lane never builds it. A compile-only CI job (`cargo clippy -p yesvox-core --features neural -D warnings`, `load-dynamic` ⇒ no native download) stops the feature-gated code from rotting. Its real end-to-end parity check is an **`#[ignore]`d** integration test (`ort_mask_matches_golden`) — it needs the fetched ONNX weights (`YESVOX_MODEL_PATH`) and the onnxruntime shared lib (`ORT_DYLIB_PATH`), so it runs on a developer machine, not CI. The always-on host DSP (fbank/STFT/engine/resample/chunk) **is** golden-tested in the fast lane; goldens are blessed by the `spikes/mossformer2-onnx/*_golden.py` scripts.
+- **Neural lane** (`--features neural`) — the `ort` ONNX engine is off by default, so the fast lane never builds it. A compile-only CI job (`cargo clippy -p yesvox-core --features neural -D warnings`, `load-dynamic` ⇒ no native download) stops the feature-gated code from rotting. Its real end-to-end parity check is an **`#[ignore]`d** integration test (`ort_mask_matches_golden`) — it needs the fetched ONNX weights (`YESVOX_MODEL_PATH`) and the onnxruntime shared lib (`ORT_DYLIB_PATH`), so it runs on a developer machine, not CI. Run that parity test and `a_garbage_model_file_falls_back_to_light_not_a_crash` in **separate cargo invocations** on Windows; ORT's native process-global state makes one combined `--ignored` harness unsuitable. The always-on host DSP (fbank/STFT/engine/resample/chunk) and malformed-output shape/finite validation **are** tested in the fast lane; goldens are blessed by the `spikes/mossformer2-onnx/*_golden.py` scripts.
 - **Singing lane** — `tests/singing_gate.rs` runs the synthetic sung-character preservation checks in CI: F0 cents, vibrato rate/depth, HNR, spectral-envelope cosine, and tail survival.
 - **Determinism lane** (#34) — `tests/determinism.rs` is a **hard same-machine gate** (part of `cargo test`, so it runs on every OS): the full rack rendered twice, and rendered with 1 vs N worker-pool threads, must be **byte-identical** (the pool reassembles chunks by index, so thread-count can't change the output). Cross-*platform* byte-agreement is **not yet a gate**: the separate `determinism-fingerprint` CI job renders a fixture and prints a `DETERMINISM_FINGERPRINT … sha256=…` line per OS. Compare those three logs — if they agree, promote the hash to a hard cross-OS golden; if float drift (SIMD/libm) makes them diverge, document where and pin per-platform goldens. Informational first, by design.
 - **Memory-budget lane** (#32/#35) — `tests/memory_budget.rs` keeps a default short render measurement inside `cargo xtask gate`, comparing the real counted peak allocation to `ChunkPolicy::working_set_k`. The long-material shape is opt-in and local-only so the fast gate stays fast: `YESVOX_LONG_MEMORY_BUDGET=1 cargo test -p yesvox-core --test memory_budget opt_in_long_material_validates_working_set_k -- --nocapture`.

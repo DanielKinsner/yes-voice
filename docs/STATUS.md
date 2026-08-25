@@ -1,8 +1,8 @@
 # YesVox — build status & pick-up guide
 
-> Resume-from-anywhere snapshot. Last updated **2026-07-07** (test-readiness
-> wave W1–W4 **executed** — build stamp, hand-test runbook, corpus kit, and a
-> **rc.2 stamped installer rebuilt + locally smoked**; previously post-#36).
+> Resume-from-anywhere snapshot. Last updated **2026-08-25** (RC.3 packaging,
+> neural-boundary hardening, and desktop UI/UX polish executed; installer build
+> and local install/render/uninstall smoke are now one fail-closed command).
 > For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
@@ -10,13 +10,17 @@
 
 ## Where we are
 
-**The v1.0 unsigned Windows installer was rebuilt on 2026-07-07 carrying the W1
-build stamp, and passed a local install → `--version` (shows `1.0.0-rc.2`) →
-neural render (`denoiser Neural`) → uninstall smoke.** The MossFormer2 payload
-was re-blessed (S2, Dan-authorized) to `af292f14…` — the fresh export is
-numerically GO and deterministic on the current toolchain but was not
-byte-identical to the 07-04 artifact. What remains on #20 is the clean-Windows-VM
-smoke (Dan); on #21, Dan's real-stem corpus (`docs/eval-corpus.md`;
+**The v1.0 unsigned Windows installer is now RC.3 and has passed a local silent
+install → exact `--version` → bundled neural render (`denoiser Neural`) →
+uninstall-residue verification smoke.** `packaging/windows/build-rc.ps1` starts
+from a clean worktree, audits the exact model and ONNX Runtime payloads, runs
+the canonical gate, stamps the source revision, builds the installer, and
+writes a green JSON report only after uninstall has been attested. The bundled
+MossFormer2 payload remains hash-pinned at `af292f14…`; ONNX Runtime 1.26.0's
+two DLLs, license, and third-party notices are pinned by
+`packaging/windows/onnxruntime-1.26.0-sha256.tsv`. What remains on #20 is the
+clean-Windows-VM smoke (Dan); on #21, Dan's private real-stem corpus
+(`docs/eval-corpus.md`;
 `cargo xtask eval --check` previews it) and the suite round-trip on a clean
 machine. The engine (`yesvox-core` rack) already
 existed; #17 built the agent-callable, mechanically-tested `Session` surface the
@@ -29,8 +33,9 @@ trim, preview-rate badge).
 
 - **Workspace:** `yesvox-core` (lib), `yesvox-app` (headless CLI, bin `yesvox`),
   **`yesvox-gui`** (the egui app, bin `yesvox-gui`, **new**), `xtask`.
-- **The gate is green.** `cargo xtask gate` = fmt → clippy `-D warnings` → test →
-  `cargo deny check`. Core unit tests, integration tests, and GUI tests pass.
+- **The gate is green on RC.3.** `cargo xtask gate` = fmt → clippy `-D warnings`
+  → test → `cargo deny check`. Core unit tests, integration tests, and all 51
+  GUI tests pass.
 
 ## Build / run / verify (any machine)
 
@@ -80,10 +85,33 @@ A multi-agent audit of the UI reference vs the core produced a punch list
 | **#19g** | **Batch progress/cancel surface** — `RenderQueue::run_with_progress()` reports file-boundary progress and can cancel before the next file, leaving unprocessed rows pending; the GUI batch export path uses that observer and exposes a cancel affordance. |
 | **#19h** | **FLAC level persistence + encoder wiring** — `ExportSettings` now persists/clamps the planned 0–8 FLAC compression level, `ExportOptions` carries it to the FLAC writer, and tests prove level 0 vs 8 reach the encoder without changing decoded audio. |
 | **#19i** | **Original-file metadata round-trip coverage** — decoded buffers now carry source container metadata through render/export; WAV `bext`/`iXML`/`LIST` plus unknown RIFF chunks and FLAC Vorbis/application blocks round-trip mechanically in `io_export` tests. |
-| **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) now launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. Live capture: `target/visual/yesvox-gui-client.png`. |
+| **GUI** | **Custom-painted egui Standard-view shell** (`crates/yesvox-gui`) launches as a 1920×1080 borderless canvas and tracks the reference layout: left order/type/assist stack, waveform/transport, two horizontal rack rows, meters, monitor/reblend/isolation strip, and the right preset/output/file/export column. |
 | **#17 close-out** | **Zero-dead-chrome shell pass** — verified the drawn controls against the current shell, fixed the read-only Sample Rate row so it no longer paints as a selector, and removed static help/favorite icons that looked actionable but had no wired behavior. |
 | **#35** | **Playback/worker polish close-out** — render jobs now poll cancel between DSP stages and expose a render-cancel affordance; playback resamples preview buffers to the output device rate without touching export; the monitor strip caches the audible buffer/metrics and avoids resetting an unchanged playback source; memory-budget coverage now includes an opt-in two-minute render measurement (`YESVOX_LONG_MEMORY_BUDGET=1`). |
 | **#18** | **Advanced screen** — separate Advanced view over the approved #26 structure/style, full module rack in canonical order, A/B/C with loudness-matched pinned snapshots, real CPU STFT spectrogram fallback with cache, monitor/reblend strip, and signed parameter coverage in `docs/advanced-param-coverage.md`. |
+
+## 2026-08-25 RC.3 hardening wave
+
+- **Gate/toolchain restored:** current Rust Clippy issues are fixed and
+  `webbrowser` is updated to 1.2.2, clearing RUSTSEC-2026-0257.
+- **Exact native payload contract:** package audit now verifies the staged model
+  and every ONNX Runtime 1.26.0 file against source-controlled SHA-256
+  manifests, including the upstream license and third-party notices.
+- **Repeatable package/smoke:** `packaging/windows/build-rc.ps1` and
+  `smoke-installer.ps1` fail closed on a dirty tree, wrong version, light-engine
+  fallback, render-shape mismatch, uninstall failure, or installed residue.
+- **Neural output hardening:** malformed/non-finite ONNX mask outputs, missing
+  session inputs/outputs, and wrong `[1,T,961]` shapes degrade safely to
+  passthrough instead of crashing or corrupting a render. The real model parity
+  test and corrupt-model fallback test pass in isolated processes, and the
+  installed RC.3 smoke proves the bundled neural path end to end.
+- **UI/UX polish:** the borderless desktop shell now has visible, tested
+  minimize/maximize/close controls plus a draggable/double-clickable title
+  region. Render progress keeps its own clear toolbar lane. The Advanced Finish
+  card uses the available panel space and mechanically prevents its ten labels
+  and nine control regions from overlapping. Captured Standard and Advanced
+  surfaces match the approved dark visual language; final taste approval stays
+  with Dan.
 
 ## Next up (re-planned 2026-07-03 — grill session)
 
@@ -212,19 +240,22 @@ long-file memory-budget validation.
    `docs/ui/advanced-parameter-inventory.md` and
    `docs/ui/yesvox-v1-advanced-reference.png`, with the final coverage/sign-off
    recorded in `docs/advanced-param-coverage.md`.
-5. **#20 v1.0 lane — installer built + locally smoked (2026-07-04).** The
+5. **#20 v1.0 lane — RC.3 installer built + locally smoked (2026-08-25).** The
    MossFormer2 payload is pinned end-to-end: the golden-validated fp32 ONNX
    export is the `bundled` row in `licenses/model-weights.tsv` (shipped
    SHA-256 recorded), mirrored into the load-time integrity manifest
    (cross-checked by `xtask/tests/weights_license_audit.rs`), with the full
-   Apache-2.0 text in `THIRD-PARTY-NOTICES.txt`. Both binaries gained a
+   Apache-2.0 text in `THIRD-PARTY-NOTICES.txt`. The package also pins the exact
+   ONNX Runtime 1.26.0 DLL/license/notice set. Both binaries have a
    `neural` passthrough feature; the app now **discovers** the bundled model
    (`{app}\models`, manifest names only) and the bundled ONNX Runtime dylib
    next to the exe (no env vars needed; `YESVOX_MODEL_PATH`/`ORT_DYLIB_PATH`
    still override). The recipe compiles from the repo root (`SourceDir` fix)
-   → `target/package/yesvox-v1-unsigned.exe` (~215 MB), and a local silent
-   install → installed CLI renders with `denoiser Neural` → silent uninstall
-   all passed. See `packaging/windows/README.md` for the verified steps +
+   → `target/package/yesvox-v1-unsigned.exe` (~215 MB). The clean-tree build
+   command audits both payloads, runs the canonical gate, builds, then performs
+   a local silent install → exact RC.3 version → installed CLI neural render →
+   silent uninstall with residue verification. See `packaging/windows/README.md`
+   for the verified steps +
    SmartScreen notes. **Remaining:** clean-Windows-VM smoke (Dan). DFN3 is
    explicitly not in the v1.0 bundle (unwired).
 6. **#21 eval lanes:** perf tripwire (`tests/perf_budget.rs`), local Criterion
@@ -249,13 +280,13 @@ long-file memory-budget validation.
    - **W4** corpus kit: `cargo xtask eval --check` preflight (skip-safe,
      no-render) + [`docs/eval-corpus.md`](eval-corpus.md).
    - **W2** installer rebuilt with the stamp on the office PC and locally
-     smoked (see "Where we are"). Inno Setup 6.7.3 installed; ORT 1.26.0 DLLs
-     staged. Payload re-blessed to `af292f14…` (S2, Dan-authorized).
+     smoked (see "Where we are"). Superseded by the automated RC.3 lane above.
    - **Open (Dan's lane only):** the #20 clean-Windows-VM smoke of the rebuilt
      installer, and the #21 corpus. `gh` is still unauthenticated on the office
      PC (no new issues created this wave). **Follow-up worth doing:** the ONNX
      payload is regenerated, not stored, so every rebuild risks a re-bless —
-     consider storing the audited artifact instead of regenerating it.
+     This risk is now mechanically contained by the clean-tree payload audit; a
+     regenerated artifact cannot package unless it matches the approved hash.
 
 ## Decisions on record
 
@@ -299,5 +330,5 @@ the visual shell now paints a fixed 1920×1080 coordinate system directly from
 uses `ctx.set_visuals` + `ctx.all_styles_mut`. `deny.toml`
 carries four scoped, permissive license exceptions for the egui tree
 (hexf-parse CC0, clipboard-win/error-code BSL-1.0, epaint_default_fonts
-OFL-1.1/Ubuntu-font). Visual fidelity is verified by eye; widget logic is tested
-in `yesvox-core`.
+OFL-1.1/Ubuntu-font). Layout, hit regions, and collision boundaries are tested;
+captured surfaces support the separate owner visual/taste review.

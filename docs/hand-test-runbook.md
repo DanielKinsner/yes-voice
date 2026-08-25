@@ -34,9 +34,9 @@ in two places:
   always visible on both the Standard and Advanced screens. It reads something
   like:
 
-  > `v1.0.0-rc.2 · a1b2c3d · Neural`
+  > `v1.0.0-rc.3 · a1b2c3d · Neural`
 
-  - `v1.0.0-rc.2` — the version.
+  - `v1.0.0-rc.3` — the version.
   - `a1b2c3d` — the exact code build (a short git hash). If it ends in `-dirty`
     the build was made from uncommitted changes; if it says `unknown` the build
     machine had no git — both are fine for a local test, just note it.
@@ -47,7 +47,7 @@ in two places:
 
 - **In the CLI:** run `yesvox --version` (or `yesvox -V`). You should see:
 
-  > `yesvox 1.0.0-rc.2 (a1b2c3d)`
+  > `yesvox 1.0.0-rc.3 (a1b2c3d)`
 
 **The rule:** *if the stamp doesn't match the build you meant to test, STOP and
 rebuild/reinstall. You are chasing a ghost.* For example, if you just built a new
@@ -474,7 +474,7 @@ room. Copy the template and fill it in:
 ```
 YesVox bug report
 ------------------
-Build stamp:   (the full stamp — version · hash · engine, e.g. v1.0.0-rc.2 · a1b2c3d · Neural)
+Build stamp:   (the full stamp — version · hash · engine, e.g. v1.0.0-rc.3 · a1b2c3d · Neural)
 Where:         GUI (Standard / Advanced) or CLI
 Content mode:  Voiceover / Singing
 Preset:        (which preset was selected)

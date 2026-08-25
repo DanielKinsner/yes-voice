@@ -3,7 +3,7 @@
 *Vera, 2026-07-12 (Fable session). ⚠️ Read against `origin/main` @ 6dacc08 — the local clone on this machine (`471a136`) is **233 commits stale**; pull before working here.*
 
 ## Correction to the record first
-Every status note (README, the CC memory index, product.md §12) still says YesVox is "planning stage / no application code yet." **That is stale and wrong.** origin is at **v1.0-rc.2**, a real Rust app, with a Windows unsigned installer built and locally smoke-tested (install → --version → neural render → uninstall) on 2026-07-07. It's the **second-most-complete** app in the suite, not the earliest.
+Any note that calls YesVox "planning stage / no application code yet" is **stale and wrong.** The repo is at **v1.0-rc.3**, a real Rust app, with a Windows unsigned installer built and locally smoke-tested (install → exact version → bundled neural render → uninstall/residue verification) on 2026-08-25. It's the **second-most-complete** app in the suite, not the earliest.
 
 ## What it is
 Offline vocal **restoration + polish** — denoise (MossFormer2 ONNX), de-reverb, de-click/pop, de-hum, declip, de-ess, breath control, content-aware presets with a first-class **Voiceover/Singing toggle**. Rust workspace (yesvox-core / -app CLI / -gui egui / xtask). Deep test discipline: guarantee-gates (null/offline/nondestructive/same-length/batch/loudness/neural-plumbing), fuzzing, determinism, perf budget, a real singing-preservation mechanical gate + golden files. `cargo xtask gate` (fmt→clippy -D→test→cargo-deny) is green locally.

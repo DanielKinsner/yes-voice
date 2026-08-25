@@ -1,9 +1,10 @@
 # Model Weights License Audit
 
-Status: **v1.0 payload pinned 2026-07-04**. This is the v1.0 distribution audit
-for bundled neural weights. The MossFormer2 payload is selected, hash-pinned,
+Status: **v1.0 payload and native runtime pinned 2026-08-25**. This is the v1.0
+distribution audit for bundled neural weights. The MossFormer2 payload is selected, hash-pinned,
 license-texted, and integrity-manifested; the unsigned installer has been
-built and smoke-tested locally (install → neural render → uninstall). The
+built and smoke-tested locally (install → exact version → neural render →
+uninstall/residue verification). The
 remaining ship blocker is the clean-Windows-VM smoke.
 
 ## Scope
@@ -20,7 +21,7 @@ out of scope for YesVox.
 | MossFormer2_SE_48K | **Bundled** | `Apache-2.0` | `alibabasglab/MossFormer2_SE_48K@eff8c97925c8bec812af707814b3e5d777fd4503` | `03692b9f773bbd6bb43b9c5a41f96b1e28affd66e13796b7bec66ad3d8b227c6` | `af292f1459aeb36d9a96ca956ff68e7eed646680335a953d42008b9dffe8f2a8` |
 
 The shipped MossFormer2 artifact is the fp32 ONNX export the #10 golden test
-validates (`mossformer2_se_48k.onnx`, 226,825,667 bytes). DeepFilterNet3 is not
+validates (`mossformer2_se_48k.onnx`, 226,651,577 bytes). DeepFilterNet3 is not
 wired into the v1.0 engine and is excluded from the v1.0 bundle; its row stays
 candidate for a future quality tier. The machine-local MossFormer2 checkpoint
 under `checkpoints/` is ignored by git and is treated as source evidence only.
@@ -54,10 +55,11 @@ directories for release binaries, runtime files, and model payloads:
 - `YESVOX_MODEL_BUNDLE_DIR` for the approved neural model payloads.
 
 The recipe installs `THIRD-PARTY-NOTICES.txt`, the model-weight manifest, and
-the per-model license records next to the app. `THIRD-PARTY-NOTICES.txt` is
-kept synchronized with every non-comment row in `licenses/model-weights.tsv`.
-It is still a release blocker to append the exact upstream license/NOTICE text
-that applies to the selected shipped artifacts.
+the per-model license records next to the app. It also installs the exact ONNX
+Runtime 1.26.0 Windows x64 DLLs, upstream license, and upstream third-party
+notices pinned by `packaging/windows/onnxruntime-1.26.0-sha256.tsv`.
+`THIRD-PARTY-NOTICES.txt` is kept synchronized with every non-comment row in
+`licenses/model-weights.tsv`.
 
 ## Exclusions
 
@@ -81,9 +83,8 @@ requires every manifest row to have:
 - a readable per-model `WEIGHTS_LICENSE.md` with a distribution decision and
   source evidence.
 
-Rows marked `bundled` additionally require a shipped-artifact SHA-256. Current
-rows are intentionally `candidate` because the installer payloads are not yet
-selected/exported.
+Rows marked `bundled` additionally require a shipped-artifact SHA-256. The
+MossFormer2 row is bundled; DFN3 remains a non-shipping candidate.
 
 `cargo test --all` also includes `xtask/tests/windows_package_contract.rs`. The
 test requires the Windows setup recipe to bundle a model directory, install the
@@ -93,13 +94,14 @@ notice file, and mention every model/status/SPDX/license-record entry from
 `cargo xtask package-audit` is the local package-payload audit. It is skip-safe
 when `YESVOX_MODEL_BUNDLE_DIR` is unset; when set, it requires every staged
 model file's SHA-256 to match a `bundled` row, requires every `bundled` row to
-have a staged file, and enforces the v1.0 2 GiB model-payload ceiling. Tests
-cover skip, unmanifested staged payloads, the byte ceiling, and a matching
-bundled hash.
+have a staged file, and enforces the v1.0 2 GiB model-payload ceiling. With
+`YESVOX_RUNTIME_BUNDLE_DIR`, it also requires the exact runtime manifest file
+set and hashes. Tests cover skip, unmanifested/wrong payloads, the byte ceiling,
+and matching model/runtime bundles.
 
 ## Release Blockers
 
-Done 2026-07-04:
+Done through 2026-08-25:
 
 - ✅ shipped MossFormer2 artifact selected (the golden-validated fp32 ONNX
   export) and its SHA-256 recorded in `licenses/model-weights.tsv`;
@@ -112,7 +114,10 @@ Done 2026-07-04:
 - ✅ installer built (`target/package/yesvox-v1-unsigned.exe`, ~215 MB) and
   smoke-tested **locally**: silent install → installed CLI renders with
   `denoiser Neural` using only the bundled model + runtime (no env vars) →
-  silent uninstall leaves nothing behind.
+  silent uninstall leaves nothing behind; a green JSON report is written only
+  after that uninstall residue check.
+- ✅ ONNX Runtime 1.26.0 Windows x64 DLLs, license, and third-party notices are
+  source-manifested and package-audited by filename and SHA-256.
 - DFN3 is explicitly **not** in the v1.0 bundle (not wired into the engine).
 
 Before #20's v1.0 lane can close:
