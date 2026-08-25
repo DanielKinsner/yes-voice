@@ -105,6 +105,41 @@ fn notices_carry_license_text_and_hash_for_bundled_weights() {
     }
 }
 
+#[test]
+fn windows_package_and_smoke_scripts_are_fail_closed() {
+    let root = repo_root();
+    let build = read(root.join("packaging/windows/build-rc.ps1"));
+    let smoke = read(root.join("packaging/windows/smoke-installer.ps1"));
+
+    for required in [
+        "cargo xtask package-audit",
+        "--features neural",
+        "YESVOX_PACKAGE_VERSION",
+        "ISCC.exe",
+        "smoke-installer.ps1",
+    ] {
+        assert!(
+            build.contains(required),
+            "build-rc.ps1 must contain the release guardrail {required:?}"
+        );
+    }
+
+    for required in [
+        "/VERYSILENT",
+        "--version",
+        "denoiser Neural",
+        "mossformer2_se_48k.onnx",
+        "ONNX_RUNTIME_LICENSE.txt",
+        "unins000.exe",
+        "smoke-report.json",
+    ] {
+        assert!(
+            smoke.contains(required),
+            "smoke-installer.ps1 must verify {required:?}"
+        );
+    }
+}
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

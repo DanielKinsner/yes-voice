@@ -4,33 +4,41 @@ This directory holds the source-controlled unsigned Windows setup recipe for
 #20. It is not a final release artifact by itself because neural weights and
 runtime binaries are staged outside git.
 
-## Verified build steps (first exercised end-to-end 2026-07-04; rebuilt with the
-## W1 build stamp 2026-07-07)
+## Verified build and local smoke
 
 ```powershell
-# 1. Release binaries with the neural HQ engine (#20 passthrough feature):
-cargo build --release -p yesvox-gui -p yesvox-app --features neural
+# From a clean worktree, this audits both payload bundles, runs the canonical
+# gate, builds the neural release binaries, compiles the installer, performs an
+# isolated install -> exact version -> neural render -> uninstall smoke, and
+# writes target\package\smoke-<timestamp>\smoke-report.json.
+.\packaging\windows\build-rc.ps1
+```
 
-# 2. Stage runtime + model payloads into the default dirs:
-#    target\runtime-bundle\  onnxruntime.dll, onnxruntime_providers_shared.dll
-#      -> from the microsoft/onnxruntime release matching the `ort` crate in
-#         Cargo.lock (2.0.0-rc.12 wraps ONNX Runtime 1.26; the win-x64 1.26.0
-#         release zip provides both DLLs). The `api-24` feature only needs
-#         ORT >= 1.24, so any 1.26.x works.
-#    target\model-bundle\    mossformer2_se_48k.onnx (regenerate via
+The script defaults to `1.0.0-rc.3` and locates Inno Setup 6 from
+`YESVOX_ISCC`, `PATH`, or its standard per-user install location. It refuses a
+dirty worktree so the seven-character commit in the installed build stamp is
+the exact source revision used for the artifact.
+
+## Stage package inputs
+
+```powershell
+# 1. Stage the exact ONNX Runtime 1.26.0 Windows x64 release payload:
+#    target\runtime-bundle\onnxruntime.dll
+#    target\runtime-bundle\onnxruntime_providers_shared.dll
+#    target\runtime-bundle\ONNX_RUNTIME_LICENSE.txt
+#    target\runtime-bundle\ONNX_RUNTIME_THIRD_PARTY_NOTICES.txt
+# Every filename and SHA-256 must match:
+#    packaging\windows\onnxruntime-1.26.0-sha256.tsv
+
+# 2. Stage the model payload:
+#    target\model-bundle\mossformer2_se_48k.onnx (regenerate via
 #      spikes\mossformer2-onnx\export_and_verify.py; must match the bundled
 #      SHA-256 in licenses\model-weights.tsv or package-audit fails).
 
-# 3. Audit the staged model payloads against licenses/model-weights.tsv.
-#    NOTE: you MUST set YESVOX_MODEL_BUNDLE_DIR — without it package-audit is
-#    skip-safe (prints a notice, exits 0) and audits nothing.
+# 3. The build script sets both variables and runs this audit before building.
 $env:YESVOX_MODEL_BUNDLE_DIR = "target\model-bundle"
+$env:YESVOX_RUNTIME_BUNDLE_DIR = "target\runtime-bundle"
 cargo xtask package-audit
-
-# 4. Compile the setup (Inno Setup 6):
-$env:YESVOX_PACKAGE_VERSION = "1.0.0-rc.2"
-ISCC.exe packaging\windows\yesvox.iss
-# -> target\package\yesvox-v1-unsigned.exe
 ```
 
 The recipe sets `SourceDir=..\..`, so every relative path resolves from the
@@ -56,19 +64,23 @@ mangles `/FLAGS` into paths):
 
 Before a package can be treated as releasable, every model file staged in
 `YESVOX_MODEL_BUNDLE_DIR` must have a matching `bundled` row and shipped
-SHA-256 in `licenses/model-weights.tsv`, and the clean Windows VM smoke test
-must pass: install, launch, render, uninstall.
+SHA-256 in `licenses/model-weights.tsv`; every runtime file must match
+`onnxruntime-1.26.0-sha256.tsv`; and the clean Windows VM smoke test must pass:
+install, launch, render, uninstall.
 
-Run `cargo xtask package-audit` after staging `YESVOX_MODEL_BUNDLE_DIR`. It is
-safe to run on normal checkouts: without `YESVOX_MODEL_BUNDLE_DIR`, it exits 0
-with an explicit skip notice. With a staged bundle, it verifies shipped hashes
-and the v1.0 2 GiB model-payload ceiling before the setup recipe is built.
+Run `cargo xtask package-audit` after setting both bundle variables. It is safe
+to run on normal checkouts: without `YESVOX_MODEL_BUNDLE_DIR`, it exits 0 with
+an explicit skip notice. With staged bundles, it verifies the model and runtime
+hashes plus the v1.0 2 GiB model-payload ceiling before setup is built.
 
 ## Installed layout the app relies on
 
 - `{app}\yesvox-gui.exe`, `{app}\yesvox.exe`
 - `{app}\onnxruntime.dll` — found at process start
   (`configure_bundled_ort_runtime`) so ort's load-dynamic probe never hangs.
+- `{app}\ONNX_RUNTIME_LICENSE.txt` and
+  `{app}\ONNX_RUNTIME_THIRD_PARTY_NOTICES.txt` — the license and notices copied
+  verbatim from the pinned ONNX Runtime 1.26.0 Windows x64 release archive.
 - `{app}\models\mossformer2_se_48k.onnx` — found by `default_model_path()`
   (manifest-pinned names only) and hash-checked at load (#33); a corrupt file
   degrades to the light engine with a reinstall message.

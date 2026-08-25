@@ -10,7 +10,7 @@
 //! must never depend on git).
 
 /// The crate version (all three shipping crates — core/app/gui — share one
-/// version and are bumped together), e.g. `1.0.0-rc.2`.
+/// version and are bumped together), e.g. `1.0.0-rc.3`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The short git hash of the build: `a1b2c3d`, `a1b2c3d-dirty` (uncommitted
@@ -21,13 +21,13 @@ pub const GIT_HASH: &str = match option_env!("YESVOX_GIT_HASH") {
     None => "unknown",
 };
 
-/// The tail of the CLI `--version` line: `"1.0.0-rc.2 (a1b2c3d)"`. The binary
+/// The tail of the CLI `--version` line: `"1.0.0-rc.3 (a1b2c3d)"`. The binary
 /// prefixes its own name (`yesvox`).
 pub fn version_line() -> String {
     format!("{VERSION} ({GIT_HASH})")
 }
 
-/// The always-visible GUI corner stamp: `"v1.0.0-rc.2 · a1b2c3d · Neural"`.
+/// The always-visible GUI corner stamp: `"v1.0.0-rc.3 · a1b2c3d · Neural"`.
 ///
 /// `engine` is the last-render engine label (`"Neural"` / `"Light"`), passed
 /// through verbatim so a neural→light fallback is visible on screen. Before any
