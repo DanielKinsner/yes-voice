@@ -50,18 +50,32 @@ impl OrtMaskModel {
     /// frame count into a Reshape — see `spikes/mossformer2-onnx/verify_dynamic.py`),
     /// so callers feed exactly 256-frame windows; the forthcoming chunked
     /// decoder slices longer signals into overlapping 256-frame windows.
-    pub fn from_file(path: impl AsRef<Path>) -> ort::Result<Self> {
-        let session = Session::builder()?
-            .with_execution_providers(preferred_providers())?
-            .commit_from_file(path)?;
-        let input_name = session.inputs()[0].name().to_string();
-        let output_name = session.outputs()[0].name().to_string();
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, String> {
+        let session = Session::builder()
+            .map_err(|e| format!("create ONNX session builder: {e}"))?
+            .with_execution_providers(preferred_providers())
+            .map_err(|e| format!("configure ONNX execution providers: {e}"))?
+            .commit_from_file(path)
+            .map_err(|e| format!("load ONNX model: {e}"))?;
+        let (input_name, output_name) = required_io_names(
+            session.inputs().first().map(|input| input.name()),
+            session.outputs().first().map(|output| output.name()),
+        )?;
         Ok(OrtMaskModel {
             session: Mutex::new(session),
             input_name,
             output_name,
         })
     }
+}
+
+fn required_io_names(
+    input: Option<&str>,
+    output: Option<&str>,
+) -> Result<(String, String), String> {
+    let input = input.ok_or_else(|| "ONNX model declares no input".to_string())?;
+    let output = output.ok_or_else(|| "ONNX model declares no output".to_string())?;
+    Ok((input.to_string(), output.to_string()))
 }
 
 /// Execution providers in preference order, ending in the always-available CPU
@@ -90,13 +104,22 @@ impl OrtMaskModel {
     /// failure that only surfaces at inference.
     fn try_run(&self, features: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, String> {
         let t = features.len();
+        let t_i64 = i64::try_from(t).map_err(|_| "feature frame count exceeds i64".to_string())?;
         // Flatten [T, 180] row-major into a [1, T, 180] tensor.
-        let mut data = Vec::with_capacity(t * FEAT_DIM);
-        for row in features {
-            debug_assert_eq!(row.len(), FEAT_DIM);
+        let capacity = t
+            .checked_mul(FEAT_DIM)
+            .ok_or_else(|| "feature tensor size overflow".to_string())?;
+        let mut data = Vec::with_capacity(capacity);
+        for (index, row) in features.iter().enumerate() {
+            if row.len() != FEAT_DIM {
+                return Err(format!(
+                    "feature row {index} has {} values, expected {FEAT_DIM}",
+                    row.len()
+                ));
+            }
             data.extend_from_slice(row);
         }
-        let tensor = Tensor::from_array((vec![1i64, t as i64, FEAT_DIM as i64], data))
+        let tensor = Tensor::from_array((vec![1i64, t_i64, FEAT_DIM as i64], data))
             .map_err(|e| format!("build features tensor: {e}"))?;
 
         let mut session = self
@@ -110,17 +133,40 @@ impl OrtMaskModel {
             .try_extract_tensor::<f32>()
             .map_err(|e| format!("extract mask tensor: {e}"))?;
 
-        // Mask is [1, T, 961] row-major; reshape into T rows of 961 gains.
-        let bins = *shape.as_ref().last().unwrap_or(&(MASK_BINS as i64)) as usize;
-        // `chunks_exact(0)` panics; a zero-width bin dim is inside `try_run`, so
-        // that panic would escape `run`'s Err-only catch instead of degrading to
-        // the intended passthrough (#33). Convert it to an Err so the caller's
-        // passthrough path handles it.
-        if bins == 0 {
-            return Err("mask tensor reported zero-width bins".into());
-        }
-        Ok(flat.chunks_exact(bins).map(|row| row.to_vec()).collect())
+        reshape_mask(shape.as_ref(), flat, t)
     }
+}
+
+/// Validate the native output before it can touch audio. A wrong/custom model
+/// or runtime fault must become the caller's all-pass mask, never a partial,
+/// non-finite, or incorrectly shaped gain matrix.
+fn reshape_mask(shape: &[i64], flat: &[f32], frames: usize) -> Result<Vec<Vec<f32>>, String> {
+    let frames_i64 =
+        i64::try_from(frames).map_err(|_| "mask frame count exceeds i64".to_string())?;
+    let expected_shape = [1, frames_i64, MASK_BINS as i64];
+    if shape != expected_shape {
+        return Err(format!(
+            "mask tensor shape {shape:?}, expected {expected_shape:?}"
+        ));
+    }
+    let expected_values = frames
+        .checked_mul(MASK_BINS)
+        .ok_or_else(|| "mask tensor size overflow".to_string())?;
+    if flat.len() != expected_values {
+        return Err(format!(
+            "mask tensor has {} values, expected {expected_values}",
+            flat.len()
+        ));
+    }
+    if flat.iter().any(|gain| !gain.is_finite()) {
+        return Err("mask tensor contains a non-finite gain".to_string());
+    }
+    Ok(flat
+        .as_chunks::<MASK_BINS>()
+        .0
+        .iter()
+        .map(|row| row.to_vec())
+        .collect())
 }
 
 impl MaskModel for OrtMaskModel {
@@ -146,6 +192,29 @@ mod tests {
     use super::*;
     use crate::neural::MossformerFbank;
     use std::f32::consts::PI;
+
+    #[test]
+    fn malformed_session_io_and_mask_outputs_are_rejected() {
+        assert!(required_io_names(None, Some("mask")).is_err());
+        assert!(required_io_names(Some("features"), None).is_err());
+        assert_eq!(
+            required_io_names(Some("features"), Some("mask")).unwrap(),
+            ("features".to_string(), "mask".to_string())
+        );
+
+        let valid = vec![0.5; 2 * MASK_BINS];
+        let mask = reshape_mask(&[1, 2, MASK_BINS as i64], &valid, 2).unwrap();
+        assert_eq!(mask.len(), 2);
+        assert_eq!(mask[0].len(), MASK_BINS);
+
+        assert!(reshape_mask(&[1, 2, 0], &[], 2).is_err());
+        assert!(reshape_mask(&[1, 1, MASK_BINS as i64], &valid, 2).is_err());
+        assert!(reshape_mask(&[1, 2, MASK_BINS as i64], &valid[..valid.len() - 1], 2).is_err());
+
+        let mut non_finite = valid;
+        non_finite[17] = f32::NAN;
+        assert!(reshape_mask(&[1, 2, MASK_BINS as i64], &non_finite, 2).is_err());
+    }
 
     /// End-to-end parity against a Python-dumped golden of the real model.
     ///
