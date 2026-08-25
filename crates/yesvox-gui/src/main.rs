@@ -38,22 +38,30 @@ const STORAGE_LAST_DIR: &str = "yesvox_last_output_dir";
 const STORAGE_LAST_FORMAT: &str = "yesvox_last_output_format";
 const CANVAS: egui::Vec2 = egui::vec2(1920.0, 1080.0);
 
-const BG_TOP: egui::Color32 = egui::Color32::from_rgb(3, 10, 18);
-const BG_BOTTOM: egui::Color32 = egui::Color32::from_rgb(7, 17, 29);
-const PANEL: egui::Color32 = egui::Color32::from_rgb(8, 21, 36);
-const PANEL_2: egui::Color32 = egui::Color32::from_rgb(10, 27, 45);
-const CARD: egui::Color32 = egui::Color32::from_rgb(11, 27, 45);
-const FIELD: egui::Color32 = egui::Color32::from_rgb(9, 20, 34);
-const BORDER: egui::Color32 = egui::Color32::from_rgb(29, 62, 93);
-const BORDER_DIM: egui::Color32 = egui::Color32::from_rgb(19, 42, 65);
-const TEXT: egui::Color32 = egui::Color32::from_rgb(229, 238, 255);
-const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(145, 159, 187);
-const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(100, 119, 151);
-const BLUE: egui::Color32 = egui::Color32::from_rgb(0, 131, 255);
-const CYAN: egui::Color32 = egui::Color32::from_rgb(41, 214, 255);
-const PURPLE: egui::Color32 = egui::Color32::from_rgb(141, 62, 255);
-const VIOLET: egui::Color32 = egui::Color32::from_rgb(103, 67, 238);
+// Shared YES-suite graphite material system. YesVox keeps its own cyan/violet
+// signal colors, but the surface depth, text hierarchy, and restrained chrome
+// intentionally track YES Master's shipped design language.
+const BG_TOP: egui::Color32 = egui::Color32::from_rgb(5, 7, 11);
+const BG_BOTTOM: egui::Color32 = egui::Color32::from_rgb(8, 10, 15);
+const PANEL: egui::Color32 = egui::Color32::from_rgb(13, 16, 23);
+const PANEL_2: egui::Color32 = egui::Color32::from_rgb(19, 23, 32);
+const CARD: egui::Color32 = egui::Color32::from_rgb(23, 28, 39);
+const FIELD: egui::Color32 = egui::Color32::from_rgb(7, 9, 14);
+const BORDER: egui::Color32 = egui::Color32::from_rgb(45, 54, 74);
+const BORDER_DIM: egui::Color32 = egui::Color32::from_rgb(27, 33, 46);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(238, 241, 248);
+const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(174, 182, 204);
+const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(109, 117, 146);
+const BLUE: egui::Color32 = egui::Color32::from_rgb(70, 130, 246);
+const CYAN: egui::Color32 = egui::Color32::from_rgb(73, 202, 238);
+const PURPLE: egui::Color32 = egui::Color32::from_rgb(128, 82, 238);
+const VIOLET: egui::Color32 = egui::Color32::from_rgb(88, 75, 214);
 const AMBER: egui::Color32 = egui::Color32::from_rgb(241, 211, 91);
+
+const KNOB_SWEEP_START_DEG: f32 = -225.0;
+const KNOB_SWEEP_DEGREES: f32 = 270.0;
+const KNOB_TICK_COUNT: usize = 28;
+const KNOB_MAJOR_EVERY: usize = 7;
 
 fn main() -> eframe::Result {
     // Installed layout (#20): point ort at the bundled onnxruntime before any
@@ -1027,7 +1035,6 @@ struct BatchDone {
 struct YesVoxApp {
     session: Session,
     view_mode: ViewMode,
-    tab: Tab,
     ab: AbView,
     path_input: String,
     source_path: Option<PathBuf>,
@@ -1074,6 +1081,13 @@ struct YesVoxApp {
 }
 
 impl YesVoxApp {
+    fn top_bar_view_rects() -> [egui::Rect; 2] {
+        [
+            rect(835.0, 13.0, 124.0, 44.0),
+            rect(961.0, 13.0, 124.0, 44.0),
+        ]
+    }
+
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_theme(&cc.egui_ctx);
         let mut session = Self::default_session();
@@ -1130,7 +1144,6 @@ impl YesVoxApp {
         YesVoxApp {
             session,
             view_mode: ViewMode::Standard,
-            tab: Tab::Restore,
             ab: AbView::Processed,
             path_input: String::new(),
             source_path: None,
@@ -1928,7 +1941,7 @@ impl YesVoxApp {
         c: CanvasMap,
         l: ReferenceLayout,
     ) {
-        paint_panel(painter, c, l.top, 0, alpha(PANEL, 235), BORDER_DIM);
+        paint_panel(painter, c, l.top, 0, alpha(PANEL, 248), BORDER_DIM);
         self.draw_wordmark(painter, c, egui::pos2(18.0, 35.0));
 
         let drag_response = ui.interact(
@@ -1945,11 +1958,20 @@ impl YesVoxApp {
                 .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
         }
 
+        let [standard_rect, advanced_rect] = Self::top_bar_view_rects();
+        paint_panel(
+            painter,
+            c,
+            standard_rect.union(advanced_rect),
+            8,
+            FIELD,
+            BORDER_DIM,
+        );
         if self.segment_button(
             ui,
             painter,
             c,
-            rect(314.0, 14.0, 124.0, 40.0),
+            standard_rect,
             "Standard",
             self.view_mode == ViewMode::Standard,
             "view_standard",
@@ -1960,49 +1982,12 @@ impl YesVoxApp {
             ui,
             painter,
             c,
-            rect(440.0, 14.0, 124.0, 40.0),
+            advanced_rect,
             "Advanced",
             self.view_mode == ViewMode::Advanced,
             "view_advanced",
         ) {
             self.view_mode = ViewMode::Advanced;
-        }
-
-        let restore = rect(742.0, 13.0, 184.0, 44.0);
-        let polish = rect(928.0, 13.0, 184.0, 44.0);
-        if self.view_mode == ViewMode::Standard {
-            if self.segment_button(
-                ui,
-                painter,
-                c,
-                restore,
-                "Restore",
-                self.tab == Tab::Restore,
-                "top_restore",
-            ) {
-                self.tab = Tab::Restore;
-            }
-            if self.segment_button(
-                ui,
-                painter,
-                c,
-                polish,
-                "Polish",
-                self.tab == Tab::Polish,
-                "top_polish",
-            ) {
-                self.tab = Tab::Polish;
-            }
-        } else {
-            self.section_label(painter, c, 742.0, 35.0, "ADVANCED");
-            self.small_text(
-                painter,
-                c,
-                846.0,
-                35.0,
-                "module depth + spectrogram",
-                TEXT_MUTED,
-            );
         }
 
         // Undo/redo (#25): enabled state reflects real stack depth; clicks drive
@@ -2097,7 +2082,7 @@ impl YesVoxApp {
         c: CanvasMap,
         l: ReferenceLayout,
     ) {
-        paint_panel(painter, c, l.left, 8, alpha(PANEL, 225), BORDER_DIM);
+        paint_panel(painter, c, l.left, 0, alpha(PANEL, 245), BORDER_DIM);
         self.section_label(painter, c, 28.0, 94.0, "VOCAL ORDER");
         let duration = self.duration_label();
         self.small_text(
@@ -2113,10 +2098,15 @@ impl YesVoxApp {
             c,
             rect(18.0, 142.0, 256.0, 64.0),
             6,
-            alpha(BLUE, 82),
-            BLUE,
+            alpha(BLUE, 28),
+            alpha(BLUE, 145),
         );
-        self.body_text(painter, c, 38.0, 171.0, "01", CYAN);
+        painter.rect_filled(
+            c.rect(rect(18.0, 142.0, 3.0, 64.0)),
+            egui::CornerRadius::same(2),
+            CYAN,
+        );
+        self.body_text(painter, c, 38.0, 171.0, "01", BLUE);
         self.body_text(painter, c, 72.0, 161.0, &self.source_name, TEXT);
         self.small_text(painter, c, 72.0, 184.0, &duration, CYAN);
         self.draw_mini_wave(painter, c, rect(224.0, 162.0, 28.0, 22.0));
@@ -2271,9 +2261,8 @@ impl YesVoxApp {
         l: ReferenceLayout,
     ) {
         let _center_bounds = l.center;
-        paint_panel(painter, c, l.hero, 8, alpha(PANEL, 210), BORDER_DIM);
-        let source = self.source_name.to_uppercase();
-        self.title_text(painter, c, 322.0, 106.0, &source);
+        paint_panel(painter, c, l.hero, 10, alpha(PANEL, 232), BORDER_DIM);
+        self.title_text(painter, c, 322.0, 104.0, &self.source_name);
         self.small_text(
             painter,
             c,
@@ -2347,6 +2336,16 @@ impl YesVoxApp {
             self.set_ab_view(AbView::Processed);
         }
 
+        // One unified listening deck, matching the suite's studio-hardware
+        // hierarchy: title/insight above, waveform + meters + transport within.
+        paint_panel(
+            painter,
+            c,
+            rect(314.0, 140.0, 1228.0, 272.0),
+            9,
+            alpha(FIELD, 245),
+            BORDER_DIM,
+        );
         let wave_rect = rect(322.0, 148.0, 1032.0, 160.0);
         paint_panel(painter, c, wave_rect, 5, FIELD, BORDER);
         self.draw_waveform(painter, c, wave_rect);
@@ -3993,9 +3992,9 @@ impl YesVoxApp {
         c: CanvasMap,
         l: ReferenceLayout,
     ) {
-        paint_panel(painter, c, l.right, 8, alpha(PANEL, 225), BORDER_DIM);
+        paint_panel(painter, c, l.right, 0, alpha(PANEL, 245), BORDER_DIM);
         let preset = rect(1588.0, 70.0, 304.0, 292.0);
-        paint_panel(painter, c, preset, 8, alpha(PANEL_2, 230), BORDER_DIM);
+        paint_sidebar_section(painter, c, preset);
         self.section_label(painter, c, 1608.0, 100.0, "PRESET");
         paint_panel(
             painter,
@@ -4028,7 +4027,7 @@ impl YesVoxApp {
         );
         // "Save as New Preset" removed (#24): no user-preset store exists.
         let out = rect(1588.0, 372.0, 304.0, 294.0);
-        paint_panel(painter, c, out, 8, alpha(PANEL_2, 230), BORDER_DIM);
+        paint_sidebar_section(painter, c, out);
         self.section_label(painter, c, 1608.0, 404.0, "OUTPUT");
         self.field_row(
             ui,
@@ -4084,7 +4083,7 @@ impl YesVoxApp {
         }
 
         let file = rect(1588.0, 680.0, 304.0, 216.0);
-        paint_panel(painter, c, file, 8, alpha(PANEL_2, 230), BORDER_DIM);
+        paint_sidebar_section(painter, c, file);
         self.section_label(painter, c, 1608.0, 714.0, "FILE");
         self.small_text(painter, c, 1608.0, 754.0, "Output File Name", TEXT_MUTED);
         paint_panel(
@@ -4143,14 +4142,7 @@ impl YesVoxApp {
         // "Add to Yes Suite Library" removed (#24): the suite handoff is a
         // designed-for seam, not a built-in v1 feature.
 
-        paint_panel(
-            painter,
-            c,
-            rect(1588.0, 906.0, 304.0, 86.0),
-            8,
-            alpha(PANEL_2, 230),
-            BORDER_DIM,
-        );
+        paint_sidebar_section(painter, c, rect(1588.0, 906.0, 304.0, 86.0));
         self.section_label(painter, c, 1608.0, 930.0, "BATCH QUEUE");
         self.small_text(
             painter,
@@ -5007,12 +4999,17 @@ impl YesVoxApp {
 
 impl YesVoxApp {
     fn section_label(&self, painter: &egui::Painter, c: CanvasMap, x: f32, y: f32, text: &str) {
+        painter.rect_filled(
+            c.rect(rect(x, y - 8.0, 3.0, 16.0)),
+            egui::CornerRadius::same(2),
+            BLUE,
+        );
         painter.text(
-            c.pos(x, y),
+            c.pos(x + 12.0, y),
             egui::Align2::LEFT_CENTER,
             text,
-            c.font(15.0),
-            CYAN,
+            c.font(13.0),
+            TEXT,
         );
     }
 
@@ -5021,7 +5018,7 @@ impl YesVoxApp {
             c.pos(x, y),
             egui::Align2::LEFT_CENTER,
             text,
-            c.font(20.0),
+            c.font(28.0),
             TEXT,
         );
     }
@@ -5101,11 +5098,18 @@ impl YesVoxApp {
         selected: bool,
         id: impl Hash + Debug,
     ) -> bool {
-        let clicked = self.response(ui, c, r, id).clicked();
+        let resp = self.response(ui, c, r, id);
         if selected {
-            paint_h_gradient(painter, c, r, VIOLET, CYAN, 24, 7);
+            paint_accent_button(painter, c, r, resp.hovered(), 7);
         } else {
-            paint_panel(painter, c, r, 7, FIELD, BORDER_DIM);
+            paint_panel(
+                painter,
+                c,
+                r,
+                7,
+                if resp.hovered() { PANEL_2 } else { FIELD },
+                BORDER_DIM,
+            );
         }
         painter.text(
             c.rect(r).center(),
@@ -5114,7 +5118,7 @@ impl YesVoxApp {
             c.font(14.0),
             if selected { TEXT } else { TEXT_MUTED },
         );
-        clicked
+        resp.clicked()
     }
 
     fn outline_button(
@@ -5158,8 +5162,7 @@ impl YesVoxApp {
         id: impl Hash + Debug,
     ) -> bool {
         let resp = self.response(ui, c, r, id);
-        let end = if resp.hovered() { CYAN } else { BLUE };
-        paint_h_gradient(painter, c, r, PURPLE, end, 32, 6);
+        paint_accent_button(painter, c, r, resp.hovered(), 6);
         let center = r.center();
         if label.contains("Import") || label.contains("EXPORT") {
             self.upload_icon(painter, c, egui::pos2(center.x - 58.0, center.y), TEXT);
@@ -5225,9 +5228,16 @@ impl YesVoxApp {
         let enabled = !self.edits_locked(); // content mode is a setting (#36)
         let resp = self.response(ui, c, r, id);
         if selected {
-            paint_h_gradient(painter, c, r, VIOLET, BLUE, 24, 6);
+            paint_accent_button(painter, c, r, resp.hovered(), 6);
         } else {
-            paint_panel(painter, c, r, 6, alpha(PANEL_2, 230), BORDER_DIM);
+            paint_panel(
+                painter,
+                c,
+                r,
+                6,
+                if resp.hovered() { CARD } else { PANEL_2 },
+                BORDER_DIM,
+            );
         }
         let icon_color = if selected { TEXT } else { TEXT_MUTED };
         match icon {
@@ -5393,18 +5403,26 @@ impl YesVoxApp {
             let sr = c.rect(r);
             next = ((pos.x - sr.left()) / sr.width()).clamp(0.0, 1.0);
         }
-        paint_panel(
-            painter,
-            c,
-            r,
-            3,
-            egui::Color32::from_rgb(21, 44, 70),
-            egui::Color32::TRANSPARENT,
-        );
+        paint_panel(painter, c, r, 3, FIELD, BORDER_DIM);
         let filled = rect(r.left(), r.top(), r.width() * next, r.height());
         paint_h_gradient(painter, c, filled, start, end, 20, 3);
         let knob = c.pos(r.left() + r.width() * next, r.center().y);
-        painter.circle_filled(knob, c.v(6.0), egui::Color32::from_rgb(190, 168, 255));
+        painter.circle_filled(
+            knob + egui::vec2(0.0, c.v(1.0)),
+            c.v(if resp.hovered() { 7.5 } else { 6.5 }),
+            egui::Color32::from_black_alpha(150),
+        );
+        painter.circle_filled(
+            knob,
+            c.v(if resp.hovered() { 7.0 } else { 6.0 }),
+            egui::Color32::from_rgb(206, 214, 232),
+        );
+        painter.circle_filled(
+            knob - egui::vec2(c.v(1.2), c.v(1.6)),
+            c.v(if resp.hovered() { 4.0 } else { 3.4 }),
+            egui::Color32::from_rgb(245, 247, 252),
+        );
+        painter.circle_stroke(knob, c.v(6.0), egui::Stroke::new(c.v(1.0), BORDER));
         if !enabled {
             self.paint_locked_scrim(painter, c, r.expand(6.0));
         }
@@ -5431,8 +5449,8 @@ impl YesVoxApp {
             let p = resp.interact_pointer_pos().unwrap();
             let center = c.pos(r.center().x, r.top() + 80.0);
             let angle = (p.y - center.y).atan2(p.x - center.x);
-            let start = -225.0_f32.to_radians();
-            let end = 45.0_f32.to_radians();
+            let start = KNOB_SWEEP_START_DEG.to_radians();
+            let end = (KNOB_SWEEP_START_DEG + KNOB_SWEEP_DEGREES).to_radians();
             let mut t = (angle - start) / (end - start);
             if t < -0.2 {
                 t += 1.0;
@@ -5441,40 +5459,14 @@ impl YesVoxApp {
         }
         let center = c.pos(r.center().x, r.top() + 78.0);
         let radius = c.v(48.0);
-        arc(
+        paint_hardware_knob(
             painter,
+            c,
             center,
             radius,
-            -225.0,
-            45.0,
-            egui::Stroke::new(c.v(8.0), egui::Color32::from_rgb(30, 47, 80)),
-        );
-        arc(
-            painter,
-            center,
-            radius,
-            -225.0,
-            -225.0 + 270.0 * next,
-            egui::Stroke::new(c.v(8.0), BLUE),
-        );
-        arc(
-            painter,
-            center,
-            radius * 0.84,
-            0.0,
-            45.0,
-            egui::Stroke::new(c.v(4.0), PURPLE),
-        );
-        let angle = (-225.0 + 270.0 * next).to_radians();
-        let needle = center + egui::vec2(angle.cos() * radius * 0.74, angle.sin() * radius * 0.74);
-        painter.line_segment([center, needle], egui::Stroke::new(c.v(2.0), TEXT));
-        painter.circle_filled(center, c.v(4.0), CYAN);
-        painter.text(
-            center,
-            egui::Align2::CENTER_CENTER,
-            format!("{:.0}%", next * 100.0),
-            c.font(17.0),
-            TEXT,
+            next,
+            &format!("{:.0}%", next * 100.0),
+            None,
         );
         if !enabled {
             self.paint_locked_scrim(painter, c, r);
@@ -5597,21 +5589,14 @@ impl YesVoxApp {
     fn percent_knob(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2, value: f32) {
         let sc = c.pos(center.x, center.y);
         let r = c.v(27.0);
-        painter.circle_stroke(sc, r, egui::Stroke::new(c.v(1.0), BORDER_DIM));
-        arc(
+        paint_hardware_knob(
             painter,
+            c,
             sc,
             r,
-            -210.0,
-            -210.0 + 270.0 * value.clamp(0.0, 1.0),
-            egui::Stroke::new(c.v(3.0), CYAN),
-        );
-        painter.text(
-            sc,
-            egui::Align2::CENTER_CENTER,
-            format!("{:.0}%", value * 100.0),
-            c.font(14.0),
-            TEXT,
+            value,
+            &format!("{:.0}%", value * 100.0),
+            None,
         );
     }
 
@@ -5649,23 +5634,7 @@ impl YesVoxApp {
     fn loudness_knob(&self, painter: &egui::Painter, c: CanvasMap, center: egui::Pos2) {
         let sc = c.pos(center.x, center.y);
         let r = c.v(27.0);
-        painter.circle_stroke(sc, r, egui::Stroke::new(c.v(1.0), BORDER_DIM));
-        arc(
-            painter,
-            sc,
-            r,
-            -210.0,
-            60.0,
-            egui::Stroke::new(c.v(3.0), CYAN),
-        );
-        painter.text(sc, egui::Align2::CENTER_CENTER, "-14.0", c.font(13.0), TEXT);
-        painter.text(
-            sc + egui::vec2(0.0, c.v(14.0)),
-            egui::Align2::CENTER_CENTER,
-            "LUFS",
-            c.font(9.0),
-            TEXT_MUTED,
-        );
+        paint_hardware_knob(painter, c, sc, r, 0.68, "-14.0", Some("LUFS"));
     }
 
     fn loudness_target_knob(
@@ -5677,15 +5646,6 @@ impl YesVoxApp {
     ) {
         let sc = c.pos(center.x, center.y);
         let r = c.v(27.0);
-        painter.circle_stroke(sc, r, egui::Stroke::new(c.v(1.0), BORDER_DIM));
-        arc(
-            painter,
-            sc,
-            r,
-            -210.0,
-            60.0,
-            egui::Stroke::new(c.v(3.0), CYAN),
-        );
         let (main, sub) = match target {
             LoudnessTarget::Podcast => ("-16", "LUFS"),
             LoudnessTarget::Streaming => ("-14", "LUFS"),
@@ -5693,14 +5653,7 @@ impl YesVoxApp {
             LoudnessTarget::PeakNormalize => ("Peak", "dBTP"),
             LoudnessTarget::Custom(_) => ("Custom", "LUFS"),
         };
-        painter.text(sc, egui::Align2::CENTER_CENTER, main, c.font(13.0), TEXT);
-        painter.text(
-            sc + egui::vec2(0.0, c.v(14.0)),
-            egui::Align2::CENTER_CENTER,
-            sub,
-            c.font(9.0),
-            TEXT_MUTED,
-        );
+        paint_hardware_knob(painter, c, sc, r, 0.68, main, Some(sub));
     }
 
     fn vertical_meter(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect, value: f32) {
@@ -5972,13 +5925,195 @@ fn paint_panel(
     stroke: egui::Color32,
 ) {
     let sr = c.rect(r);
+    let elevated = radius >= 6 && r.width() >= 100.0 && r.height() >= 38.0;
+    if elevated {
+        painter.rect_filled(
+            sr.translate(egui::vec2(0.0, c.v(3.0))),
+            egui::CornerRadius::same(radius),
+            egui::Color32::from_black_alpha(88),
+        );
+    }
     painter.rect_filled(sr, egui::CornerRadius::same(radius), fill);
+    if elevated {
+        let sheen = egui::Rect::from_min_max(
+            sr.min + egui::vec2(c.v(1.0), c.v(1.0)),
+            egui::pos2(sr.right() - c.v(1.0), sr.top() + c.v(2.0)),
+        );
+        painter.rect_filled(
+            sheen,
+            egui::CornerRadius::same(radius.saturating_sub(1)),
+            egui::Color32::from_white_alpha(18),
+        );
+    }
     if stroke != egui::Color32::TRANSPARENT {
         painter.rect_stroke(
             sr,
             egui::CornerRadius::same(radius),
             egui::Stroke::new(c.v(1.0), stroke),
             egui::StrokeKind::Inside,
+        );
+    }
+}
+
+fn paint_sidebar_section(painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
+    painter.line_segment(
+        [c.pos(r.left(), r.top()), c.pos(r.right(), r.top())],
+        egui::Stroke::new(c.v(1.0), BORDER_DIM),
+    );
+}
+
+fn paint_accent_button(
+    painter: &egui::Painter,
+    c: CanvasMap,
+    r: egui::Rect,
+    hovered: bool,
+    radius: u8,
+) {
+    let sr = c.rect(r);
+    painter.rect_filled(
+        sr.translate(egui::vec2(0.0, c.v(3.0))),
+        egui::CornerRadius::same(radius),
+        egui::Color32::from_rgba_premultiplied(55, 70, 180, 92),
+    );
+    painter.rect_filled(
+        sr,
+        egui::CornerRadius::same(radius),
+        if hovered { BLUE } else { VIOLET },
+    );
+    let steps = 20;
+    for i in 0..steps {
+        let t0 = i as f32 / steps as f32;
+        let t1 = (i + 1) as f32 / steps as f32;
+        let top = sr.top() + sr.height() * t0;
+        let bottom = sr.top() + sr.height() * t1 + c.v(0.5);
+        let stripe = egui::Rect::from_min_max(
+            egui::pos2(sr.left() + c.v(2.0), top),
+            egui::pos2(sr.right() - c.v(2.0), bottom),
+        );
+        let bright = if hovered { CYAN } else { BLUE };
+        painter.rect_filled(
+            stripe,
+            egui::CornerRadius::ZERO,
+            lerp_color(bright, PURPLE, t0),
+        );
+    }
+    painter.line_segment(
+        [
+            sr.left_top() + egui::vec2(c.v(5.0), c.v(1.0)),
+            sr.right_top() + egui::vec2(-c.v(5.0), c.v(1.0)),
+        ],
+        egui::Stroke::new(c.v(1.0), egui::Color32::from_white_alpha(52)),
+    );
+    painter.rect_stroke(
+        sr,
+        egui::CornerRadius::same(radius),
+        egui::Stroke::new(c.v(1.0), alpha(CYAN, if hovered { 170 } else { 90 })),
+        egui::StrokeKind::Inside,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_hardware_knob(
+    painter: &egui::Painter,
+    c: CanvasMap,
+    center: egui::Pos2,
+    radius: f32,
+    value: f32,
+    main: &str,
+    sub: Option<&str>,
+) {
+    let value = value.clamp(0.0, 1.0);
+    let tick_inner = radius * 0.92;
+    let tick_outer = radius * 1.08;
+
+    painter.circle_filled(
+        center + egui::vec2(0.0, c.v(2.0)),
+        radius * 0.92,
+        egui::Color32::from_black_alpha(180),
+    );
+    painter.circle_filled(center, radius * 0.88, FIELD);
+    painter.circle_stroke(
+        center,
+        radius * 0.88,
+        egui::Stroke::new(c.v(1.0), BORDER_DIM),
+    );
+
+    for i in 0..=KNOB_TICK_COUNT {
+        let t = i as f32 / KNOB_TICK_COUNT as f32;
+        let angle = (KNOB_SWEEP_START_DEG + KNOB_SWEEP_DEGREES * t).to_radians();
+        let major = i % KNOB_MAJOR_EVERY == 0;
+        let inner = if major { tick_inner * 0.96 } else { tick_inner };
+        let p0 = center + egui::vec2(angle.cos() * inner, angle.sin() * inner);
+        let p1 = center + egui::vec2(angle.cos() * tick_outer, angle.sin() * tick_outer);
+        painter.line_segment(
+            [p0, p1],
+            egui::Stroke::new(
+                c.v(if major { 1.6 } else { 0.8 }),
+                if t <= value {
+                    alpha(CYAN, 210)
+                } else {
+                    TEXT_DIM
+                },
+            ),
+        );
+    }
+
+    arc(
+        painter,
+        center,
+        radius * 0.79,
+        KNOB_SWEEP_START_DEG,
+        KNOB_SWEEP_START_DEG + KNOB_SWEEP_DEGREES,
+        egui::Stroke::new(c.v((radius / c.scale * 0.075).max(2.0)), BORDER),
+    );
+    arc(
+        painter,
+        center,
+        radius * 0.79,
+        KNOB_SWEEP_START_DEG,
+        KNOB_SWEEP_START_DEG + KNOB_SWEEP_DEGREES * value,
+        egui::Stroke::new(c.v((radius / c.scale * 0.075).max(2.0)), BLUE),
+    );
+
+    let cap_r = radius * 0.63;
+    painter.circle_filled(center, cap_r + c.v(1.0), egui::Color32::from_rgb(5, 7, 12));
+    painter.circle_filled(center, cap_r, egui::Color32::from_rgb(48, 56, 73));
+    painter.circle_filled(
+        center - egui::vec2(0.0, cap_r * 0.16),
+        cap_r * 0.82,
+        egui::Color32::from_rgb(92, 103, 126),
+    );
+    painter.circle_filled(
+        center + egui::vec2(0.0, cap_r * 0.12),
+        cap_r * 0.72,
+        egui::Color32::from_rgb(39, 45, 59),
+    );
+    painter.circle_stroke(center, cap_r, egui::Stroke::new(c.v(1.0), BORDER));
+
+    let angle = (KNOB_SWEEP_START_DEG + KNOB_SWEEP_DEGREES * value).to_radians();
+    let indicator_start =
+        center + egui::vec2(angle.cos() * cap_r * 0.48, angle.sin() * cap_r * 0.48);
+    let indicator_end = center + egui::vec2(angle.cos() * cap_r * 0.82, angle.sin() * cap_r * 0.82);
+    painter.line_segment(
+        [indicator_start, indicator_end],
+        egui::Stroke::new(c.v(1.8), TEXT),
+    );
+
+    let text_y = if sub.is_some() { -c.v(2.5) } else { c.v(2.0) };
+    painter.text(
+        center + egui::vec2(0.0, text_y),
+        egui::Align2::CENTER_CENTER,
+        main,
+        c.font(if radius / c.scale > 35.0 { 16.0 } else { 11.5 }),
+        TEXT,
+    );
+    if let Some(sub) = sub {
+        painter.text(
+            center + egui::vec2(0.0, c.v(9.0)),
+            egui::Align2::CENTER_CENTER,
+            sub,
+            c.font(7.5),
+            TEXT_MUTED,
         );
     }
 }
@@ -6059,13 +6194,19 @@ fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     )
 }
 
+#[cfg(test)]
+fn relative_luminance(color: egui::Color32) -> f32 {
+    let [r, g, b, _] = color.to_array();
+    0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)
+}
+
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round() as u8
 }
 
 fn alpha(c: egui::Color32, a: u8) -> egui::Color32 {
     let [r, g, b, _] = c.to_array();
-    egui::Color32::from_rgba_premultiplied(r, g, b, a)
+    egui::Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
 fn batch_output_path(input: &Path, format: OutputFormat) -> PathBuf {
@@ -6197,6 +6338,35 @@ mod tests {
             16.0 / 9.0
         );
         assert_eq!(MIN_VIEWPORT_SIZE[0] / MIN_VIEWPORT_SIZE[1], 16.0 / 9.0);
+    }
+
+    #[test]
+    fn suite_brand_chrome_keeps_the_primary_view_switch_centered() {
+        let top = ReferenceLayout::new().top;
+        let [standard, advanced] = YesVoxApp::top_bar_view_rects();
+        let pair = standard.union(advanced);
+
+        assert!((pair.center().x - top.center().x).abs() < 1.0);
+        assert!(!standard.intersects(advanced));
+        assert!(!pair.intersects(YesVoxApp::top_bar_drag_rect()));
+        assert!(top.contains(pair.min) && top.contains(pair.max));
+    }
+
+    #[test]
+    fn suite_brand_palette_is_graphite_with_ordered_surface_depth() {
+        assert!(relative_luminance(BG_TOP) < relative_luminance(PANEL));
+        assert!(relative_luminance(PANEL) < relative_luminance(PANEL_2));
+        assert!(relative_luminance(FIELD) < relative_luminance(PANEL));
+        assert!(relative_luminance(TEXT_DIM) < relative_luminance(TEXT_MUTED));
+        assert!(relative_luminance(TEXT_MUTED) < relative_luminance(TEXT));
+    }
+
+    #[test]
+    fn suite_brand_knobs_share_the_yes_master_hardware_geometry() {
+        assert_eq!(KNOB_SWEEP_START_DEG, -225.0);
+        assert_eq!(KNOB_SWEEP_DEGREES, 270.0);
+        assert_eq!(KNOB_TICK_COUNT, 28);
+        assert_eq!(KNOB_MAJOR_EVERY, 7);
     }
 
     #[test]
