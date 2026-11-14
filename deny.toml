@@ -49,7 +49,18 @@ yanked = "deny"
 #   quick-xml >=0.41, but `wayland-scanner 0.31.10` pins `quick-xml = "^0.39"`,
 #   so a real bump means upgrading the whole wayland/winit/rfd stack; ignore
 #   until that upstream upgrade lands rather than block the GUI tree (#27).
-ignore = ["RUSTSEC-2026-0192", "RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
+# - RUSTSEC-2026-0370 / -0371 / -0372: zvariant, zbus_names, and
+#   zvariant_derive were moved into zbus 6. These are maintenance notices.
+#   The Linux screen reader adapter (AccessKit AT-SPI) still requires zbus 5.
+#   Keep that adapter enabled and remove these entries when upstream adopts 6.
+ignore = [
+    "RUSTSEC-2026-0192",
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+]
 
 [sources]
 unknown-registry = "deny"
