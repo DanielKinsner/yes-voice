@@ -14,6 +14,7 @@ use std::{
 };
 
 mod audio;
+mod standard;
 
 use audio::Player;
 use eframe::egui;
@@ -63,7 +64,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(DEFAULT_VIEWPORT_SIZE)
             .with_min_inner_size(MIN_VIEWPORT_SIZE)
-            .with_decorations(false)
+            .with_drag_and_drop(true)
             .with_title("YesVox"),
         ..Default::default()
     };
@@ -998,9 +999,8 @@ struct BatchDone {
 struct YesVoxApp {
     session: Session,
     view_mode: ViewMode,
-    tab: Tab,
     ab: AbView,
-    path_input: String,
+    show_standard_controls: bool,
     source_path: Option<PathBuf>,
     source_name: String,
     name_input: String,
@@ -1101,12 +1101,11 @@ impl YesVoxApp {
         YesVoxApp {
             session,
             view_mode: ViewMode::Standard,
-            tab: Tab::Restore,
             ab: AbView::Processed,
-            path_input: String::new(),
+            show_standard_controls: false,
             source_path: None,
-            source_name: "Lead Vocal.wav".to_owned(),
-            name_input: "Lead Vocal_YesVox".to_owned(),
+            source_name: String::new(),
+            name_input: String::new(),
             status: "Ready - import a vocal".to_owned(),
             reblend_amount: 0.25,
             volume_match: false,
@@ -1179,6 +1178,9 @@ impl YesVoxApp {
             self.session.restore_snapshot(&snapshot);
             self.stop_playback();
             self.bump_audio_generation();
+            if self.view_mode == ViewMode::Standard && !self.show_standard_controls {
+                self.leave_special_audition();
+            }
             // The verdict described the pre-undo render; don't show it against
             // reverted settings.
             self.isolation_check = None;
@@ -1196,6 +1198,9 @@ impl YesVoxApp {
             self.session.restore_snapshot(&snapshot);
             self.stop_playback();
             self.bump_audio_generation();
+            if self.view_mode == ViewMode::Standard && !self.show_standard_controls {
+                self.leave_special_audition();
+            }
             self.isolation_check = None;
             self.status = "Redo".to_owned();
         }
@@ -1512,11 +1517,7 @@ impl YesVoxApp {
         let path = rfd::FileDialog::new()
             .add_filter("Audio", &["wav", "wave", "flac"])
             .set_title("Import Vocal")
-            .pick_file()
-            .or_else(|| {
-                let typed = self.path_input.trim();
-                (!typed.is_empty()).then(|| PathBuf::from(typed))
-            });
+            .pick_file();
         let Some(path) = path else {
             self.status = "Import cancelled".to_owned();
             return;
@@ -1532,11 +1533,14 @@ impl YesVoxApp {
             self.status = "Working - please wait".to_owned();
             return;
         }
-        self.stop_playback(); // new audio invalidates the current stream
         match self.session.open(&path) {
             Ok(_) => {
+                self.stop_playback(); // new audio invalidates the current stream
+                self.view_mode = ViewMode::Standard;
+                self.show_standard_controls = false;
+                self.preset_menu_open = false;
                 self.source_path = Some(path.clone());
-                self.path_input = path.display().to_string();
+                self.auditioning_reblend = false;
                 self.source_name = path
                     .file_name()
                     .and_then(|s| s.to_str())
@@ -1548,7 +1552,7 @@ impl YesVoxApp {
                 if let Some(parent) = path.parent() {
                     self.session.set_output_location(parent);
                 }
-                self.ab = AbView::Processed;
+                self.ab = AbView::Original;
                 self.bump_audio_generation();
                 self.render_now();
             }
@@ -1818,8 +1822,15 @@ impl eframe::App for YesVoxApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw_screen(ui);
+    }
+}
+
+impl YesVoxApp {
+    fn draw_screen(&mut self, ui: &mut egui::Ui) {
         // Drain background-job events and repaint while work is in flight (#22).
         self.pump_jobs(ui.ctx());
+        self.import_dropped_vocal(ui);
         // Undo/redo shortcuts (#25): Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Y.
         // Esc cancels a live render from any view (#36).
         let (do_undo, do_redo, do_cancel) = ui.input(|i| {
@@ -1837,14 +1848,23 @@ impl eframe::App for YesVoxApp {
 
         painter.rect_filled(available, egui::CornerRadius::ZERO, BG_BOTTOM);
         paint_v_gradient(&painter, canvas.rect, BG_TOP, BG_BOTTOM, 72);
+        if !self.has_vocal_workspace() {
+            self.draw_import_screen(ui, &painter, canvas);
+            self.draw_build_stamp(&painter, canvas);
+            return;
+        }
+
         let layout = ReferenceLayout::new();
         self.draw_top_bar(ui, &painter, canvas, layout);
         match self.view_mode {
-            ViewMode::Standard => {
+            ViewMode::Standard if self.show_standard_controls => {
                 self.draw_left_sidebar(ui, &painter, canvas, layout);
                 self.draw_center(ui, &painter, canvas, layout);
                 self.draw_right_sidebar(ui, &painter, canvas, layout);
                 self.draw_status_bar(&painter, canvas, layout);
+            }
+            ViewMode::Standard => {
+                self.draw_standard_workspace(ui, &painter, canvas, layout);
             }
             ViewMode::Advanced => {
                 let advanced = AdvancedLayout::new();
@@ -1885,12 +1905,19 @@ impl YesVoxApp {
             ui,
             painter,
             c,
-            rect(314.0, 14.0, 124.0, 40.0),
-            "Standard",
-            self.view_mode == ViewMode::Standard,
+            rect(282.0, 14.0, 156.0, 40.0),
+            if self.show_standard_controls && self.view_mode == ViewMode::Standard {
+                "Back to Standard"
+            } else {
+                "Standard"
+            },
+            self.view_mode == ViewMode::Standard && !self.show_standard_controls,
             "view_standard",
         ) {
             self.view_mode = ViewMode::Standard;
+            self.show_standard_controls = false;
+            self.preset_menu_open = false;
+            self.leave_special_audition();
         }
         if self.segment_button(
             ui,
@@ -1902,41 +1929,19 @@ impl YesVoxApp {
             "view_advanced",
         ) {
             self.view_mode = ViewMode::Advanced;
+            self.show_standard_controls = false;
         }
 
-        let restore = rect(742.0, 13.0, 184.0, 44.0);
-        let polish = rect(928.0, 13.0, 184.0, 44.0);
-        if self.view_mode == ViewMode::Standard {
-            if self.segment_button(
-                ui,
-                painter,
-                c,
-                restore,
-                "Restore",
-                self.tab == Tab::Restore,
-                "top_restore",
-            ) {
-                self.tab = Tab::Restore;
-            }
-            if self.segment_button(
-                ui,
-                painter,
-                c,
-                polish,
-                "Polish",
-                self.tab == Tab::Polish,
-                "top_polish",
-            ) {
-                self.tab = Tab::Polish;
-            }
-        } else {
+        if self.view_mode == ViewMode::Standard && self.show_standard_controls {
+            self.section_label(painter, c, 742.0, 35.0, "PROCESSING AND OUTPUT");
+        } else if self.view_mode == ViewMode::Advanced {
             self.section_label(painter, c, 742.0, 35.0, "ADVANCED");
             self.small_text(
                 painter,
                 c,
                 846.0,
                 35.0,
-                "module depth + spectrogram",
+                "Spectrogram and module settings",
                 TEXT_MUTED,
             );
         }
@@ -1963,14 +1968,16 @@ impl YesVoxApp {
         ) {
             self.redo();
         }
-        if self.outline_button(
-            ui,
-            painter,
-            c,
-            rect(1485.0, 14.0, 68.0, 40.0),
-            "A / B",
-            "top_ab",
-        ) {
+        if (self.view_mode == ViewMode::Advanced || self.show_standard_controls)
+            && self.outline_button(
+                ui,
+                painter,
+                c,
+                rect(1485.0, 14.0, 68.0, 40.0),
+                "A / B",
+                "top_ab",
+            )
+        {
             self.toggle_ab_view(); // instant A/B at the shared playhead
         }
         // View-independent render progress + cancel (#36): the Standard
@@ -1996,16 +2003,17 @@ impl YesVoxApp {
                 self.cancel_render();
             }
         }
-        // Preset picker (#24): the top-bar dropdown is the only way to change
-        // preset. Gear/Help/"Back to Suite" were PNG-only dead chrome — removed.
-        if self.outline_button(
-            ui,
-            painter,
-            c,
-            rect(1775.0, 14.0, 130.0, 40.0),
-            "Presets v",
-            "top_presets",
-        ) {
+        // The compact Standard workspace has its own preset picker.
+        if (self.view_mode == ViewMode::Advanced || self.show_standard_controls)
+            && self.outline_button(
+                ui,
+                painter,
+                c,
+                rect(1775.0, 14.0, 130.0, 40.0),
+                "Presets v",
+                "top_presets",
+            )
+        {
             self.preset_menu_open = !self.preset_menu_open;
         }
     }
@@ -2240,7 +2248,7 @@ impl YesVoxApp {
         if (flow - self.session.flow_amount()).abs() > f32::EPSILON {
             self.apply_edit("flow", |s| s.set_flow_amount(flow));
         }
-        self.body_text(painter, c, 1288.0, 120.0, "x1.00", TEXT);
+        self.body_text(painter, c, 1288.0, 120.0, &format!("x{flow:.2}"), TEXT);
 
         let ab_rect = rect(1368.0, 86.0, 188.0, 34.0);
         paint_panel(painter, c, ab_rect, 6, FIELD, BORDER_DIM);
@@ -3916,24 +3924,9 @@ impl YesVoxApp {
         if preset_gen_badge_visible(&self.session) {
             self.badge(painter, c, rect(1810.0, 142.0, 34.0, 22.0), "GEN", true);
         }
-        self.small_text(painter, c, 1608.0, 212.0, "DESCRIPTION", TEXT_MUTED);
-        self.small_text(
-            painter,
-            c,
-            1608.0,
-            246.0,
-            "Balanced restoration for singing vocals.",
-            TEXT_MUTED,
-        );
-        self.small_text(
-            painter,
-            c,
-            1608.0,
-            272.0,
-            "Preserves character and natural ambience.",
-            TEXT_MUTED,
-        );
-        // "Save as New Preset" removed (#24): no user-preset store exists.
+        self.draw_export_action(ui, c, rect(1608.0, 204.0, 264.0, 58.0));
+        let summary = truncate_middle(&self.status, 30);
+        self.small_text(painter, c, 1608.0, 290.0, &summary, TEXT_MUTED);
         let out = rect(1588.0, 372.0, 304.0, 294.0);
         paint_panel(painter, c, out, 8, alpha(PANEL_2, 230), BORDER_DIM);
         self.section_label(painter, c, 1608.0, 404.0, "OUTPUT");
@@ -4029,7 +4022,7 @@ impl YesVoxApp {
             .session
             .output_location()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "/Users/You/Music/YesVox".to_owned());
+            .unwrap_or_else(|| "Source folder".to_owned());
         let location_short = truncate_middle(&location, 30);
         self.body_text(painter, c, 1622.0, 858.0, &location_short, TEXT);
         self.folder_icon(painter, c, egui::pos2(1850.0, 856.0));
@@ -4053,7 +4046,7 @@ impl YesVoxApp {
         paint_panel(
             painter,
             c,
-            rect(1588.0, 906.0, 304.0, 86.0),
+            rect(1588.0, 906.0, 304.0, 122.0),
             8,
             alpha(PANEL_2, 230),
             BORDER_DIM,
@@ -4134,34 +4127,6 @@ impl YesVoxApp {
             "batch_export",
         ) {
             self.run_batch_queue();
-        }
-        if self.gradient_button(
-            ui,
-            painter,
-            c,
-            rect(1588.0, 1010.0, 304.0, 28.0),
-            "EXPORT VOCAL",
-            "export_vocal",
-        ) {
-            if self.busy() {
-                self.status = "Working - please wait".to_owned();
-            } else {
-                match self.session.prepare_export() {
-                    Ok(prepared) => {
-                        // Write off the UI thread; the session stays put (export
-                        // is read-only) — #22.
-                        self.job_progress = 0.0;
-                        self.status = "Exporting...".to_owned();
-                        self.export_job = Some(spawn(move |ctx| {
-                            ctx.progress(0.1);
-                            let path = prepared.write().map_err(|e| e.to_string())?;
-                            ctx.progress(1.0);
-                            Ok(path)
-                        }));
-                    }
-                    Err(e) => self.status = format!("Export failed: {e}"),
-                }
-            }
         }
     }
 
@@ -4569,43 +4534,37 @@ impl YesVoxApp {
         let peaks = self
             .audible_buffer()
             .map(|b| yesvox_core::monitor::waveform_peaks(b, 0, buckets));
-        let selection = rect(r.left(), r.top(), r.width() * 0.20, r.height());
-        paint_h_gradient(
-            painter,
-            c,
-            selection,
-            alpha(BLUE, 90),
-            alpha(PURPLE, 75),
-            24,
-            4,
-        );
-        for i in 0..buckets {
+        let Some(peaks) = peaks else {
+            return;
+        };
+        let wave_color = if self.ab == AbView::Original && !self.auditioning_reblend {
+            TEXT_MUTED
+        } else {
+            CYAN
+        };
+        for (i, (lo, hi)) in peaks.into_iter().enumerate() {
             let x = sr.left() + i as f32;
-            let t = i as f32 / buckets.max(1) as f32;
-            let (lo, hi) = peaks
-                .as_ref()
-                .and_then(|p| p.get(i).copied())
-                .unwrap_or_else(|| synthetic_peak(t));
-            let color = lerp_color(CYAN, PURPLE, t);
             painter.line_segment(
                 [
-                    egui::pos2(x, mid - hi.abs().max(0.03) * height),
-                    egui::pos2(x, mid + lo.abs().max(0.03) * height),
+                    egui::pos2(x, mid - hi.abs() * height),
+                    egui::pos2(x, mid + lo.abs() * height),
                 ],
-                egui::Stroke::new(c.v(1.0), color),
+                egui::Stroke::new(c.v(1.0), wave_color),
             );
         }
-        painter.line_segment(
-            [
-                c.pos(r.left() + r.width() * 0.20, r.top()),
-                c.pos(r.left() + r.width() * 0.20, r.bottom()),
-            ],
-            egui::Stroke::new(c.v(2.0), PURPLE),
-        );
+        if let Some(player) = &self.player {
+            let x = sr.left() + player.fraction() * sr.width();
+            painter.line_segment(
+                [egui::pos2(x, sr.top()), egui::pos2(x, sr.bottom())],
+                egui::Stroke::new(c.v(1.5), TEXT),
+            );
+        }
     }
 
     fn draw_time_labels(&self, painter: &egui::Painter, c: CanvasMap, r: egui::Rect) {
-        let duration = self.input_duration().unwrap_or(208.0);
+        let Some(duration) = self.input_duration() else {
+            return;
+        };
         self.small_text(painter, c, r.left(), r.bottom() + 26.0, "0:00", TEXT_MUTED);
         self.small_text(
             painter,
@@ -5640,10 +5599,7 @@ impl YesVoxApp {
                 .as_ref()
                 .and_then(|p| p.get(i).copied())
                 .map(|(lo, hi)| (lo.abs().max(hi.abs()).clamp(0.02, 1.0)) * r.height())
-                .unwrap_or_else(|| {
-                    (0.12 + (t * 31.0).sin().abs() * 0.50 + (t * 113.0).cos().abs() * 0.28)
-                        * r.height()
-                });
+                .unwrap_or(0.0);
             let color = if t < 0.5 {
                 lerp_color(AMBER, PURPLE, t * 2.0)
             } else {
@@ -5787,21 +5743,6 @@ fn card_blurb(card: CardId) -> (&'static str, &'static str) {
         CardId::Leveling => ("Smooths vocal level", "consistently."),
         CardId::Loudness => ("Sets loudness to", "target level."),
     }
-}
-
-fn synthetic_peak(t: f32) -> (f32, f32) {
-    let env = if t < 0.18 {
-        0.82
-    } else if t < 0.36 {
-        0.44
-    } else if t < 0.72 {
-        0.35 + 0.20 * (t * 18.0).sin().abs()
-    } else {
-        0.24 + 0.16 * (t * 30.0).sin().abs()
-    };
-    let fast = (t * 180.0).sin().abs() * 0.55 + (t * 430.0).cos().abs() * 0.45;
-    let hi = (env * fast).clamp(0.04, 0.95);
-    (-hi * (0.68 + 0.25 * (t * 21.0).cos().abs()), hi)
 }
 
 fn draw_advanced_spectrogram(
@@ -6081,7 +6022,14 @@ fn install_theme(ctx: &egui::Context) {
     visuals.extreme_bg_color = BG_TOP;
     visuals.selection.bg_fill = BLUE;
     visuals.selection.stroke = egui::Stroke::new(1.0, CYAN);
-    visuals.widgets.hovered.bg_fill = PANEL_2;
+    visuals.widgets.inactive.bg_fill = PANEL_2;
+    visuals.widgets.inactive.weak_bg_fill = PANEL_2;
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, BORDER);
+    visuals.widgets.hovered.bg_fill = BORDER;
+    visuals.widgets.hovered.weak_bg_fill = BORDER;
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, CYAN);
+    visuals.widgets.active.bg_fill = BORDER;
+    visuals.widgets.active.weak_bg_fill = BORDER;
     visuals.hyperlink_color = CYAN;
     ctx.set_visuals(visuals);
     ctx.all_styles_mut(|style| {
@@ -6971,6 +6919,171 @@ mod tests {
             app.pump_jobs(&ctx);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn standard_import_compare_and_export_smoke() {
+        use egui::{DroppedFile, Event, Modifiers, PointerButton};
+        use yesvox_core::{read_audio, write_wav, SampleEncoding};
+
+        fn frame(
+            app: &mut YesVoxApp,
+            ctx: &egui::Context,
+            raw: egui::RawInput,
+        ) -> egui::FullOutput {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect(0.0, 0.0, 1280.0, 720.0)),
+                    ..raw
+                },
+                |ui| app.draw_screen(ui),
+            )
+        }
+
+        fn painted_text(output: egui::FullOutput) -> String {
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| match shape.shape {
+                    egui::Shape::Text(shape) => Some(shape.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        fn click(app: &mut YesVoxApp, ctx: &egui::Context, x: f32, y: f32) {
+            let pos = egui::pos2(x, y) * (2.0 / 3.0);
+            frame(app, ctx, egui::RawInput::default());
+            for pressed in [true, false] {
+                frame(
+                    app,
+                    ctx,
+                    egui::RawInput {
+                        events: vec![
+                            Event::PointerMoved(pos),
+                            Event::PointerButton {
+                                pos,
+                                button: PointerButton::Primary,
+                                pressed,
+                                modifiers: Modifiers::NONE,
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("yesvox-standard-smoke-{}", std::process::id()));
+        std::fs::create_dir(&root).expect("create isolated fixture directory");
+        let source = root.join("test vocal.wav");
+        let output = root.join("test vocal_YesVox.wav");
+        let sample_rate = 48_000;
+        let samples = (0..sample_rate / 2)
+            .map(|i| 0.15 * (std::f32::consts::TAU * 220.0 * i as f32 / sample_rate as f32).sin())
+            .collect();
+        write_wav(
+            &source,
+            &AudioBuffer::new(sample_rate, 24, SampleEncoding::Int, vec![samples]),
+        )
+        .expect("write test vocal");
+        let original_bytes = std::fs::read(&source).unwrap();
+
+        let ctx = egui::Context::default();
+        install_theme(&ctx);
+        let mut app = YesVoxApp::from_session(YesVoxApp::default_session());
+        let empty = painted_text(frame(&mut app, &ctx, Default::default()));
+        assert!(empty.contains("Import Vocal"), "{empty}");
+        assert!(
+            !empty.contains("Lead Vocal.wav") && !empty.contains("Export Vocal"),
+            "{empty}"
+        );
+
+        let invalid = painted_text(frame(
+            &mut app,
+            &ctx,
+            egui::RawInput {
+                dropped_files: vec![DroppedFile {
+                    path: Some(root.join("missing.wav")),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ));
+        assert!(
+            invalid.contains("Import failed") && invalid.contains("Import Vocal"),
+            "{invalid}"
+        );
+
+        frame(
+            &mut app,
+            &ctx,
+            egui::RawInput {
+                dropped_files: vec![DroppedFile {
+                    path: Some(source.clone()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        assert!(
+            app.has_vocal_workspace(),
+            "render must not flash the import screen"
+        );
+        pump_until_idle(&mut app);
+        assert!(app.session.output().is_some());
+        let standard = painted_text(frame(&mut app, &ctx, Default::default()));
+        for label in [
+            "test vocal.wav",
+            "Original",
+            "Processed",
+            "Export Vocal",
+            "Effect strength",
+            "More Controls",
+        ] {
+            assert!(standard.contains(label), "missing {label} in {standard}");
+        }
+        assert!(!standard.contains("BATCH QUEUE") && !standard.contains("De-reverb"));
+
+        click(&mut app, &ctx, 375.0, 292.0);
+        assert_eq!(app.ab, AbView::Original);
+        click(&mut app, &ctx, 527.0, 292.0);
+        assert_eq!(app.ab, AbView::Processed);
+
+        click(&mut app, &ctx, 210.0, 829.0);
+        assert_eq!(app.session.settings().content_mode, ContentMode::Voiceover);
+        assert_eq!(app.ab, AbView::Original);
+        assert!(app.session.output().is_none());
+        click(&mut app, &ctx, 1588.0, 349.0);
+        assert!(
+            app.export_job.is_none() && !output.exists(),
+            "exported without a current render"
+        );
+
+        click(&mut app, &ctx, 1170.0, 292.0);
+        pump_until_idle(&mut app);
+        assert!(app.session.output().is_some());
+        click(&mut app, &ctx, 1588.0, 349.0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.export_job.is_some() && std::time::Instant::now() < deadline {
+            app.pump_jobs(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(app.status.starts_with("Exported"), "{}", app.status);
+        let exported = read_audio(&output).expect("decode exported vocal");
+        assert_eq!(exported.frames(), sample_rate as usize / 2);
+        assert_eq!(std::fs::read(&source).unwrap(), original_bytes);
+
+        click(&mut app, &ctx, 1210.0, 723.0);
+        assert!(app.show_standard_controls);
+        let controls = painted_text(frame(&mut app, &ctx, Default::default()));
+        assert!(controls.contains("BATCH QUEUE") && controls.contains("Back to Standard"));
+
+        std::fs::remove_file(output).unwrap();
+        std::fs::remove_file(source).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]
