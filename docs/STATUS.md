@@ -8,6 +8,14 @@
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
 > for the GUI target see [`ui/yesvox-v1-ui-reference.md`](ui/yesvox-v1-ui-reference.md).
 
+## 2026-11-14 — Import and Standard view
+
+- The app opens to an Import Vocal screen that accepts a WAV or FLAC drop or opens a file picker.
+- Standard puts Original / Processed next to playback and Export Vocal in its own panel. Voice type, preset, and effect strength stay visible.
+- More Controls opens the restoration and polish rack, difference monitor, and batch queue. Output Settings opens the same screen with the file and format options.
+- A headless GUI smoke covers empty and failed imports, successful drag and drop, preview switching, stale-render export protection, output decoding, and source-file integrity.
+- The dependency gate now uses updated browser, clipboard, and executor packages. Three maintenance notices for the Linux accessibility stack stay documented while AccessKit requires zbus 5.
+
 ## Where we are
 
 **The v1.0 unsigned Windows installer is now RC.3 and has passed a local silent
