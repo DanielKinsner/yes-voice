@@ -1,12 +1,34 @@
 # YesVox — build status & pick-up guide
 
-> Resume-from-anywhere snapshot. Last updated **2026-08-25** (RC.3 packaging,
+> Resume-from-anywhere snapshot. Last updated **2026-11-23** (the Aug 25 RC.3 /
+> brand work and the Nov 14 Import / Standard view, built on two machines, are
+> merged on `main`; see the newest entry). Before that, **2026-08-25** (RC.3 packaging,
 > neural-boundary hardening, and YES-suite brand unification executed; installer
 > build and local install/render/uninstall smoke are now one fail-closed command).
 > For product intent
 > read [`product.md`](product.md) first; for the build plan see
 > [`plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md`](plans/2026-06-29-feat-yesvox-v1-restoration-workstation-plan.md);
 > for the GUI target see [`ui/yesvox-v1-ui-reference.md`](ui/yesvox-v1-ui-reference.md).
+
+## 2026-11-23 — Two machines' work merged
+
+- **What happened:** this repo split at 2026-07-15. One PC made the Aug 25 RC.3 hardening
+  wave and brand unification (below) but never pushed it; another machine built the Nov 14
+  Import / Standard view from the July state. Both are now merged on `main`. The unmerged
+  Aug 25 side is kept on branch `backup/this-pc-2026-08-25`.
+- **Conflict calls (6 spots, all small):** checksum loop takes Nov 14's version; the Standard
+  switch keeps Aug 25's centered position with Nov 14's "Back to Standard" label; Nov 14's
+  top-bar section labels ("PROCESSING AND OUTPUT", "ADVANCED") are dropped because Aug 25 put
+  the centered view switch in that space; Presets hides during a render *and* on the compact
+  Standard screen; the batch queue uses Aug 25's quiet section rail at Nov 14's height.
+- **Guard:** the Standard smoke now checks that both view-switch labels fit their segments
+  and that no other text overlaps the switch. Re-adding the old section label fails it.
+- **Dependency:** `url` 2.5.8 → 2.5.9 for RUSTSEC-2026-0592 (published after both sides).
+- **Verified:** `cargo xtask gate` green on the merged tree (fmt, clippy, all tests, deny).
+- **Not yet checked (Dan):** the Nov 14 Standard screen was designed before the brand pass,
+  so it inherits the new palette but may still use older filled panels. Look at Import,
+  Standard, More Controls and Advanced side by side and say whether Standard needs a
+  brand-matching pass.
 
 ## 2026-11-14 — Import and Standard view
 
