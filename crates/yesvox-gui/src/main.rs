@@ -7406,6 +7406,56 @@ mod tests {
         let controls = painted_text(frame(&mut app, &ctx, Default::default()));
         assert!(controls.contains("BATCH QUEUE") && controls.contains("Back to Standard"));
 
+        // Merge guard (2026-11-23): the Aug 25 brand pass centered a narrower
+        // view switch, and the Nov 14 Standard workspace renames its left
+        // segment "Back to Standard". Both labels must fit their segments, and
+        // no other text may sit on the switch (the old top-bar section labels
+        // did once both histories met).
+        fn painted_text_rects(output: egui::FullOutput) -> Vec<(String, egui::Rect)> {
+            output
+                .shapes
+                .into_iter()
+                .filter_map(|shape| match shape.shape {
+                    egui::Shape::Text(text) => {
+                        Some((text.galley.text().to_owned(), text.visual_bounding_rect()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        }
+        let to_screen =
+            |r: egui::Rect| egui::Rect::from_min_max(r.min * (2.0 / 3.0), r.max * (2.0 / 3.0));
+        let [standard_segment, advanced_segment] = YesVoxApp::top_bar_view_rects();
+        let switch = to_screen(standard_segment.union(advanced_segment));
+        let assert_switch_label = |painted: &[(String, egui::Rect)], label: &str, segment| {
+            let (_, bounds) = painted
+                .iter()
+                .find(|(text, _)| text == label)
+                .unwrap_or_else(|| panic!("{label:?} is not painted"));
+            let inside = to_screen(segment).shrink(2.0);
+            assert!(
+                inside.contains_rect(*bounds),
+                "{label:?} at {bounds:?} overflows its segment {inside:?}"
+            );
+            for (text, bounds) in painted {
+                if !["Standard", "Back to Standard", "Advanced"].contains(&text.as_str()) {
+                    assert!(
+                        !switch.intersects(*bounds),
+                        "{text:?} at {bounds:?} overlaps the view switch {switch:?}"
+                    );
+                }
+            }
+        };
+        let controls = painted_text_rects(frame(&mut app, &ctx, Default::default()));
+        assert_switch_label(&controls, "Back to Standard", standard_segment);
+        assert_switch_label(&controls, "Advanced", advanced_segment);
+        let advanced_center = advanced_segment.center();
+        click(&mut app, &ctx, advanced_center.x, advanced_center.y);
+        assert!(app.view_mode == ViewMode::Advanced && !app.show_standard_controls);
+        let advanced = painted_text_rects(frame(&mut app, &ctx, Default::default()));
+        assert_switch_label(&advanced, "Standard", standard_segment);
+        assert_switch_label(&advanced, "Advanced", advanced_segment);
+
         std::fs::remove_file(output).unwrap();
         std::fs::remove_file(source).unwrap();
         std::fs::remove_dir(root).unwrap();
